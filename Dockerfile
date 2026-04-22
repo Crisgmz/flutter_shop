@@ -7,16 +7,14 @@ WORKDIR /app
 COPY pubspec.yaml pubspec.lock ./
 RUN flutter pub get
 
-# Build args — set these in Coolify under "Build Variables"
-ARG SUPABASE_URL
-ARG SUPABASE_ANON_KEY
-
 # Copy source and compile
 COPY . .
 
-RUN flutter build web --release \
+# Load .env and inject as dart-defines at compile time
+RUN set -a && . ./.env && set +a && \
+    flutter build web --release \
       --dart-define=SUPABASE_URL=${SUPABASE_URL} \
-      --dart-define=SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      --dart-define=SUPABASE_PUBLISHABLE_KEY=${SUPABASE_PUBLISHABLE_KEY}
 
 # ── Stage 2: Serve with Nginx ─────────────────────────────────────────────────
 FROM nginx:alpine AS runner
