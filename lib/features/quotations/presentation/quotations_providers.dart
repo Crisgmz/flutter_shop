@@ -4,9 +4,7 @@ import '../../auth/presentation/auth_providers.dart';
 import '../data/quotations_models.dart';
 import '../data/quotations_repository.dart';
 
-final quotationsRepositoryProvider = Provider<QuotationsRepositoryContract>((
-  ref,
-) {
+final quotationsRepositoryProvider = Provider<QuotationsRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
   return QuotationsRepository(client);
 });

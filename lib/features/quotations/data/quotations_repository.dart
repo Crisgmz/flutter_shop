@@ -1,12 +1,15 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../shared/formatters/formatters.dart' as fmt;
+import '../../printing/data/printing.dart';
 import 'quotations_models.dart';
 
 class QuotationsRepository implements QuotationsRepositoryContract {
   QuotationsRepository(this._client);
 
   final SupabaseClient _client;
+  static const QuotePrintJobPreparationService _quotePrintService =
+      QuotePrintJobPreparationService();
 
   @override
   Future<List<QuoteListItem>> fetchQuotes() async {
@@ -470,6 +473,82 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     } catch (_) {
       // Keep the main flow resilient while migration adoption is in progress.
     }
+  }
+
+  Future<PreparedPrintJobData?> prepareQuotePrintJob({
+    required String quoteId,
+    PrintPaperSize paperSize = PrintPaperSize.a4,
+  }) async {
+    final quoteRow = await _client
+        .from('quotations')
+        .select(
+          'id, branch_id, code, status, created_at, valid_until, notes, '
+          'subtotal, tax_amount, total_amount, client_display_name',
+        )
+        .eq('id', quoteId)
+        .single();
+
+    final quote = Map<String, dynamic>.from(quoteRow as Map);
+    final branchId = (quote['branch_id'] ?? '').toString();
+    if (branchId.isEmpty) return null;
+
+    final branchRows = await _client
+        .from('branches')
+        .select('name, address, phone')
+        .eq('id', branchId)
+        .limit(1);
+    final branch = branchRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(branchRows.first as Map);
+
+    final itemRows = await _client
+        .from('quotation_items')
+        .select(
+          'product_name, product_sku, quantity, unit_price, '
+          'line_subtotal, line_tax, line_total',
+        )
+        .eq('quotation_id', quoteId)
+        .order('created_at');
+
+    final quoteSource = QuotePrintSource(
+      quoteId: quoteId,
+      branchId: branchId,
+      quoteCode: (quote['code'] ?? '').toString(),
+      clientName:
+          (quote['client_display_name'] ?? 'Cliente general').toString(),
+      issuedAt:
+          DateTime.tryParse(quote['created_at']?.toString() ?? '') ??
+          DateTime.now(),
+      validUntil:
+          DateTime.tryParse(quote['valid_until']?.toString() ?? '') ??
+          DateTime.now(),
+      branchName: (branch['name'] ?? 'Sucursal').toString(),
+      branchAddress: branch['address']?.toString(),
+      branchPhone: branch['phone']?.toString(),
+      notes: _nullIfEmpty(quote['notes']?.toString()),
+      subtotal: _toDouble(quote['subtotal']),
+      taxAmount: _toDouble(quote['tax_amount']),
+      totalAmount: _toDouble(quote['total_amount']),
+      items: itemRows
+          .map((row) => Map<String, dynamic>.from(row as Map))
+          .map(
+            (item) => QuotePrintItemSource(
+              description: (item['product_name'] ?? '').toString(),
+              quantity: _toDouble(item['quantity']),
+              unitPrice: _toDouble(item['unit_price']),
+              lineSubtotal: _toDouble(item['line_subtotal']),
+              lineTax: _toDouble(item['line_tax']),
+              lineTotal: _toDouble(item['line_total']),
+              sku: item['product_sku']?.toString(),
+            ),
+          )
+          .toList(growable: false),
+    );
+
+    return _quotePrintService.prepareQuotePreview(
+      quote: quoteSource,
+      paperSize: paperSize,
+    );
   }
 
   Future<String?> _currentBranchId() async {

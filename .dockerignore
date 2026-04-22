@@ -1,0 +1,17 @@
+.git
+.dart_tool
+.flutter-plugins
+.flutter-plugins-dependencies
+build
+android
+ios
+linux
+macos
+windows
+test
+supabase
+docs
+*.md
+*.txt
+*.iml
+devtools_options.yaml

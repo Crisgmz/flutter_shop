@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../data/sales_repository.dart';
 import 'sales_providers.dart';
 
@@ -191,7 +192,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
             ),
           ),
           loading: () => const SizedBox(width: 48, height: 48, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
-          error: (_, __) => const SizedBox.shrink(),
+          error: (_, _) => const SizedBox.shrink(),
         ),
       ],
     );
@@ -299,7 +300,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                     ),
                   ),
                   loading: () => const LinearProgressIndicator(),
-                  error: (_, __) => const Text('Error al cargar clientes'),
+                  error: (_, _) => const Text('Error al cargar clientes'),
                 ),
               ],
             ),
@@ -479,15 +480,30 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
       _clearCart();
       ref.invalidate(salesProductsProvider);
-      
+
       if (mounted) {
+        final printJob = result.preparedPrintJob;
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('¡Venta Exitosa!'),
-            content: Text('Venta #${result.saleNumber} registrada correctamente.'),
+            title: const Text('¡Venta exitosa!'),
+            content: Text(
+              'Venta #${result.saleNumber} registrada correctamente.',
+            ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Aceptar')),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cerrar'),
+              ),
+              if (printJob != null)
+                FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    PrintReceiptDialog.show(context, printJob);
+                  },
+                  icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                  label: const Text('Ver recibo'),
+                ),
             ],
           ),
         );

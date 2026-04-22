@@ -7,6 +7,7 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../data/quotations_models.dart';
 import 'quotations_providers.dart';
 
@@ -176,6 +177,11 @@ class _QuotesDataTable extends ConsumerWidget {
                                 icon: const Icon(Icons.visibility_outlined, size: 20),
                                 tooltip: 'Ver / editar',
                               ),
+                              IconButton(
+                                onPressed: () => _printQuote(context, ref, quote),
+                                icon: const Icon(Icons.print_outlined, size: 20),
+                                tooltip: 'Imprimir cotización',
+                              ),
                               if (quote.canConvert)
                                 IconButton(
                                   onPressed: () => _convertToSale(context, ref, quote),
@@ -260,6 +266,32 @@ class _QuotesDataTable extends ConsumerWidget {
     }
   }
 
+  Future<void> _printQuote(
+    BuildContext context,
+    WidgetRef ref,
+    QuoteListItem quote,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final printJob = await ref
+          .read(quotationsRepositoryProvider)
+          .prepareQuotePrintJob(quoteId: quote.id);
+      if (printJob == null) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No se pudo preparar la impresión.')),
+        );
+        return;
+      }
+      if (context.mounted) {
+        await PrintReceiptDialog.show(context, printJob);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
   Future<void> _deleteQuote(
     BuildContext context,
     WidgetRef ref,
@@ -301,13 +333,13 @@ class _QuotesDataTable extends ConsumerWidget {
   }
 }
 
-class _QuoteMobileCard extends StatelessWidget {
+class _QuoteMobileCard extends ConsumerWidget {
   const _QuoteMobileCard({required this.quote});
 
   final QuoteListItem quote;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return InkWell(
       onTap: () => context.push('/cotizaciones/${quote.id}'),
       borderRadius: BorderRadius.circular(AppTokens.radiusL),
@@ -326,9 +358,10 @@ class _QuoteMobileCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     quote.code,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                 ),
                 _StatusChip(status: quote.effectiveStatus),
@@ -337,9 +370,10 @@ class _QuoteMobileCard extends StatelessWidget {
             const SizedBox(height: AppTokens.s6),
             Text(
               quote.clientName,
-              style: Theme.of(
-                context,
-              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: AppTokens.s10),
             Row(
@@ -355,8 +389,24 @@ class _QuoteMobileCard extends StatelessWidget {
                 Text(
                   money(quote.total),
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: AppTokens.brandBlueDark,
+                        fontWeight: FontWeight.w800,
+                        color: AppTokens.brandBlueDark,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppTokens.s8),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _printQuote(context, ref),
+                  icon: const Icon(Icons.print_outlined, size: 16),
+                  label: const Text('Imprimir'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: const TextStyle(fontSize: 12),
                   ),
                 ),
               ],
@@ -365,6 +415,28 @@ class _QuoteMobileCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _printQuote(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final printJob = await ref
+          .read(quotationsRepositoryProvider)
+          .prepareQuotePrintJob(quoteId: quote.id);
+      if (printJob == null) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No se pudo preparar la impresión.')),
+        );
+        return;
+      }
+      if (context.mounted) {
+        await PrintReceiptDialog.show(context, printJob);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
   }
 }
 
