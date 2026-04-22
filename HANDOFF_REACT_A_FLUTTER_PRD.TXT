@@ -1,0 +1,362 @@
+SHOP+ RD - HANDOFF REACT -> FLUTTER (PRD + DISENO + STACK)
+Fecha: 2026-03-02
+Repositorio base: /Users/cristiangomez/dev/shop-plus-rd
+
+====================================================
+1) RESUMEN EJECUTIVO
+====================================================
+El sistema actual en React es un ERP/POS para RD con enfoque en:
+- Punto de venta
+- Inventario
+- Compras
+- Clientes/Proveedores
+- Cobros/Caja
+- Reportes/Impuestos
+- Configuracion operativa
+
+Estado actual:
+- UI funcional en todas las secciones principales.
+- Datos en memoria (mock/local state), sin backend productivo conectado.
+- Se agregaron handlers a botones clave que estaban solo visuales.
+- Se agregaron utilidades reutilizables para no duplicar logica.
+
+Objetivo de migracion:
+- Rehacer frontend en Flutter (Web + Android inicialmente) con backend Supabase.
+- Mantener UX/flujo actual y evolucionar a persistencia real, roles, auditoria y fiscal.
+
+
+====================================================
+2) ALCANCE FUNCIONAL ACTUAL (REACT)
+====================================================
+2.1 Navegacion lateral (menu)
+Rutas existentes:
+- /                     Panel
+- /ventas               Ventas (POS)
+- /cobros               Cobros
+- /inventario           Inventario
+- /compras              Compras
+- /clientes             Clientes
+- /proveedores          Proveedores
+- /reportes             Reportes
+- /gastos               Gastos
+- /cierre-caja          Cierre de Caja
+- /impuestos            Impuestos
+- /sucursales           Sucursales
+- /usuarios             Usuarios
+- /configuracion        Configuracion
+
+2.2 Modulos y comportamiento actual
+A) Panel
+- KPIs y grafica de ventas.
+- Tabla de ultimas ventas con acciones: Ver, Imprimir, Anular (feedback por toast).
+- Toggle Mensual/Semanal visual y funcional de seleccion.
+
+B) Ventas (POS)
+- Busqueda de productos.
+- Grid de productos (agregar al carrito por click).
+- Boton Escaner (enfoca busqueda + feedback).
+- Boton Agregar (agrega primer resultado filtrado al carrito).
+- Carrito con incremento/decremento/eliminar.
+- Tipos de comprobante seleccionables.
+- Acciones: Cobrar, Credito, Pendiente, Cancelar (con reglas basicas y feedback).
+
+C) Cobros
+- KPIs de cuentas por cobrar.
+- Tabs: Cuentas por Cobrar / Pagos Recibidos.
+- Modal de abono operativo con validaciones de monto.
+- Acciones: Registrar Pago, Abonar, Ver detalle, Contactar, Ver recibo.
+
+D) Inventario
+- Listado con busqueda y filtro (bajo stock).
+- Paginacion funcional.
+- Nuevo Producto: modal reusable + insercion en tabla local.
+- Exportar CSV funcional.
+
+E) Compras
+- Nueva Compra: modal reusable + insercion local.
+- Formulario rapido con adjunto de archivo (selector de archivos).
+
+F) Clientes
+- Nuevo Cliente: modal reusable + validaciones basicas (duplicado RNC/Cedula).
+- Busqueda en tabla.
+
+G) Proveedores
+- Nuevo Proveedor: modal reusable + validaciones basicas (duplicado RNC).
+- Busqueda en tabla.
+
+H) Gastos
+- Nuevo Gasto: modal reusable + insercion local.
+
+I) Sucursales
+- Nueva Sucursal: modal reusable + insercion local.
+
+J) Usuarios
+- Nuevo Usuario: modal reusable + validacion de email duplicado.
+
+K) Cierre de Caja
+- Boton Cerrar Caja actualiza cajas abiertas a cerradas en estado local.
+
+L) Reportes
+- Toggle mostrar/ocultar filtros.
+- Exportar CSV funcional (dataset actual de ventas por mes).
+
+M) Impuestos
+- Exportar 606/607 (CSV base).
+- Botones Generar Formato 606 y 607 (feedback, sin generador DGII final).
+
+N) Configuracion
+- Tarjetas de secciones con click funcional (feedback).
+
+2.3 Acciones globales
+- Sidebar: colapsable y ajusta layout principal correctamente.
+- Sidebar: boton Salir funcional (navega y toast).
+- Topbar: selector de sucursal y notificaciones con feedback.
+
+
+====================================================
+3) COMPONENTES/UTILIDADES REACT IMPORTANTES
+====================================================
+Componentes compartidos:
+- src/components/ui-custom.tsx
+  - KPICard
+  - StatusBadge
+  - PageHeader
+  - DataTableShell
+
+- src/components/QuickCreateDialog.tsx
+  - Modal reutilizable para crear entidades (producto, cliente, proveedor, etc.)
+
+Layout/Navegacion:
+- src/components/AppSidebar.tsx
+- src/components/MainLayout.tsx
+- src/components/Topbar.tsx
+
+Utilidades:
+- src/lib/export.ts
+  - downloadCsv(filename, rows)
+
+Ruteo:
+- src/App.tsx (react-router-dom)
+
+
+====================================================
+4) ESTADO TECNICO REACT
+====================================================
+Stack actual React:
+- Vite + React + TypeScript
+- Tailwind CSS + shadcn/ui
+- react-router-dom
+- @tanstack/react-query (instalado, uso limitado)
+- sonner/toast
+- recharts
+
+Persistencia actual:
+- No hay backend integrado en los modulos operativos principales.
+- Datos mock en arreglos locales por pantalla.
+
+Calidad/validacion:
+- Build OK
+- Test (vitest) OK
+- Lint con errores preexistentes en archivos base UI no relacionados a la funcionalidad migrada.
+
+
+====================================================
+5) PRD (PRODUCT REQUIREMENTS DOCUMENT) - VERSION MIGRACION FLUTTER
+====================================================
+5.1 Problema
+El sistema actual opera con UI funcional pero datos locales; se necesita una plataforma productiva en Flutter con backend Supabase para operacion real multiusuario.
+
+5.2 Objetivo
+Migrar frontend a Flutter conservando los flujos existentes y habilitando persistencia, seguridad, roles y trazabilidad.
+
+5.3 Usuarios
+- Administrador
+- Cajero
+- Supervisor
+- Contador
+
+5.4 Objetivos de negocio
+- Reducir tiempo de venta en caja.
+- Mejorar control de inventario y cuentas por cobrar/pagar.
+- Centralizar reportes e informacion fiscal.
+
+5.5 Requerimientos funcionales (MVP)
+1. Autenticacion
+- Login con email/password (Supabase Auth)
+- Cierre de sesion
+
+2. Inventario
+- CRUD de productos
+- Busqueda/filtros
+- Stock y alertas de bajo inventario
+
+3. Ventas POS
+- Crear venta con items
+- Calcular subtotal/impuestos/total
+- Registrar cobro (contado/credito)
+
+4. Clientes
+- CRUD clientes
+- Balance por cobrar
+
+5. Cobros
+- Registrar abonos a facturas
+- Historial de pagos
+
+6. Compras y Proveedores
+- CRUD proveedores
+- Registro de compras
+
+7. Caja
+- Apertura/cierre de caja
+- Diferencias
+
+8. Reportes base
+- Ventas por periodo
+- Exportes CSV
+
+5.6 Requerimientos no funcionales
+- Tiempo de respuesta UI < 300ms para interacciones comunes
+- Soporte Web y Android en MVP
+- Manejo de errores de red y reconexion
+- Seguridad por roles en frontend + RLS en Supabase
+
+5.7 Fuera de alcance inicial (post-MVP)
+- Integracion fiscal DGII completa (generacion final certificada)
+- Impresion fiscal avanzada
+- Multiempresa complejo
+
+5.8 KPIs de exito
+- 95% de acciones de POS sin errores
+- <2% de ventas con inconsistencias de total/inventario
+- 100% de operaciones auditables (created_by/updated_by)
+
+
+====================================================
+6) DISENO / UX A MIGRAR
+====================================================
+6.1 Direccion visual actual
+- Sidebar azul dominante
+- Tablas con cards claras
+- KPI cards + badges de estado
+- Topbar con busqueda/sucursal/notificaciones
+- Uso intensivo de botones de accion rapida
+
+6.2 Patrones de interfaz
+- Listado + acciones arriba (Nuevo, Exportar, Filtro)
+- Formularios rapidos (modal/dialog)
+- Tablas operativas con acciones por fila
+- KPIs en grilla y dashboards ligeros
+
+6.3 Estados UX necesarios en Flutter
+- loading / empty / error / success
+- confirmaciones para acciones destructivas
+- validacion de formularios inline
+- toasts/snackbars consistentes
+
+6.4 Mapeo sugerido React -> Flutter
+- PageHeader                -> AppBar + row de acciones
+- DataTableShell            -> Card + DataTable/PaginatedDataTable
+- StatusBadge               -> Chip tematico
+- KPICard                   -> Card modular reusable
+- QuickCreateDialog         -> showDialog + formulario dinamico reusable
+- downloadCsv               -> servicio ExportService
+
+
+====================================================
+7) TECH STACK OBJETIVO (DEFINIDO: FLUTTER + SUPABASE)
+====================================================
+Frontend:
+- Flutter
+- flutter_riverpod (estado)
+- go_router (routing)
+- Material 3
+
+Backend/BaaS:
+- Supabase
+  - Auth
+  - Postgres
+  - RLS
+  - Realtime (opcional por modulo)
+  - Storage (adjuntos: facturas, logos, etc.)
+
+Sugerencias de librerias adicionales:
+- freezed + json_serializable (modelos inmutables)
+- dio o supabase client directo por repositorio
+- intl (moneda/fecha)
+- drift/hive (si se decide modo offline)
+
+
+====================================================
+8) MODELO DE DATOS INICIAL SUGERIDO EN SUPABASE
+====================================================
+Tablas base MVP:
+- profiles
+- branches
+- users_branches
+- products
+- product_categories
+- clients
+- suppliers
+- purchases
+- purchase_items
+- sales
+- sale_items
+- payments
+- cash_sessions
+- expenses
+
+Campos transversales recomendados:
+- id (uuid)
+- created_at, updated_at
+- created_by, updated_by
+- branch_id
+- is_active
+
+
+====================================================
+9) PLAN DE MIGRACION RECOMENDADO
+====================================================
+Fase 1 (base tecnica)
+- Auth + shell + roles + tema + navegacion
+
+Fase 2 (operacion core)
+- Inventario + Clientes + Proveedores CRUD
+
+Fase 3 (transaccional)
+- Ventas POS + Cobros + Caja
+
+Fase 4 (administrativo)
+- Compras + Gastos + Reportes
+
+Fase 5 (fiscal y hardening)
+- Impuestos, auditoria, optimizacion, QA final
+
+
+====================================================
+10) ARTEFACTOS FLUTTER YA CREADOS EN ESTE REPO
+====================================================
+Carpeta: /Users/cristiangomez/dev/shop-plus-rd/flutter_app
+
+Implementado:
+- Bootstrap Supabase por dart-define
+- Router protegido (login vs rutas privadas)
+- Auth repository base
+- Shell navegable por modulos POS
+- Paginas base por modulo para iniciar migracion
+- README con comandos de ejecucion
+
+Comandos:
+cd flutter_app
+flutter pub get
+flutter run --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
+
+
+====================================================
+11) NOTAS CLAVE PARA EL EQUIPO
+====================================================
+- El React actual sirve como referencia de UX y flujo, no como fuente de verdad de datos.
+- Migrar primero dominio y reglas de negocio, luego estilos pixel-perfect.
+- Evitar copiar estado local: cada accion debe ir a repositorio + Supabase.
+- Definir RLS desde el inicio para no rehacer seguridad despues.
+

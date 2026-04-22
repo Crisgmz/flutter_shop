@@ -1,0 +1,312 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class CashSessionEntity {
+  CashSessionEntity({
+    required this.id,
+    required this.status,
+    required this.openedAt,
+    required this.openingAmount,
+    required this.expectedAmount,
+    required this.closingAmount,
+    required this.differenceAmount,
+    required this.notes,
+    required this.closedAt,
+  });
+
+  final String id;
+  final String status;
+  final DateTime openedAt;
+  final DateTime? closedAt;
+  final double openingAmount;
+  final double expectedAmount;
+  final double? closingAmount;
+  final double? differenceAmount;
+  final String? notes;
+
+  bool get isOpen => status == 'open';
+
+  factory CashSessionEntity.fromMap(Map<String, dynamic> map) {
+    return CashSessionEntity(
+      id: (map['id'] ?? '').toString(),
+      status: (map['status'] ?? '').toString(),
+      openedAt:
+          DateTime.tryParse((map['opened_at'] ?? '').toString()) ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      closedAt: map['closed_at'] == null
+          ? null
+          : DateTime.tryParse(map['closed_at'].toString()),
+      openingAmount: _toDouble(map['opening_amount']),
+      expectedAmount: _toDouble(map['expected_amount']),
+      closingAmount: map['closing_amount'] == null
+          ? null
+          : _toDouble(map['closing_amount']),
+      differenceAmount: map['difference_amount'] == null
+          ? null
+          : _toDouble(map['difference_amount']),
+      notes: map['notes']?.toString(),
+    );
+  }
+}
+
+class CashSessionMetrics {
+  CashSessionMetrics({
+    required this.totalPayments,
+    required this.cashPayments,
+    required this.totalExpenses,
+    required this.cashExpenses,
+  });
+
+  final double totalPayments;
+  final double cashPayments;
+  final double totalExpenses;
+  final double cashExpenses;
+
+  double get netPayments => _round2(totalPayments - totalExpenses);
+
+  double expectedCashFromOpening(double openingAmount) {
+    return _round2(openingAmount + cashPayments - cashExpenses);
+  }
+}
+
+class CashRegisterData {
+  CashRegisterData({
+    required this.openSession,
+    required this.openMetrics,
+    required this.recentSessions,
+  });
+
+  final CashSessionEntity? openSession;
+  final CashSessionMetrics? openMetrics;
+  final List<CashSessionEntity> recentSessions;
+}
+
+class OpenCashInput {
+  OpenCashInput({required this.openingAmount, this.notes});
+
+  final double openingAmount;
+  final String? notes;
+}
+
+class CloseCashInput {
+  CloseCashInput({required this.closingAmount, this.notes});
+
+  final double closingAmount;
+  final String? notes;
+}
+
+class CashRegisterRepository {
+  CashRegisterRepository(this._client);
+
+  final SupabaseClient _client;
+
+  Future<CashRegisterData> fetchData() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      return CashRegisterData(
+        openSession: null,
+        openMetrics: null,
+        recentSessions: const [],
+      );
+    }
+
+    final openSession = await _fetchOpenSession(branchId);
+    final recentSessions = await _fetchRecentSessions(branchId);
+
+    CashSessionMetrics? metrics;
+    if (openSession != null) {
+      metrics = await _fetchSessionMetrics(openSession.id, branchId);
+    }
+
+    return CashRegisterData(
+      openSession: openSession,
+      openMetrics: metrics,
+      recentSessions: recentSessions,
+    );
+  }
+
+  Future<void> openSession(OpenCashInput input) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      throw Exception('Sesión inválida. Inicia sesión de nuevo.');
+    }
+
+    final existing = await _fetchOpenSession(branchId);
+    if (existing != null) {
+      throw Exception('Ya existe una sesión de caja abierta.');
+    }
+
+    final openingAmount = _round2(input.openingAmount);
+
+    await _client.from('cash_sessions').insert({
+      'branch_id': branchId,
+      'opened_by': userId,
+      'status': 'open',
+      'opened_at': DateTime.now().toUtc().toIso8601String(),
+      'opening_amount': openingAmount,
+      'expected_amount': openingAmount,
+      'notes': _nullIfEmpty(input.notes),
+    });
+  }
+
+  Future<void> closeSession(CloseCashInput input) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      throw Exception('Sesión inválida. Inicia sesión de nuevo.');
+    }
+
+    final openSession = await _fetchOpenSession(branchId);
+    if (openSession == null) {
+      throw Exception('No hay una sesión de caja abierta.');
+    }
+
+    final metrics = await _fetchSessionMetrics(openSession.id, branchId);
+    final expected = metrics.expectedCashFromOpening(openSession.openingAmount);
+    final closingAmount = _round2(input.closingAmount);
+    final difference = _round2(closingAmount - expected);
+
+    await _client
+        .from('cash_sessions')
+        .update({
+          'status': 'closed',
+          'closed_by': userId,
+          'closed_at': DateTime.now().toUtc().toIso8601String(),
+          'expected_amount': expected,
+          'closing_amount': closingAmount,
+          'difference_amount': difference,
+          'notes': _nullIfEmpty(input.notes) ?? openSession.notes,
+        })
+        .eq('id', openSession.id)
+        .eq('branch_id', branchId);
+  }
+
+  Future<CashSessionEntity?> _fetchOpenSession(String branchId) async {
+    final rows = await _client
+        .from('cash_sessions')
+        .select(
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes',
+        )
+        .eq('branch_id', branchId)
+        .eq('status', 'open')
+        .order('opened_at', ascending: false)
+        .limit(1);
+
+    if (rows.isEmpty) return null;
+    return CashSessionEntity.fromMap(
+      Map<String, dynamic>.from(rows.first as Map),
+    );
+  }
+
+  Future<List<CashSessionEntity>> _fetchRecentSessions(String branchId) async {
+    final rows = await _client
+        .from('cash_sessions')
+        .select(
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes',
+        )
+        .eq('branch_id', branchId)
+        .order('opened_at', ascending: false)
+        .limit(15);
+
+    return rows
+        .map(
+          (item) =>
+              CashSessionEntity.fromMap(Map<String, dynamic>.from(item as Map)),
+        )
+        .toList(growable: false);
+  }
+
+  Future<CashSessionMetrics> _fetchSessionMetrics(
+    String cashSessionId,
+    String branchId,
+  ) async {
+    final payments = await _client
+        .from('payments')
+        .select('amount, payment_method')
+        .eq('branch_id', branchId)
+        .eq('cash_session_id', cashSessionId);
+
+    final expenses = await _client
+        .from('expenses')
+        .select('amount, payment_method')
+        .eq('branch_id', branchId)
+        .eq('cash_session_id', cashSessionId);
+
+    final totalPayments = _round2(
+      payments.fold<double>(
+        0,
+        (sum, item) => sum + _toDouble((item as Map)['amount']),
+      ),
+    );
+
+    final cashPayments = _round2(
+      payments.fold<double>(0, (sum, item) {
+        final row = item as Map;
+        final method = (row['payment_method'] ?? '').toString();
+        if (method != 'cash') return sum;
+        return sum + _toDouble(row['amount']);
+      }),
+    );
+
+    final totalExpenses = _round2(
+      expenses.fold<double>(
+        0,
+        (sum, item) => sum + _toDouble((item as Map)['amount']),
+      ),
+    );
+
+    final cashExpenses = _round2(
+      expenses.fold<double>(0, (sum, item) {
+        final row = item as Map;
+        final method = (row['payment_method'] ?? '').toString();
+        if (method != 'cash') return sum;
+        return sum + _toDouble(row['amount']);
+      }),
+    );
+
+    return CashSessionMetrics(
+      totalPayments: totalPayments,
+      cashPayments: cashPayments,
+      totalExpenses: totalExpenses,
+      cashExpenses: cashExpenses,
+    );
+  }
+
+  Future<String?> currentOpenSessionId() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return null;
+
+    final openSession = await _fetchOpenSession(branchId);
+    return openSession?.id;
+  }
+
+  Future<String?> _currentBranchId() async {
+    final result = await _client.rpc('current_branch_id');
+    if (result == null) return null;
+    final value = result.toString();
+    return value.isEmpty ? null : value;
+  }
+}
+
+String? _nullIfEmpty(String? value) {
+  if (value == null) return null;
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+double _toDouble(dynamic value) {
+  if (value == null) return 0;
+  if (value is double) return value;
+  if (value is int) return value.toDouble();
+  return double.tryParse(value.toString()) ?? 0;
+}
+
+double _round2(double value) => (value * 100).roundToDouble() / 100;

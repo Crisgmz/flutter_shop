@@ -1,0 +1,611 @@
+================================================================================
+SHOP+ RD — DOCUMENTACIÓN COMPLETA DE DISEÑO DEL SISTEMA
+================================================================================
+Fecha: 2026-04-10
+Proyecto: SHOP+ RD (ERP/POS para República Dominicana)
+Stack: React 18 + Vite 5 + TypeScript 5 + Tailwind CSS 3 + shadcn/ui
+
+
+================================================================================
+1) PALETA DE COLORES (HSL — Tokens Semánticos)
+================================================================================
+
+MODO CLARO (Light Mode — :root)
+────────────────────────────────────────
+Token                   HSL Value              Uso
+────────────────────────────────────────
+--background            210 20% 98%            Fondo general de la app
+--foreground            215 25% 15%            Texto principal
+--card                  0 0% 100%              Fondo de cards/tablas
+--card-foreground       215 25% 15%            Texto dentro de cards
+--popover               0 0% 100%              Fondo de popovers/dropdowns
+--popover-foreground    215 25% 15%            Texto en popovers
+--primary               217 91% 50%            Azul principal (botones, links, iconos)
+--primary-foreground    0 0% 100%              Texto sobre primary (blanco)
+--secondary             214 32% 95%            Fondos secundarios
+--secondary-foreground  215 25% 27%            Texto secundario
+--muted                 214 32% 95%            Fondos apagados
+--muted-foreground      215 16% 47%            Texto apagado/placeholders
+--accent                214 32% 91%            Fondos de hover/active
+--accent-foreground     215 25% 15%            Texto en accent
+--destructive           0 84% 60%              Rojo para errores/anular
+--destructive-foreground 0 0% 100%             Texto sobre destructive
+--success               142 71% 45%            Verde para estados exitosos
+--success-foreground    0 0% 100%              Texto sobre success
+--warning               38 92% 50%             Naranja para advertencias
+--warning-foreground    0 0% 100%              Texto sobre warning
+--info                  199 89% 48%            Azul claro informativo
+--info-foreground       0 0% 100%              Texto sobre info
+--border                214 32% 91%            Bordes de inputs/cards/tablas
+--input                 214 32% 91%            Bordes de inputs
+--ring                  217 91% 50%            Anillo de focus (azul primary)
+--radius                0.625rem               Border-radius base (10px)
+
+SIDEBAR (siempre oscuro — azul profundo)
+────────────────────────────────────────
+--sidebar-background     217 91% 22%           Fondo sidebar (azul oscuro)
+--sidebar-foreground     214 32% 91%           Texto sidebar (gris claro)
+--sidebar-primary        0 0% 100%             Logo/marca (blanco)
+--sidebar-primary-fg     217 91% 22%           Texto sobre sidebar-primary
+--sidebar-accent         217 91% 30%           Item activo/hover
+--sidebar-accent-fg      0 0% 100%             Texto item activo
+--sidebar-border         217 80% 30%           Bordes internos
+--sidebar-ring           217 91% 60%           Focus ring sidebar
+--sidebar-muted          217 60% 40%           Texto secundario sidebar
+
+MODO OSCURO (Dark Mode — .dark)
+────────────────────────────────────────
+--background            217 33% 8%
+--foreground            214 32% 91%
+--card                  217 33% 12%
+--primary               217 91% 55%
+--secondary             217 33% 17%
+--muted                 217 33% 17%
+--muted-foreground      215 20% 65%
+--accent                217 33% 20%
+--destructive           0 62% 30%
+--border                217 33% 20%
+--sidebar-background    217 33% 6%
+--sidebar-primary       217 91% 55%
+--sidebar-accent        217 33% 15%
+
+COLORES EN GRÁFICOS (Recharts)
+────────────────────────────────────────
+Barra Ventas:    hsl(217, 91%, 50%)  — azul primary
+Barra Gastos:    hsl(217, 91%, 80%)  — azul claro
+CartesianGrid:   clase "stroke-border" (token --border)
+
+
+================================================================================
+2) TIPOGRAFÍA
+================================================================================
+
+Fuente principal:  Inter (Google Fonts)
+Pesos cargados:    300 (Light), 400 (Regular), 500 (Medium), 600 (Semibold), 700 (Bold)
+Fallback:          system-ui, sans-serif
+Antialiasing:      antialiased (subpixel rendering)
+
+Escalas de texto usadas:
+────────────────────────────────────────
+Elemento                     Clase Tailwind          Peso
+────────────────────────────────────────
+Títulos de página (H1)       text-2xl                font-bold tracking-tight
+Títulos de card              text-base               font-semibold
+KPI valor                    text-2xl                font-bold tracking-tight
+KPI label                    text-sm                 font-medium text-muted-foreground
+KPI trend                    text-xs                 font-medium
+Texto de tabla               text-sm (default)       font-medium (col clave)
+SKU/RNC en tabla             text-xs                 font-mono
+Badges                       text-xs                 font-medium
+Botones                      text-sm                 font-medium
+Descripciones                text-sm                 text-muted-foreground
+Producto POS (nombre)        text-xs                 font-medium line-clamp-2
+Producto POS (precio)        text-sm                 font-bold text-primary
+Sidebar items                (default)               normal / font-medium (activo)
+Logo sidebar                 text-lg                 font-bold text-sidebar-primary
+
+
+================================================================================
+3) LAYOUT GENERAL
+================================================================================
+
+Estructura principal (MainLayout):
+┌──────────────────────────────────────────────────────┐
+│ SidebarProvider                                       │
+│ ┌──────────┬─────────────────────────────────────┐   │
+│ │          │  Topbar (h-14, border-b, bg-card)   │   │
+│ │ Sidebar  ├─────────────────────────────────────┤   │
+│ │ (left)   │  <main> content area                │   │
+│ │          │  p-4 md:p-6, space-y-6              │   │
+│ │          │  flex-1, overflow-auto               │   │
+│ └──────────┴─────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────┘
+
+- Layout root: min-h-screen flex w-full
+- Sidebar: collapsible="icon" (se colapsa a solo iconos)
+- Content area: flex-1 flex flex-col min-w-0
+- Main padding: p-4 (mobile) → p-6 (md+)
+- Spacing entre secciones: space-y-6
+
+Topbar:
+- Altura fija: h-14 (3.5rem = var(--topbar-height))
+- Contenido: SidebarTrigger (izq) | Selector sucursal + Notificaciones (der)
+- Selector sucursal: Button variant="outline" size="sm" con DropdownMenu
+- Notificación: Button variant="ghost" size="icon" con punto rojo (bg-destructive)
+
+
+================================================================================
+4) SIDEBAR — NAVEGACIÓN LATERAL
+================================================================================
+
+Estructura:
+┌─────────────────────────┐
+│ 🛒 SHOP+ RD             │  ← h-14, borde inferior, icono ShoppingCart
+│─────────────────────────│
+│ ▸ Panel                  │  ← /
+│ ▸ Ventas (POS)           │  ← /ventas
+│ ▸ Cobros                 │  ← /cobros
+│ ▸ Inventario             │  ← /inventario
+│ ▸ Compras                │  ← /compras
+│ ▸ Clientes               │  ← /clientes
+│ ▸ Proveedores            │  ← /proveedores
+│ ▸ Gastos                 │  ← /gastos
+│ ▸ Cierre de Caja         │  ← /cierre-caja
+│ ▸ Reportes               │  ← /reportes
+│ ▸ Impuestos              │  ← /impuestos
+│ ▸ Sucursales             │  ← /sucursales
+│ ▸ Usuarios               │  ← /usuarios
+│ ▸ Configuración          │  ← /configuracion
+│─────────────────────────│
+│ ⬅ Salir                  │  ← Footer, borde superior
+└─────────────────────────┘
+
+Íconos (lucide-react):
+  Panel=LayoutDashboard, Ventas=ShoppingCart, Cobros=Receipt,
+  Inventario=Package, Compras=ShoppingBag, Clientes=Users,
+  Proveedores=Truck, Gastos=Wallet, CierreCaja=Archive,
+  Reportes=BarChart3, Impuestos=FileText, Sucursales=Building2,
+  Usuarios=UserCog, Configuración=Settings, Salir=LogOut
+
+Comportamiento:
+- Estado colapsado: solo iconos + tooltip con nombre
+- Estado expandido: icono + texto
+- Item activo: bg-sidebar-accent text-sidebar-accent-foreground font-medium
+- Hover: bg-sidebar-accent/60
+- Scrollbar: scrollbar-thin personalizado
+- Icono tamaño: h-4 w-4 shrink-0
+
+
+================================================================================
+5) COMPONENTES REUTILIZABLES
+================================================================================
+
+5.1 KPICard
+────────────────────────────────────────
+┌──────────────────────────────┐
+│ [label]              [icon]  │
+│ [valor grande]               │
+│ [+X% vs texto]               │
+└──────────────────────────────┘
+- Container: Card con animate-fade-in
+- Padding: p-5
+- Layout: flex items-start justify-between
+- Icono: rounded-lg bg-primary/10 p-2.5, icono h-5 w-5 text-primary
+- Valor: text-2xl font-bold tracking-tight
+- Label: text-sm font-medium text-muted-foreground
+- Trend positivo: text-success | Trend negativo: text-destructive
+- Grid típico: grid gap-4 sm:grid-cols-2 lg:grid-cols-4
+
+5.2 StatusBadge
+────────────────────────────────────────
+Mapeo de estados:
+  active    → bg-success/15 text-success border-success/20     "Activo"
+  inactive  → bg-muted text-muted-foreground border-muted       "Inactivo"
+  pending   → bg-warning/15 text-warning border-warning/20      "Pendiente"
+  paid      → bg-success/15 text-success border-success/20      "Pagado"
+  cancelled → bg-destructive/15 text-destructive border-dest/20 "Anulado"
+  credit    → bg-info/15 text-info border-info/20               "Crédito"
+  open      → bg-success/15 text-success border-success/20      "Abierta"
+  closed    → bg-muted text-muted-foreground border-muted       "Cerrada"
+  low       → bg-destructive/15 text-destructive border-dest/20 "Bajo Stock"
+- Implementación: Badge variant="outline" + classes del mapeo
+- Tamaño: text-xs font-medium
+
+5.3 PageHeader
+────────────────────────────────────────
+┌────────────────────────────────────────────────────┐
+│ [Título h1]                    [Botones acción]    │
+│ [Descripción]                                      │
+└────────────────────────────────────────────────────┘
+- Layout: flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between
+- Título: text-2xl font-bold tracking-tight
+- Descripción: text-sm text-muted-foreground mt-1
+- Acciones: flex items-center gap-2 flex-wrap
+
+5.4 DataTableShell
+────────────────────────────────────────
+- Wrapper: Card con animate-fade-in
+- Interior: CardContent p-0 → overflow-x-auto scrollbar-thin
+- Contiene las tablas de datos del sistema
+
+5.5 QuickCreateDialog
+────────────────────────────────────────
+- Componente modal reutilizable para crear entidades
+- Ancho: sm:max-w-lg
+- Layout formulario: grid gap-4 sm:grid-cols-2
+- Soporta tipos: text, number, email, tel, select, textarea
+- Campos con Label + Input/Select
+- Footer: Cancelar (outline) + Guardar (primary)
+- Se limpia al cerrar (reset formData)
+
+
+================================================================================
+6) DISEÑO POR PÁGINA
+================================================================================
+
+────────────────────────────────────────
+6.1  PANEL (Dashboard) — Ruta: /
+────────────────────────────────────────
+Layout:
+  1. PageHeader: "Panel de Control" / "Resumen general de tu negocio"
+  2. Grid KPIs: 4 cards (sm:grid-cols-2 lg:grid-cols-4)
+     - Ventas Hoy (DollarSign) con trend
+     - Transacciones (ShoppingCart) con trend
+     - Ingresos Mes (TrendingUp) con trend
+     - Clientes Activos (Users) con trend
+  3. Gráfico Ventas vs Gastos (Card con BarChart recharts)
+     - Altura: h-72
+     - ResponsiveContainer 100% x 100%
+     - 2 barras: ventas (azul primary) y gastos (azul claro)
+     - Ejes: X=month, Y=formateado en "Xk"
+     - Tooltip con formatRD
+     - Bordes redondeados arriba: radius={[4,4,0,0]}
+  4. Tabla "Últimas Ventas" (DataTableShell)
+     - Columnas: ID, Fecha, Cliente, Total (align-right), Estado, Acciones
+     - Acciones por fila: Ver (Eye), Imprimir (Printer), Anular (XCircle)
+     - Botones ghost size="icon" h-8 w-8, iconos h-3.5 w-3.5
+
+────────────────────────────────────────
+6.2  VENTAS / POS — Ruta: /ventas
+────────────────────────────────────────
+Layout: grid gap-4 lg:grid-cols-3
+  Panel izquierdo (lg:col-span-2):
+    - Barra búsqueda: Input con icono Search (pl-9) + Btn Escáner + Btn Agregar
+    - Grid productos: grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4
+    - Card producto:
+      - Hover: hover:border-primary/50 transition-colors
+      - Contenido: avatar letra (bg-primary/10, text-primary), nombre, precio
+      - Badge "Bajo stock" si stock <= minStock (variant="destructive", text-[10px])
+
+  Panel derecho (Carrito):
+    - Card con animate-fade-in, p-4
+    - Header: "Carrito (N)" + Select comprobante (w-40 h-8 text-xs)
+    - Opciones comprobante: Consumidor Final, Crédito Fiscal, Gubernamental
+    - ScrollArea max-h-80 para items
+    - Cada item: flex bg-muted/50 rounded-md p-2
+      - Nombre truncate, precio
+      - Botones: -/+/🗑️ (h-6 w-6, iconos h-3 w-3)
+    - Totales: Subtotal, ITBIS 18%, Total (text-lg font-bold text-primary)
+    - Acciones: grid grid-cols-2
+      - Cobrar (col-span-2, CreditCard)
+      - Crédito (outline, Clock)
+      - Cancelar (outline, XCircle)
+
+────────────────────────────────────────
+6.3  COBROS — Ruta: /cobros
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Registrar Pago"
+  2. Grid KPIs: 3 cards (sm:grid-cols-3)
+     - Total Por Cobrar (Clock)
+     - Cobrado Este Mes (CheckCircle)
+     - Facturas Pendientes (DollarSign)
+  3. Tabs: "Cuentas por Cobrar" / "Pagos Recibidos"
+     Tab 1: Tabla (ID, Cliente, Total, Estado, Acciones→Abonar)
+     Tab 2: Tabla (ID, Cliente, Fecha, Total, Estado)
+  4. QuickCreateDialog "Registrar Pago" (factura, monto, método)
+
+────────────────────────────────────────
+6.4  INVENTARIO — Ruta: /inventario
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Exportar (outline, Download) + Nuevo Producto (primary, Plus)
+  2. Barra filtros: flex flex-col sm:flex-row gap-3
+     - Input búsqueda (pl-9, Search icon) flex-1
+     - Switch "Bajo stock" con Label + icono AlertTriangle
+  3. DataTableShell con tabla
+     - Columnas: SKU (font-mono text-xs), Producto, Categoría, Precio, Costo, Stock, Estado
+     - Estado: StatusBadge "low" si stock <= minStock, "active" si no
+     - Estado vacío: "No se encontraron productos" (text-center py-8)
+  4. QuickCreateDialog "Nuevo Producto"
+     - Campos: Nombre*, SKU*, Categoría (select), Precio*, Costo, Stock, Stock Mínimo
+
+────────────────────────────────────────
+6.5  COMPRAS — Ruta: /compras
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Nueva Compra"
+  2. DataTableShell: ID, Fecha, Proveedor, Artículos (right), Total (right), Estado
+  3. QuickCreateDialog: Proveedor (select), Cant. Artículos, Total*
+
+────────────────────────────────────────
+6.6  CLIENTES — Ruta: /clientes
+────────────────────────────────────────
+Layout:
+  1. PageHeader con contador + Botón "Nuevo Cliente"
+  2. Input búsqueda (max-w-md) por nombre o RNC
+  3. DataTableShell: Nombre, RNC/Cédula (font-mono text-xs), Teléfono, Email, Balance (right), Estado
+  4. QuickCreateDialog: Nombre*, RNC/Cédula*, Teléfono, Email
+  5. Validación: duplicado de RNC/Cédula
+
+────────────────────────────────────────
+6.7  PROVEEDORES — Ruta: /proveedores
+────────────────────────────────────────
+Layout: idéntico a Clientes
+  1. PageHeader con contador + Botón "Nuevo Proveedor"
+  2. Input búsqueda (max-w-md) por nombre o RNC
+  3. DataTableShell: Nombre, RNC, Teléfono, Email, Balance (right), Estado
+  4. QuickCreateDialog: Nombre*, RNC*, Teléfono, Email
+  5. Validación: duplicado de RNC
+
+────────────────────────────────────────
+6.8  GASTOS — Ruta: /gastos
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Nuevo Gasto"
+  2. DataTableShell: ID, Fecha, Descripción, Categoría, Monto (right), Estado
+  3. QuickCreateDialog: Descripción*, Categoría (select: Servicios/Insumos/Mantenimiento/Nómina/Otros), Monto*
+
+────────────────────────────────────────
+6.9  CIERRE DE CAJA — Ruta: /cierre-caja
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Cerrar Caja" (variant="destructive") si hay caja abierta
+  2. KPIs condicionales (si caja abierta): 3 cards (sm:grid-cols-3)
+     - Apertura, Ventas del Día, Balance Esperado
+  3. DataTableShell: ID, Fecha, Abierto por, Apertura, Ventas, Gastos, Cierre, Estado
+
+────────────────────────────────────────
+6.10 REPORTES — Ruta: /reportes
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Toggle Filtros (outline, Filter) + Exportar CSV (Download)
+  2. Card filtros (condicional, animate-fade-in): grid gap-4 sm:grid-cols-3
+     - Input Desde (date), Input Hasta (date), Botón Aplicar (w-full)
+  3. Card gráfico "Ventas por Mes"
+     - BarChart recharts, h-80
+     - Solo barra "ventas" (azul primary)
+
+────────────────────────────────────────
+6.11 IMPUESTOS — Ruta: /impuestos
+────────────────────────────────────────
+Layout: grid gap-4 sm:grid-cols-2
+  Cada card (606 y 607):
+    - Header: icono FileText (text-primary) + título + descripción
+    - Contenido: 2 botones apilados (space-y-3)
+      - Exportar (outline, w-full, Download) → descarga CSV
+      - Generar Formato (primary, w-full) → toast info
+
+────────────────────────────────────────
+6.12 SUCURSALES — Ruta: /sucursales
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Nueva Sucursal"
+  2. DataTableShell: Nombre, Dirección, Teléfono, Estado
+  3. QuickCreateDialog: Nombre*, Dirección*, Teléfono
+
+────────────────────────────────────────
+6.13 USUARIOS — Ruta: /usuarios
+────────────────────────────────────────
+Layout:
+  1. PageHeader + Botón "Nuevo Usuario"
+  2. DataTableShell: Nombre, Email, Rol (Badge variant="secondary"), Estado
+  3. Roles: Administrador, Cajero, Supervisor, Contador
+  4. QuickCreateDialog: Nombre*, Email*, Rol (select)
+  5. Validación: duplicado de email
+
+────────────────────────────────────────
+6.14 CONFIGURACIÓN — Ruta: /configuracion
+────────────────────────────────────────
+Layout: grid gap-4 sm:grid-cols-2 lg:grid-cols-3
+  Cada sección es una Card clickeable:
+    - Hover: hover:border-primary/50 transition-colors
+    - Header: icono (bg-primary/10 p-2.5, h-5 w-5 text-primary) + título (text-sm)
+    - Contenido: descripción (text-xs text-muted-foreground)
+  Secciones:
+    1. Datos de Empresa (Building2)
+    2. Impresión (Printer)
+    3. Métodos de Pago (CreditCard)
+    4. Moneda y Región (Globe)
+    5. Seguridad (Shield)
+    6. Notificaciones (Bell)
+
+
+================================================================================
+7) RESPONSIVE DESIGN
+================================================================================
+
+Breakpoints Tailwind (default):
+  sm: 640px    md: 768px    lg: 1024px    xl: 1280px    2xl: 1400px (container)
+
+Patrones responsive por componente:
+────────────────────────────────────────
+Componente               Mobile (<640)           Tablet (640-1024)       Desktop (1024+)
+────────────────────────────────────────
+KPI Grid                 1 columna               2 columnas              4 columnas
+PageHeader               Stack vertical           Horizontal (row)        Horizontal
+POS Grid productos       2 columnas              3 columnas              4 columnas
+POS Layout               Stack (carrito abajo)    Stack                   3 cols (2+1)
+Cobros KPIs              1 columna               3 columnas              3 columnas
+Impuestos cards          1 columna               2 columnas              2 columnas
+Configuración cards      1 columna               2 columnas              3 columnas
+Main padding             p-4                     p-6                     p-6
+Búsqueda + filtros       Stack vertical          Horizontal              Horizontal
+QuickCreateDialog        1 columna               2 columnas              2 columnas
+Reportes filtros         1 columna               3 columnas              3 columnas
+────────────────────────────────────────
+
+Tablas:
+  - Todas envueltas en overflow-x-auto scrollbar-thin
+  - Scroll horizontal en pantallas pequeñas
+  - Ancho mínimo implícito por contenido de columnas
+
+Sidebar:
+  - Desktop: visible, colapsable a iconos
+  - Mobile: oculta, se muestra con SidebarTrigger (hamburger)
+
+
+================================================================================
+8) ANIMACIONES Y TRANSICIONES
+================================================================================
+
+Keyframes definidos:
+  fade-in:       opacity 0→1, translateY 8px→0, 0.3s ease-out
+  slide-in-left: translateX -100%→0, 0.3s ease-out
+  accordion-down: height 0→auto, 0.2s ease-out
+  accordion-up:   height auto→0, 0.2s ease-out
+
+Uso:
+  - KPICard, DataTableShell, Cards: clase "animate-fade-in"
+  - Sidebar: "slide-in-left" (implícito por shadcn)
+  - Hover en cards: "transition-colors" (150ms default Tailwind)
+  - Hover border: "hover:border-primary/50"
+  - Cursor: "cursor-pointer" en cards clickeables
+
+
+================================================================================
+9) ICONOGRAFÍA
+================================================================================
+
+Librería: lucide-react
+Tamaños estándar:
+  - Sidebar: h-4 w-4
+  - Topbar: h-5 w-5
+  - KPI cards: h-5 w-5
+  - Botones inline: h-4 w-4
+  - Acciones tabla: h-3.5 w-3.5
+  - Carrito POS +/-: h-3 w-3
+
+Iconos por módulo:
+  LayoutDashboard, ShoppingCart, Receipt, Package, ShoppingBag,
+  Users, Truck, BarChart3, Wallet, Archive, FileText, Building2,
+  UserCog, Settings, LogOut, Bell, ChevronDown, Menu,
+  Search, ScanLine, Plus, Minus, Trash2, CreditCard, Clock,
+  XCircle, Eye, Printer, Download, Filter, AlertTriangle,
+  DollarSign, TrendingUp, CheckCircle, Globe, Shield
+
+
+================================================================================
+10) GRÁFICOS (Recharts)
+================================================================================
+
+Librería: recharts v2.15+
+Componentes usados: BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+                    ResponsiveContainer, Legend
+
+Dashboard — "Ventas vs Gastos":
+  - Container: ResponsiveContainer 100% x h-72
+  - CartesianGrid strokeDasharray="3 3" clase stroke-border
+  - 2 barras con radius=[4,4,0,0] (esquinas superiores redondeadas)
+  - Bar ventas: fill="hsl(217, 91%, 50%)" — azul primary
+  - Bar gastos: fill="hsl(217, 91%, 80%)" — azul claro
+  - Tooltip: formateador formatRD (moneda dominicana)
+  - YAxis: tickFormatter con formato "Xk"
+
+Reportes — "Ventas por Mes":
+  - Container: ResponsiveContainer 100% x h-80
+  - Solo 1 barra (ventas), mismo estilo que Dashboard
+
+Datos mock (salesByMonth): Sep-Mar, con ventas y gastos
+
+
+================================================================================
+11) FORMULARIOS Y VALIDACIONES
+================================================================================
+
+Patrón general:
+  - QuickCreateDialog reutilizable
+  - Campos obligatorios: atributo HTML required
+  - Grid: gap-4 sm:grid-cols-2
+  - Labels: componente Label de shadcn
+  - Inputs: componente Input de shadcn (tipos: text, number, email, tel)
+  - Selects: componente Select de shadcn
+
+Validaciones por módulo:
+  - Clientes: RNC/Cédula no duplicado
+  - Proveedores: RNC no duplicado
+  - Usuarios: Email no duplicado
+  - POS: Carrito no vacío para cobrar/crédito
+
+Feedback:
+  - Éxito: toast.success (sonner)
+  - Error: toast.error
+  - Info: toast.info
+
+
+================================================================================
+12) FORMATO DE MONEDA
+================================================================================
+
+Función: formatRD(amount: number) → string
+Formato: "RD$ X,XXX.XX"
+Locale: "es-DO"
+Decimales mínimos: 2
+Uso: En todas las tablas, KPIs, carrito POS, tooltips de gráficos
+
+
+================================================================================
+13) NOTIFICACIONES (Toast)
+================================================================================
+
+Librería: sonner (Sonner)
+Tipos: success (verde), error (rojo), info (azul)
+Posición: default de sonner (esquina inferior derecha)
+Renderizado: componente <Sonner /> en App.tsx root
+
+
+================================================================================
+14) SCROLLBAR PERSONALIZADO
+================================================================================
+
+Clase: scrollbar-thin
+  - Firefox: scrollbar-width: thin
+  - WebKit: ::-webkit-scrollbar width/height: 6px
+  - Thumb: bg-muted-foreground/20 rounded-full
+Uso: Sidebar (SidebarContent) + DataTableShell (overflow-x-auto)
+
+
+================================================================================
+15) ESTRUCTURA DE ARCHIVOS DE DISEÑO
+================================================================================
+
+src/index.css               → Variables CSS (tokens de color, scrollbar)
+tailwind.config.ts          → Extensiones Tailwind (colores, fuentes, animaciones)
+src/components/ui/          → Componentes shadcn/ui base (40+ archivos)
+src/components/ui-custom.tsx → Componentes de negocio (KPICard, StatusBadge, etc.)
+src/components/AppSidebar.tsx → Navegación lateral
+src/components/Topbar.tsx    → Barra superior
+src/components/MainLayout.tsx → Layout wrapper
+src/components/QuickCreateDialog.tsx → Modal formulario reutilizable
+
+
+================================================================================
+16) DEPENDENCIAS DE UI
+================================================================================
+
+- tailwindcss v3.4+
+- tailwindcss-animate v1.0+
+- class-variance-authority (cva) — variantes de componentes
+- clsx + tailwind-merge — utilidad de clases
+- @radix-ui/* — primitivos de UI (dialog, dropdown, tabs, etc.)
+- lucide-react — iconos
+- recharts — gráficos
+- sonner — toasts/notificaciones
+- embla-carousel-react — carousels (disponible)
+- react-day-picker — calendarios (disponible)
+- vaul — drawer móvil (disponible)
+
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================
