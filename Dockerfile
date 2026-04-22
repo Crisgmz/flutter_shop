@@ -7,12 +7,14 @@ WORKDIR /app
 COPY pubspec.yaml pubspec.lock ./
 RUN flutter pub get
 
+# Build args — override in Coolify "Build Variables" for production
+ARG SUPABASE_URL=https://dybodnxsvzwkzauofkza.supabase.co
+ARG SUPABASE_PUBLISHABLE_KEY=sb_publishable_ZFqbCM83-7iI0uuSHUTKKQ_ithcc-XB
+
 # Copy source and compile
 COPY . .
 
-# Load .env and inject as dart-defines at compile time
-RUN set -a && . ./.env && set +a && \
-    flutter build web --release \
+RUN flutter build web --release \
       --dart-define=SUPABASE_URL=${SUPABASE_URL} \
       --dart-define=SUPABASE_PUBLISHABLE_KEY=${SUPABASE_PUBLISHABLE_KEY}
 
