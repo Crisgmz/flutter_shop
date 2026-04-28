@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,6 +9,8 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../data/file_io_helper.dart';
+import '../data/inventory_excel_service.dart';
 import '../data/inventory_repository.dart';
 import 'inventory_providers.dart';
 
@@ -44,6 +48,8 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
+        const SizedBox(width: AppTokens.s8),
+        _buildExcelMenu(),
         const SizedBox(width: AppTokens.s8),
         FilledButton.icon(
           onPressed: _onCreateProduct,
@@ -352,6 +358,217 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       );
       return null;
     }
+  }
+
+  Widget _buildExcelMenu() {
+    return PopupMenuButton<String>(
+      tooltip: 'Excel',
+      position: PopupMenuPosition.under,
+      onSelected: (value) {
+        switch (value) {
+          case 'template':
+            _onDownloadTemplate();
+            break;
+          case 'export':
+            _onExportInventory();
+            break;
+          case 'import':
+            _onImportInventory();
+            break;
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'template',
+          child: ListTile(
+            leading: Icon(Icons.description_outlined),
+            title: Text('Descargar plantilla'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export',
+          child: ListTile(
+            leading: Icon(Icons.file_download_outlined),
+            title: Text('Exportar inventario'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        PopupMenuItem(
+          value: 'import',
+          child: ListTile(
+            leading: Icon(Icons.file_upload_outlined),
+            title: Text('Importar inventario'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+      child: OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.table_chart_outlined, size: 18),
+        label: const Text('Excel'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTokens.foreground,
+          disabledForegroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onDownloadTemplate() async {
+    final categories = await _readCategoriesOrShowError();
+    if (categories == null || !mounted) return;
+
+    try {
+      final bytes = InventoryExcelService().buildTemplate(
+        categories: categories,
+      );
+      final fileName =
+          'plantilla_inventario_${_timestamp()}.xlsx';
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: fileName,
+        dialogTitle: 'Guardar plantilla de inventario',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Plantilla generada')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar la plantilla: $error')),
+      );
+    }
+  }
+
+  Future<void> _onExportInventory() async {
+    final categories = await _readCategoriesOrShowError();
+    if (categories == null || !mounted) return;
+
+    final List<InventoryProduct> products;
+    try {
+      products = await ref.read(inventoryProductsProvider.future);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar productos: $error')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    if (products.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No hay productos para exportar.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final bytes = InventoryExcelService().buildExport(
+        products: products,
+        categories: categories,
+      );
+      final fileName = 'inventario_${_timestamp()}.xlsx';
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: fileName,
+        dialogTitle: 'Guardar inventario',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Inventario exportado (${products.length} productos)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar: $error')),
+      );
+    }
+  }
+
+  Future<void> _onImportInventory() async {
+    final categories = await _readCategoriesOrShowError();
+    if (categories == null || !mounted) return;
+
+    final Uint8List? bytes;
+    try {
+      bytes = await FileIoHelper.pickXlsxBytes();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo abrir el archivo: $error')),
+      );
+      return;
+    }
+    if (bytes == null || !mounted) return;
+
+    final InventoryImportParseResult parsed;
+    try {
+      parsed = InventoryExcelService().parseImport(
+        bytes: bytes,
+        categories: categories,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Archivo inválido: $error')),
+      );
+      return;
+    }
+
+    if (parsed.totalRows == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('El archivo no contiene filas con datos.'),
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _ImportPreviewDialog(parseResult: parsed),
+    );
+    if (confirmed != true || !mounted) return;
+    if (parsed.inputs.isEmpty) return;
+
+    final repository = ref.read(inventoryRepositoryProvider);
+    final InventoryBulkUpsertResult result;
+    try {
+      result = await repository.bulkUpsertProducts(parsed.inputs);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error durante la importación: $error')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    ref.invalidate(inventoryProductsProvider);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ImportResultDialog(
+        result: result,
+        parseErrors: parsed.errors,
+      ),
+    );
+  }
+
+  String _timestamp() {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
   }
 }
 
@@ -853,5 +1070,177 @@ class _CategoryColorDot extends StatelessWidget {
       radix: 16,
     );
     return value == null ? null : Color(value);
+  }
+}
+
+class _ImportPreviewDialog extends StatelessWidget {
+  const _ImportPreviewDialog({required this.parseResult});
+
+  final InventoryImportParseResult parseResult;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasValid = parseResult.inputs.isNotEmpty;
+    final hasErrors = parseResult.errors.isNotEmpty;
+
+    return AlertDialog(
+      title: const Text('Vista previa de importación'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Filas leídas: ${parseResult.totalRows}\n'
+              'Filas válidas: ${parseResult.inputs.length}\n'
+              'Filas con error: ${parseResult.errors.length}',
+            ),
+            const SizedBox(height: AppTokens.s12),
+            if (hasErrors) ...[
+              const Text(
+                'Errores detectados:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: AppTokens.s8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: parseResult.errors
+                        .map(
+                          (e) => Padding(
+                            padding: const EdgeInsets.only(
+                              bottom: AppTokens.s4,
+                            ),
+                            child: Text(
+                              'Fila ${e.rowNumber}: ${e.message}',
+                              style: const TextStyle(
+                                color: AppTokens.error,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: AppTokens.s12),
+            ],
+            if (hasValid)
+              const Text(
+                'Las filas válidas se importarán. Las filas con error se ignorarán.',
+                style: TextStyle(color: AppTokens.mutedForeground),
+              )
+            else
+              const Text(
+                'No hay filas válidas para importar.',
+                style: TextStyle(color: AppTokens.error),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: hasValid
+              ? () => Navigator.of(context).pop(true)
+              : null,
+          child: Text(
+            hasValid ? 'Importar ${parseResult.inputs.length}' : 'Importar',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImportResultDialog extends StatelessWidget {
+  const _ImportResultDialog({
+    required this.result,
+    required this.parseErrors,
+  });
+
+  final InventoryBulkUpsertResult result;
+  final List<InventoryImportRowError> parseErrors;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasDbErrors = result.errors.isNotEmpty;
+    final hasParseErrors = parseErrors.isNotEmpty;
+
+    return AlertDialog(
+      title: const Text('Importación completada'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Productos creados: ${result.inserted}\n'
+              'Productos actualizados: ${result.updated}',
+            ),
+            if (hasDbErrors || hasParseErrors) ...[
+              const SizedBox(height: AppTokens.s12),
+              const Text(
+                'Errores:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: AppTokens.s8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ...parseErrors.map(
+                        (e) => Padding(
+                          padding: const EdgeInsets.only(
+                            bottom: AppTokens.s4,
+                          ),
+                          child: Text(
+                            'Fila ${e.rowNumber}: ${e.message}',
+                            style: const TextStyle(
+                              color: AppTokens.error,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                      ...result.errors.map(
+                        (e) => Padding(
+                          padding: const EdgeInsets.only(
+                            bottom: AppTokens.s4,
+                          ),
+                          child: Text(
+                            '${e.productName}: ${e.message}',
+                            style: const TextStyle(
+                              color: AppTokens.error,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ],
+    );
   }
 }

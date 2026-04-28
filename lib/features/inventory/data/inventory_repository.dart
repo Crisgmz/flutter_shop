@@ -202,6 +202,33 @@ class InventoryProductInput {
   final double? priceTier3;
 }
 
+class InventoryBulkUpsertError {
+  InventoryBulkUpsertError({
+    required this.inputIndex,
+    required this.productName,
+    required this.message,
+  });
+
+  final int inputIndex;
+  final String productName;
+  final String message;
+}
+
+class InventoryBulkUpsertResult {
+  InventoryBulkUpsertResult({
+    required this.inserted,
+    required this.updated,
+    required this.errors,
+  });
+
+  final int inserted;
+  final int updated;
+  final List<InventoryBulkUpsertError> errors;
+
+  int get total => inserted + updated;
+  bool get hasErrors => errors.isNotEmpty;
+}
+
 class InventoryRepository {
   InventoryRepository(this._client);
 
@@ -266,8 +293,94 @@ class InventoryRepository {
       throw Exception('No hay sucursal asignada para este usuario.');
     }
 
+    final payload = _buildProductPayload(input);
+
+    if (input.id == null) {
+      payload['branch_id'] = branchId;
+      await _client.from('products').insert(payload);
+      return;
+    }
+
+    await _client
+        .from('products')
+        .update(payload)
+        .eq('id', input.id!)
+        .eq('branch_id', branchId);
+  }
+
+  Future<InventoryBulkUpsertResult> bulkUpsertProducts(
+    List<InventoryProductInput> inputs,
+  ) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    final skus = <String>{};
+    for (final input in inputs) {
+      final sku = input.sku?.trim();
+      if (sku != null && sku.isNotEmpty) skus.add(sku);
+    }
+
+    final existingBySku = <String, String>{};
+    if (skus.isNotEmpty) {
+      final rows = await _client
+          .from('products')
+          .select('id, sku')
+          .eq('branch_id', branchId)
+          .inFilter('sku', skus.toList(growable: false));
+      for (final row in rows) {
+        final sku = row['sku']?.toString();
+        final id = row['id']?.toString();
+        if (sku != null && id != null) existingBySku[sku] = id;
+      }
+    }
+
+    var inserted = 0;
+    var updated = 0;
+    final errors = <InventoryBulkUpsertError>[];
+
+    for (var i = 0; i < inputs.length; i++) {
+      final input = inputs[i];
+      try {
+        final sku = input.sku?.trim();
+        final existingId = (sku != null && sku.isNotEmpty)
+            ? existingBySku[sku]
+            : null;
+        final payload = _buildProductPayload(input);
+        if (existingId == null) {
+          payload['branch_id'] = branchId;
+          await _client.from('products').insert(payload);
+          inserted++;
+        } else {
+          await _client
+              .from('products')
+              .update(payload)
+              .eq('id', existingId)
+              .eq('branch_id', branchId);
+          updated++;
+        }
+      } catch (error) {
+        errors.add(
+          InventoryBulkUpsertError(
+            inputIndex: i,
+            productName: input.name,
+            message: error.toString(),
+          ),
+        );
+      }
+    }
+
+    return InventoryBulkUpsertResult(
+      inserted: inserted,
+      updated: updated,
+      errors: errors,
+    );
+  }
+
+  Map<String, dynamic> _buildProductPayload(InventoryProductInput input) {
     final unitValue = input.unit.trim().isEmpty ? 'unidad' : input.unit.trim();
-    final payload = <String, dynamic>{
+    return <String, dynamic>{
       'name': input.name.trim(),
       'sku': _nullIfEmpty(input.sku),
       'barcode': _nullIfEmpty(input.barcode),
@@ -298,18 +411,6 @@ class InventoryRepository {
       'price_tier_2': input.priceTier2,
       'price_tier_3': input.priceTier3,
     };
-
-    if (input.id == null) {
-      payload['branch_id'] = branchId;
-      await _client.from('products').insert(payload);
-      return;
-    }
-
-    await _client
-        .from('products')
-        .update(payload)
-        .eq('id', input.id!)
-        .eq('branch_id', branchId);
   }
 
   Future<void> setProductActive({
