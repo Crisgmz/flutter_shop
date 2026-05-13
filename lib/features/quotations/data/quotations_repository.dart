@@ -104,8 +104,24 @@ class QuotationsRepository implements QuotationsRepositoryContract {
         .toList(growable: false);
   }
 
+  /// Marca como `expired` las cotizaciones cuyo `valid_until` ya pasó. Es
+  /// idempotente — invocar antes de listar para que la UI nunca muestre
+  /// cotizaciones activas que ya vencieron.
+  Future<int> expireOverdue() async {
+    try {
+      final result = await _client.rpc('expire_overdue_quotations');
+      if (result is int) return result;
+      return int.tryParse(result?.toString() ?? '0') ?? 0;
+    } catch (_) {
+      // El RPC puede no existir (proyectos viejos); fallar suavemente.
+      return 0;
+    }
+  }
+
   @override
   Future<QuoteFoundationBundle> loadFoundation() async {
+    // Auto-expirar antes de listar para que el dashboard refleje el estado real.
+    await expireOverdue();
     final quotes = await fetchQuotes();
     final openQuotes = quotes
         .where(

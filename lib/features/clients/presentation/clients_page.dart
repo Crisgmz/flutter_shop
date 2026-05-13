@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,7 +8,10 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../data/clients_excel_service.dart';
 import '../data/clients_repository.dart';
 import 'clients_providers.dart';
 
@@ -49,6 +54,8 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
+        const SizedBox(width: AppTokens.s8),
+        _buildExcelMenu(),
         const SizedBox(width: AppTokens.s8),
         FilledButton.icon(
           onPressed: _onCreateClient,
@@ -180,6 +187,17 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                                                   _onEditClient(client),
                                               icon: const Icon(
                                                 Icons.edit_outlined,
+                                                size: AppTokens.iconSizeS,
+                                              ),
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                            ),
+                                            IconButton(
+                                              tooltip: 'Historial de pagos',
+                                              onPressed: () =>
+                                                  _onShowPaymentHistory(client),
+                                              icon: const Icon(
+                                                Icons.payments_outlined,
                                                 size: AppTokens.iconSizeS,
                                               ),
                                               visualDensity:
@@ -335,6 +353,756 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
         SnackBar(content: Text('No se pudo actualizar cliente: $error')),
       );
     }
+  }
+
+  Future<void> _onShowPaymentHistory(ClientEntity client) async {
+    await showDialog(
+      context: context,
+      builder: (_) => _PaymentHistoryDialog(client: client),
+    );
+  }
+
+  // ─── Excel: plantilla, exportar, importar ────────────────────────────
+
+  Widget _buildExcelMenu() {
+    return PopupMenuButton<String>(
+      tooltip: 'Excel',
+      onSelected: (action) {
+        switch (action) {
+          case 'template':
+            _onDownloadTemplate();
+          case 'export':
+            _onExportClients();
+          case 'import':
+            _onImportClients();
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'template',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.download_outlined, size: 18),
+            title: Text('Descargar plantilla'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.upload_file_outlined, size: 18),
+            title: Text('Exportar clientes'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'import',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.file_download_outlined, size: 18),
+            title: Text('Importar desde Excel'),
+          ),
+        ),
+      ],
+      child: OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.table_chart_outlined, size: 18),
+        label: const Text('Excel'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  String _timestamp() {
+    final n = DateTime.now();
+    return '${n.year}${n.month.toString().padLeft(2, '0')}'
+        '${n.day.toString().padLeft(2, '0')}_'
+        '${n.hour.toString().padLeft(2, '0')}'
+        '${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _onDownloadTemplate() async {
+    try {
+      final bytes = ClientsExcelService().buildTemplate();
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'plantilla_clientes_${_timestamp()}.xlsx',
+        dialogTitle: 'Guardar plantilla de clientes',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Plantilla generada.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar la plantilla: $e')),
+      );
+    }
+  }
+
+  Future<void> _onExportClients() async {
+    final List<ClientEntity> clients;
+    try {
+      clients = await ref.read(clientsListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar clientes: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (clients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay clientes para exportar.')),
+      );
+      return;
+    }
+    try {
+      final bytes = ClientsExcelService().buildExport(clients: clients);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'clientes_${_timestamp()}.xlsx',
+        dialogTitle: 'Guardar clientes',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Exportados ${clients.length} clientes.'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar: $e')),
+      );
+    }
+  }
+
+  Future<void> _onImportClients() async {
+    final Uint8List? bytes;
+    try {
+      bytes = await FileIoHelper.pickXlsxBytes();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo abrir el archivo: $e')),
+      );
+      return;
+    }
+    if (bytes == null || !mounted) return;
+
+    final List<ClientEntity> existing;
+    try {
+      existing = await ref.read(clientsListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar clientes: $e')),
+      );
+      return;
+    }
+
+    final ClientImportParseResult parsed;
+    try {
+      parsed = ClientsExcelService().parseImport(
+        bytes: bytes,
+        existingClients: existing,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Archivo inválido: $e')),
+      );
+      return;
+    }
+
+    if (parsed.totalRows == 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('El archivo no contiene filas.')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirmar importación'),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Filas leídas: ${parsed.totalRows}'),
+              Text('Listas para importar: ${parsed.inputs.length}'),
+              if (parsed.errors.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text(
+                  'Errores:',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: parsed.errors
+                        .map(
+                          (e) => Padding(
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 2),
+                            child: Text(
+                              'Fila ${e.rowNumber}: ${e.message}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppTokens.destructive,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: parsed.inputs.isEmpty
+                ? null
+                : () => Navigator.pop(context, true),
+            child: Text('Importar ${parsed.inputs.length}'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || parsed.inputs.isEmpty) return;
+
+    try {
+      final result = await ref
+          .read(clientsRepositoryProvider)
+          .bulkUpsertClients(parsed.inputs);
+      if (!mounted) return;
+      ref.invalidate(clientsListProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTokens.success,
+          content: Text(
+            'Importación completa · ${result.created} nuevos, '
+            '${result.updated} actualizados'
+            '${result.errors.isNotEmpty ? " (${result.errors.length} con error)" : ""}.',
+            style: const TextStyle(color: AppTokens.successForeground),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al importar: $e')),
+      );
+    }
+  }
+}
+
+// ─── Payment history dialog ─────────────────────────────────────────────────
+
+class _PaymentHistoryDialog extends ConsumerStatefulWidget {
+  const _PaymentHistoryDialog({required this.client});
+
+  final ClientEntity client;
+
+  @override
+  ConsumerState<_PaymentHistoryDialog> createState() =>
+      _PaymentHistoryDialogState();
+}
+
+class _PaymentHistoryDialogState
+    extends ConsumerState<_PaymentHistoryDialog> {
+  late Future<List<ClientPaymentRow>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<List<ClientPaymentRow>> _load() async {
+    final repo = ref.read(clientsRepositoryProvider);
+    return repo.fetchPaymentsForClient(widget.client.id);
+  }
+
+  void _refresh() {
+    setState(() => _future = _load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(AppTokens.s24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 640),
+        child: Padding(
+          padding: const EdgeInsets.all(AppTokens.s20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.payments_outlined,
+                      color: AppTokens.primary),
+                  const SizedBox(width: AppTokens.s8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Historial de pagos',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          widget.client.fullName,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: AppTokens.mutedForeground),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _refresh,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    tooltip: 'Actualizar',
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 20),
+                  ),
+                ],
+              ),
+              const Divider(height: AppTokens.s16),
+              Expanded(
+                child: FutureBuilder<List<ClientPaymentRow>>(
+                  future: _future,
+                  builder: (context, snap) {
+                    if (snap.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (snap.hasError) {
+                      return Center(
+                        child: Text('Error: ${snap.error}'),
+                      );
+                    }
+                    final rows = snap.data ?? const <ClientPaymentRow>[];
+                    if (rows.isEmpty) {
+                      return Center(
+                        child: Text(
+                          'Este cliente aún no tiene pagos registrados.',
+                          style: TextStyle(
+                              color: AppTokens.mutedForeground),
+                        ),
+                      );
+                    }
+                    final total = rows.fold<double>(
+                      0,
+                      (sum, r) => sum + r.amount,
+                    );
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(
+                              bottom: AppTokens.s12),
+                          child: Row(
+                            children: [
+                              Text(
+                                '${rows.length} pagos',
+                                style: const TextStyle(
+                                    color: AppTokens.mutedForeground),
+                              ),
+                              const Spacer(),
+                              Text(
+                                'Total pagado: ${money(total)}',
+                                style: const TextStyle(
+                                  color: AppTokens.success,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.separated(
+                            itemCount: rows.length,
+                            separatorBuilder: (_, _) => const Divider(
+                              height: 1,
+                              color: AppTokens.border,
+                            ),
+                            itemBuilder: (context, i) =>
+                                _PaymentRowTile(
+                              row: rows[i],
+                              onEdit: () => _onEdit(rows[i]),
+                              onDelete: () => _onDelete(rows[i]),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onEdit(ClientPaymentRow row) async {
+    final result = await showDialog<_EditPaymentResult>(
+      context: context,
+      builder: (_) => _EditPaymentDialog(row: row),
+    );
+    if (result == null || !mounted) return;
+    try {
+      await ref.read(clientsRepositoryProvider).updatePayment(
+            paymentId: row.id,
+            amount: result.amount,
+            paymentMethod: result.paymentMethod,
+            reference: result.reference,
+            notes: result.notes,
+          );
+      if (!mounted) return;
+      _refresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pago actualizado')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al actualizar: $e')),
+      );
+    }
+  }
+
+  Future<void> _onDelete(ClientPaymentRow row) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar pago'),
+        content: Text(
+          '¿Eliminar el pago de ${money(row.amount)} '
+          'del ${formatDate(row.paidAt)}? Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: AppTokens.destructive),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(clientsRepositoryProvider).deletePayment(row.id);
+      if (!mounted) return;
+      _refresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pago eliminado')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al eliminar: $e')),
+      );
+    }
+  }
+}
+
+class _PaymentRowTile extends ConsumerWidget {
+  const _PaymentRowTile({
+    required this.row,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final ClientPaymentRow row;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final access = ref.watch(roleAccessProvider);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      money(row.amount),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppTokens.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        _methodLabel(row.paymentMethod),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTokens.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${formatDateTime(row.paidAt)}'
+                  '${row.saleNumber != null ? " · Venta ${row.saleNumber}" : ""}',
+                  style: const TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                  ),
+                ),
+                if (row.reference != null && row.reference!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'Ref: ${row.reference}',
+                      style: const TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                if (row.notes != null && row.notes!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      row.notes!,
+                      style: const TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Editar pago',
+            onPressed: onEdit,
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+          ),
+          if (access.canDeleteRecord)
+            IconButton(
+              tooltip: 'Eliminar pago',
+              onPressed: onDelete,
+              icon: const Icon(Icons.delete_outline,
+                  size: 18, color: AppTokens.destructive),
+              visualDensity: VisualDensity.compact,
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _methodLabel(String m) {
+    switch (m) {
+      case 'cash':
+        return 'Efectivo';
+      case 'card':
+        return 'Tarjeta';
+      case 'transfer':
+        return 'Transferencia';
+      case 'mobile':
+        return 'Móvil';
+      case 'credit':
+        return 'Crédito';
+      case 'mixed':
+        return 'Mixto';
+      default:
+        return m;
+    }
+  }
+}
+
+class _EditPaymentResult {
+  _EditPaymentResult({
+    required this.amount,
+    required this.paymentMethod,
+    this.reference,
+    this.notes,
+  });
+
+  final double amount;
+  final String paymentMethod;
+  final String? reference;
+  final String? notes;
+}
+
+class _EditPaymentDialog extends StatefulWidget {
+  const _EditPaymentDialog({required this.row});
+
+  final ClientPaymentRow row;
+
+  @override
+  State<_EditPaymentDialog> createState() => _EditPaymentDialogState();
+}
+
+class _EditPaymentDialogState extends State<_EditPaymentDialog> {
+  late final TextEditingController _amountController;
+  late final TextEditingController _referenceController;
+  late final TextEditingController _notesController;
+  late String _method;
+
+  @override
+  void initState() {
+    super.initState();
+    _amountController =
+        TextEditingController(text: widget.row.amount.toString());
+    _referenceController =
+        TextEditingController(text: widget.row.reference ?? '');
+    _notesController = TextEditingController(text: widget.row.notes ?? '');
+    _method = widget.row.paymentMethod;
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _referenceController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Editar pago'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _amountController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Monto',
+                prefixText: r'RD$ ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _method,
+              decoration: const InputDecoration(
+                labelText: 'Método',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'cash', child: Text('Efectivo')),
+                DropdownMenuItem(value: 'card', child: Text('Tarjeta')),
+                DropdownMenuItem(
+                    value: 'transfer', child: Text('Transferencia')),
+                DropdownMenuItem(value: 'mobile', child: Text('Pago móvil')),
+                DropdownMenuItem(value: 'credit', child: Text('Crédito')),
+              ],
+              onChanged: (v) {
+                if (v != null) setState(() => _method = v);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _referenceController,
+              decoration: const InputDecoration(
+                labelText: 'Referencia (opcional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _notesController,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Notas (opcional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final n = double.tryParse(_amountController.text.trim());
+            if (n == null || n <= 0) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Monto inválido')),
+              );
+              return;
+            }
+            Navigator.pop(
+              context,
+              _EditPaymentResult(
+                amount: n,
+                paymentMethod: _method,
+                reference: _referenceController.text.trim(),
+                notes: _notesController.text.trim(),
+              ),
+            );
+          },
+          child: const Text('Guardar'),
+        ),
+      ],
+    );
   }
 }
 

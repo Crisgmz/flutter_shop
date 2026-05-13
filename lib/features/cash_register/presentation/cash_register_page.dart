@@ -6,6 +6,7 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../data/cash_register_repository.dart';
 import 'cash_register_providers.dart';
@@ -64,6 +65,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                           DataColumn(label: Text('Esperado'), numeric: true),
                           DataColumn(label: Text('Conteo cierre'), numeric: true),
                           DataColumn(label: Text('Diferencia'), numeric: true),
+                          DataColumn(label: Text('Acciones')),
                         ],
                         rows: data.recentSessions
                             .map(
@@ -98,6 +100,37 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                           : null,
                                     ),
                                   )),
+                                  DataCell(
+                                    session.isOpen
+                                        ? const SizedBox.shrink()
+                                        : RoleGate(
+                                            allowed: const {
+                                              'admin',
+                                              'supervisor'
+                                            },
+                                            child: OutlinedButton.icon(
+                                              onPressed: () =>
+                                                  _onSealZ(session.id),
+                                              icon: const Icon(
+                                                  Icons.lock_outline,
+                                                  size: 14),
+                                              label: const Text(
+                                                'Sellar Z',
+                                                style: TextStyle(fontSize: 12),
+                                              ),
+                                              style: OutlinedButton.styleFrom(
+                                                minimumSize: const Size(0, 28),
+                                                padding: const EdgeInsets
+                                                    .symmetric(horizontal: 8),
+                                                tapTargetSize:
+                                                    MaterialTapTargetSize
+                                                        .shrinkWrap,
+                                                foregroundColor:
+                                                    AppTokens.primary,
+                                              ),
+                                            ),
+                                          ),
+                                  ),
                                 ],
                               ),
                             )
@@ -183,6 +216,21 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   ),
                 ),
               ),
+              OutlinedButton.icon(
+                onPressed: () => _onCashMovement(openSession.id, 'deposit'),
+                icon: const Icon(Icons.add_circle_outline,
+                    size: 18, color: Color(0xFF22C55E)),
+                label: const Text('Agregar efectivo'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () =>
+                    _onCashMovement(openSession.id, 'withdrawal'),
+                icon: const Icon(Icons.remove_circle_outline,
+                    size: 18, color: Color(0xFFEF4444)),
+                label: const Text('Sangría'),
+              ),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: _onCloseSession,
                 icon: const Icon(Icons.lock_outline, size: 18),
@@ -295,6 +343,216 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
         context,
       ).showSnackBar(SnackBar(content: Text('No se pudo cerrar caja: $error')));
     }
+  }
+
+  /// Sella un cierre Z fiscal (inmutable) para una sesión ya cerrada.
+  /// Pide confirmación explícita porque la operación no se puede revertir
+  /// (sólo se puede emitir un cierre Z "complementario").
+  Future<void> _onSealZ(String cashSessionId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sellar cierre Z fiscal'),
+        content: const Text(
+          'El cierre Z queda inmutable una vez sellado. Cualquier corrección '
+          'requiere emitir un cierre Z complementario. ¿Continuar?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTokens.primary,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.lock_outline, size: 18),
+            label: const Text('Sellar Z'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repository = ref.read(cashRegisterRepositoryProvider);
+    try {
+      final closureId = await repository.sealFiscalZClosure(cashSessionId);
+      if (!mounted) return;
+      ref.invalidate(cashRegisterDataProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTokens.primary,
+          content: Text(
+            'Cierre Z sellado · ${closureId.substring(0, 8)}…',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      // Si ya existe un cierre Z para esta sesión, el RPC lo bloquea.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo sellar el cierre Z: $error')),
+      );
+    }
+  }
+
+  /// Diálogo para agregar (deposit) o retirar (withdrawal) efectivo de la
+  /// sesión activa. El trigger SQL ajusta `expected_amount` automáticamente.
+  Future<void> _onCashMovement(String sessionId, String movementType) async {
+    final input = await showDialog<CashMovementInput>(
+      context: context,
+      builder: (_) => _CashMovementDialog(movementType: movementType),
+    );
+    if (input == null || !mounted) return;
+
+    final repository = ref.read(cashRegisterRepositoryProvider);
+    try {
+      await repository.addMovement(input);
+      if (!mounted) return;
+      ref.invalidate(cashRegisterDataProvider);
+      final label = movementType == 'deposit'
+          ? 'Efectivo agregado a la caja'
+          : 'Sangría registrada';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: movementType == 'deposit'
+              ? const Color(0xFF22C55E)
+              : const Color(0xFFEF4444),
+          content: Text(
+            '$label · ${money(input.amount)}',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo registrar el movimiento: $error')),
+      );
+    }
+  }
+}
+
+class _CashMovementDialog extends StatefulWidget {
+  const _CashMovementDialog({required this.movementType});
+
+  final String movementType;
+
+  @override
+  State<_CashMovementDialog> createState() => _CashMovementDialogState();
+}
+
+class _CashMovementDialogState extends State<_CashMovementDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _reasonController = TextEditingController();
+  final _notesController = TextEditingController();
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _reasonController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDeposit = widget.movementType == 'deposit';
+    final accent =
+        isDeposit ? const Color(0xFF22C55E) : const Color(0xFFEF4444);
+    return AlertDialog(
+      title: Row(
+        children: [
+          Icon(
+            isDeposit
+                ? Icons.add_circle_outline
+                : Icons.remove_circle_outline,
+            color: accent,
+          ),
+          const SizedBox(width: 8),
+          Text(isDeposit ? 'Agregar efectivo' : 'Sangría / Retiro'),
+        ],
+      ),
+      content: Form(
+        key: _formKey,
+        child: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _amountController,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Monto',
+                  prefixText: r'RD$ ',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) {
+                  final n = double.tryParse((v ?? '').trim());
+                  if (n == null || n <= 0) return 'Monto inválido';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _reasonController,
+                decoration: InputDecoration(
+                  labelText: 'Motivo',
+                  hintText: isDeposit
+                      ? 'p.ej. Apertura adicional del dueño'
+                      : 'p.ej. Depósito al banco',
+                  border: const OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Requerido' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _notesController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Notas (opcional)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(backgroundColor: accent),
+          onPressed: () {
+            if (!(_formKey.currentState?.validate() ?? false)) return;
+            Navigator.pop(
+              context,
+              CashMovementInput(
+                movementType: widget.movementType,
+                amount: double.parse(_amountController.text.trim()),
+                reason: _reasonController.text.trim(),
+                notes: _notesController.text.trim(),
+              ),
+            );
+          },
+          icon: Icon(
+            isDeposit ? Icons.check : Icons.arrow_outward,
+            size: 18,
+          ),
+          label: Text(isDeposit ? 'Agregar' : 'Retirar'),
+        ),
+      ],
+    );
   }
 }
 

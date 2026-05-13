@@ -221,6 +221,20 @@ class CustomerBalanceItem {
   }
 }
 
+class ClientsBulkUpsertResult {
+  ClientsBulkUpsertResult({
+    required this.created,
+    required this.updated,
+    required this.errors,
+  });
+
+  final int created;
+  final int updated;
+  final List<String> errors;
+
+  int get total => created + updated;
+}
+
 class ClientsRepository {
   ClientsRepository(this._client);
 
@@ -303,6 +317,35 @@ class ClientsRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Crea o actualiza múltiples clientes en bloque. Devuelve los conteos.
+  Future<ClientsBulkUpsertResult> bulkUpsertClients(
+    List<ClientInput> inputs,
+  ) async {
+    var created = 0;
+    var updated = 0;
+    final errors = <String>[];
+
+    for (final input in inputs) {
+      try {
+        final wasNew = input.id == null;
+        await saveClient(input);
+        if (wasNew) {
+          created += 1;
+        } else {
+          updated += 1;
+        }
+      } catch (e) {
+        errors.add('${input.fullName}: $e');
+      }
+    }
+
+    return ClientsBulkUpsertResult(
+      created: created,
+      updated: updated,
+      errors: errors,
+    );
+  }
+
   Future<List<CustomerBalanceItem>> fetchCustomerBalances({
     bool withBalanceOnly = true,
   }) async {
@@ -351,12 +394,122 @@ class ClientsRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Historial de pagos hechos por un cliente.
+  Future<List<ClientPaymentRow>> fetchPaymentsForClient(
+    String clientId, {
+    int limit = 200,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final rows = await _client
+        .from('payments')
+        .select(
+          'id, sale_id, payment_method, amount, paid_at, reference, notes, '
+          'sales(sale_number, total_amount, status, receipt_type)',
+        )
+        .eq('branch_id', branchId)
+        .eq('client_id', clientId)
+        .order('paid_at', ascending: false)
+        .limit(limit);
+
+    return rows
+        .map((item) => ClientPaymentRow.fromMap(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Edita un pago existente. Solo `amount`, `payment_method`, `reference`
+  /// y `notes` son editables.
+  Future<void> updatePayment({
+    required String paymentId,
+    required double amount,
+    required String paymentMethod,
+    String? reference,
+    String? notes,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    if (amount <= 0) {
+      throw Exception('El monto debe ser mayor que cero.');
+    }
+    await _client
+        .from('payments')
+        .update({
+          'amount': amount,
+          'payment_method': paymentMethod,
+          'reference': _nullIfEmpty(reference),
+          'notes': _nullIfEmpty(notes),
+        })
+        .eq('id', paymentId)
+        .eq('branch_id', branchId);
+  }
+
+  Future<void> deletePayment(String paymentId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    await _client
+        .from('payments')
+        .delete()
+        .eq('id', paymentId)
+        .eq('branch_id', branchId);
+  }
+
   Future<String?> _currentBranchId() async {
     final result = await _client.rpc('current_branch_id');
     if (result == null) return null;
     final value = result.toString();
     return value.isEmpty ? null : value;
   }
+}
+
+/// Fila del historial de pagos de un cliente.
+class ClientPaymentRow {
+  ClientPaymentRow({
+    required this.id,
+    required this.amount,
+    required this.paymentMethod,
+    required this.paidAt,
+    this.saleId,
+    this.saleNumber,
+    this.saleStatus,
+    this.saleTotal,
+    this.reference,
+    this.notes,
+  });
+
+  factory ClientPaymentRow.fromMap(Map<String, dynamic> map) {
+    final sale = map['sales'];
+    return ClientPaymentRow(
+      id: (map['id'] ?? '').toString(),
+      amount: _toDouble(map['amount']),
+      paymentMethod: (map['payment_method'] ?? '').toString(),
+      paidAt: DateTime.tryParse(map['paid_at']?.toString() ?? '') ??
+          DateTime.now(),
+      saleId: map['sale_id']?.toString(),
+      saleNumber: sale is Map ? sale['sale_number']?.toString() : null,
+      saleStatus: sale is Map ? sale['status']?.toString() : null,
+      saleTotal: sale is Map ? _toDouble(sale['total_amount']) : null,
+      reference: map['reference']?.toString(),
+      notes: map['notes']?.toString(),
+    );
+  }
+
+  final String id;
+  final double amount;
+  final String paymentMethod;
+  final DateTime paidAt;
+  final String? saleId;
+  final String? saleNumber;
+  final String? saleStatus;
+  final double? saleTotal;
+  final String? reference;
+  final String? notes;
 }
 
 String? _nullIfEmpty(String? value) {

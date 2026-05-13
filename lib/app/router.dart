@@ -9,15 +9,19 @@ import '../features/branches/presentation/branches_page.dart';
 import '../features/cash_register/presentation/cash_register_page.dart';
 import '../features/clients/presentation/clients_page.dart';
 import '../features/cobros/presentation/cobros_page.dart';
+import '../features/dashboard/presentation/closeout_page.dart';
 import '../features/dashboard/presentation/dashboard_page.dart';
 import '../features/expenses/presentation/expenses_page.dart';
+import '../features/petty_cash/presentation/petty_cash_page.dart';
 import '../features/fiscal_documents/presentation/fiscal_documents_page.dart';
 import '../features/inventory/presentation/inventory_page.dart';
 import '../features/purchases/presentation/purchases_page.dart';
 import '../features/quotations/presentation/quotation_create_page.dart';
 import '../features/quotations/presentation/quotations_page.dart';
 import '../features/reports/presentation/reports_page.dart';
+import '../features/returns/presentation/returns_page.dart';
 import '../features/sales/presentation/sales_page.dart';
+import '../features/settings/presentation/app_settings_page.dart';
 import '../features/settings/presentation/settings_page.dart';
 import '../features/setup/presentation/setup_page.dart';
 import '../features/shell/presentation/app_shell.dart';
@@ -59,7 +63,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (_, _, child) => AppShell(child: child),
         routes: [
           _page('/panel', const DashboardPage()),
+          _page('/panel/cierre', const CloseoutPage()),
           _page('/ventas', const SalesPage()),
+          _page('/devoluciones', const ReturnsPage()),
           _page('/cotizaciones', const QuotationsPage()),
           GoRoute(
             path: '/cotizaciones/nueva',
@@ -82,12 +88,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           _page('/clientes', const ClientsPage()),
           _page('/proveedores', const SuppliersPage()),
           _page('/caja', const CashRegisterPage()),
+          _page('/caja-chica', const PettyCashPage()),
           _page('/reportes', const ReportsPage()),
           _page('/comprobantes', const FiscalDocumentsPage()),
           _page('/impuestos', const TaxesPage()),
           _page('/sucursales', const BranchesPage()),
           _page('/usuarios', const UsersPage()),
-          _page('/configuracion', const SettingsPage()),
+          _page('/configuracion', const AppSettingsPage()),
+          _page('/configuracion/cuenta', const SettingsPage()),
         ],
       ),
     ],

@@ -94,6 +94,12 @@ const cashRegisterNavItem = NavItem(
   icon: Icons.account_balance_outlined,
   allowedRoles: {'admin', 'supervisor', 'cashier', 'accountant'},
 );
+const pettyCashNavItem = NavItem(
+  path: '/caja-chica',
+  label: 'Caja chica',
+  icon: Icons.savings_outlined,
+  allowedRoles: {'admin', 'supervisor', 'cashier', 'accountant'},
+);
 const fiscalDocumentsNavItem = NavItem(
   path: '/comprobantes',
   label: 'Comprobantes',
@@ -137,6 +143,7 @@ const navItems = [
   reportsNavItem,
   expensesNavItem,
   cashRegisterNavItem,
+  pettyCashNavItem,
   fiscalDocumentsNavItem,
   taxesNavItem,
   branchesNavItem,
@@ -153,6 +160,7 @@ const navSections = [
       quotationsNavItem,
       cobrosNavItem,
       cashRegisterNavItem,
+      pettyCashNavItem,
     ],
   ),
   NavSection(

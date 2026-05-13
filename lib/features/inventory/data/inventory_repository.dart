@@ -429,12 +429,242 @@ class InventoryRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Historial unificado de movimientos de un producto:
+  ///   - Ventas (sale_items) → salida
+  ///   - Compras (purchase_items) → entrada
+  ///   - Movimientos manuales (inventory_movements) → según tipo
+  ///   - Devoluciones (return_items) → entrada
+  Future<List<ProductMovementEntry>> fetchProductHistory(
+    String productId, {
+    int limit = 200,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final entries = <ProductMovementEntry>[];
+
+    // Ventas
+    final saleItems = await _client
+        .from('sale_items')
+        .select(
+          'quantity, line_total, created_at, sale_id, '
+          'sales(sale_number, sale_date, status)',
+        )
+        .eq('branch_id', branchId)
+        .eq('product_id', productId)
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    for (final raw in saleItems) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final sale = row['sales'];
+      final saleStatus =
+          sale is Map ? (sale['status'] ?? '').toString() : '';
+      // Excluir voided del flujo de venta normal.
+      if (saleStatus == 'voided') continue;
+      entries.add(ProductMovementEntry(
+        when: DateTime.tryParse(
+              sale is Map
+                  ? (sale['sale_date'] ?? row['created_at']).toString()
+                  : row['created_at']?.toString() ?? '',
+            ) ??
+            DateTime.now(),
+        kind: ProductMovementKind.sale,
+        quantity: -_toDouble(row['quantity']),
+        amount: _toDouble(row['line_total']),
+        reference:
+            sale is Map ? sale['sale_number']?.toString() : null,
+      ));
+    }
+
+    // Compras
+    final purchaseItems = await _client
+        .from('purchase_items')
+        .select(
+          'quantity, line_total, created_at, purchase_id, '
+          'purchases(purchase_number, purchase_date, status)',
+        )
+        .eq('branch_id', branchId)
+        .eq('product_id', productId)
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    for (final raw in purchaseItems) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final purchase = row['purchases'];
+      final pStatus = purchase is Map
+          ? (purchase['status'] ?? '').toString()
+          : '';
+      if (pStatus == 'cancelled') continue;
+      entries.add(ProductMovementEntry(
+        when: DateTime.tryParse(
+              purchase is Map
+                  ? (purchase['purchase_date'] ?? row['created_at'])
+                      .toString()
+                  : row['created_at']?.toString() ?? '',
+            ) ??
+            DateTime.now(),
+        kind: ProductMovementKind.purchase,
+        quantity: _toDouble(row['quantity']),
+        amount: _toDouble(row['line_total']),
+        reference: purchase is Map
+            ? purchase['purchase_number']?.toString()
+            : null,
+      ));
+    }
+
+    // Movimientos manuales (mermas/ajustes/traslados)
+    final movements = await _client
+        .from('inventory_movements')
+        .select(
+          'quantity, unit_cost, occurred_at, movement_type, reason, notes',
+        )
+        .eq('branch_id', branchId)
+        .eq('product_id', productId)
+        .order('occurred_at', ascending: false)
+        .limit(limit);
+
+    for (final raw in movements) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final type = (row['movement_type'] ?? '').toString();
+      final qty = _toDouble(row['quantity']);
+      final cost = _toDouble(row['unit_cost']);
+      final isPositive = const {
+        'adjustment_in',
+        'transfer_in',
+        'opening',
+        'recount',
+      }.contains(type);
+      entries.add(ProductMovementEntry(
+        when: DateTime.tryParse(row['occurred_at']?.toString() ?? '') ??
+            DateTime.now(),
+        kind: _movementKindFromType(type),
+        quantity: isPositive ? qty : -qty,
+        amount: qty * cost,
+        reference: type,
+        notes: row['reason']?.toString() ?? row['notes']?.toString(),
+      ));
+    }
+
+    // Devoluciones
+    final returnItems = await _client
+        .from('return_items')
+        .select(
+          'quantity, line_total, created_at, return_id, '
+          'returns(return_number, return_date)',
+        )
+        .eq('branch_id', branchId)
+        .eq('product_id', productId)
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    for (final raw in returnItems) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final ret = row['returns'];
+      entries.add(ProductMovementEntry(
+        when: DateTime.tryParse(
+              ret is Map
+                  ? (ret['return_date'] ?? row['created_at']).toString()
+                  : row['created_at']?.toString() ?? '',
+            ) ??
+            DateTime.now(),
+        kind: ProductMovementKind.returnIn,
+        quantity: _toDouble(row['quantity']),
+        amount: _toDouble(row['line_total']),
+        reference:
+            ret is Map ? ret['return_number']?.toString() : null,
+      ));
+    }
+
+    entries.sort((a, b) => b.when.compareTo(a.when));
+    return entries;
+  }
+
   Future<String?> _currentBranchId() async {
     final result = await _client.rpc('current_branch_id');
     if (result == null) return null;
     final value = result.toString();
     return value.isEmpty ? null : value;
   }
+}
+
+enum ProductMovementKind {
+  sale,
+  purchase,
+  returnIn,
+  waste,
+  adjustmentIn,
+  adjustmentOut,
+  transferIn,
+  transferOut,
+  other;
+
+  String get label {
+    switch (this) {
+      case ProductMovementKind.sale:
+        return 'Venta';
+      case ProductMovementKind.purchase:
+        return 'Compra';
+      case ProductMovementKind.returnIn:
+        return 'Devolución';
+      case ProductMovementKind.waste:
+        return 'Merma';
+      case ProductMovementKind.adjustmentIn:
+        return 'Ajuste +';
+      case ProductMovementKind.adjustmentOut:
+        return 'Ajuste -';
+      case ProductMovementKind.transferIn:
+        return 'Traslado entrada';
+      case ProductMovementKind.transferOut:
+        return 'Traslado salida';
+      case ProductMovementKind.other:
+        return 'Otro';
+    }
+  }
+}
+
+ProductMovementKind _movementKindFromType(String type) {
+  switch (type) {
+    case 'waste':
+    case 'breakage':
+    case 'expired':
+    case 'kitchen_return':
+      return ProductMovementKind.waste;
+    case 'adjustment_in':
+    case 'opening':
+    case 'recount':
+      return ProductMovementKind.adjustmentIn;
+    case 'adjustment_out':
+      return ProductMovementKind.adjustmentOut;
+    case 'transfer_in':
+      return ProductMovementKind.transferIn;
+    case 'transfer_out':
+      return ProductMovementKind.transferOut;
+    default:
+      return ProductMovementKind.other;
+  }
+}
+
+class ProductMovementEntry {
+  ProductMovementEntry({
+    required this.when,
+    required this.kind,
+    required this.quantity,
+    required this.amount,
+    this.reference,
+    this.notes,
+  });
+
+  final DateTime when;
+  final ProductMovementKind kind;
+
+  /// Cantidad con signo: positivo = entrada, negativo = salida.
+  final double quantity;
+  final double amount;
+  final String? reference;
+  final String? notes;
+
+  bool get isIncoming => quantity > 0;
 }
 
 String? _nullIfEmpty(String? value) {

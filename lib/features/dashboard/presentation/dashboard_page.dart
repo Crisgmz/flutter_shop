@@ -1,3 +1,14 @@
+// Dashboard PRD-Dashboard-001 sub-fases 2-5.
+//
+// Layout:
+//   1) 4 KPI cards (cuentas) — F1
+//   2) 5 quick actions con uno destacado en color de acento — F2
+//   3) Gráfico de barras con toggle Mes / Semana — F3
+//   4) Cierre del día detallado: 6 bloques con navegación día anterior /
+//      siguiente día — F4
+//
+// Fuentes: 3 RPCs Supabase definidos en `20260509_10_dashboard_v2.sql`.
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,10 +17,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
-import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
-import '../../../shared/widgets/ui_custom.dart';
+import '../../../shared/widgets/ncf_stock_banner.dart';
 import '../data/dashboard_repository.dart';
 import 'dashboard_providers.dart';
 
@@ -18,730 +28,690 @@ class DashboardPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final dataAsync = ref.watch(dashboardDataProvider);
-    final selectedPeriod = ref.watch(dashboardPeriodProvider);
+    final heroAsync = ref.watch(dashboardHeroKpisProvider);
+    final chartAsync = ref.watch(dashboardChartProvider);
 
-    return dataAsync.when(
-      data: (data) {
-        final kpis = data.kpis;
-        if (kpis == null) {
-          return ModulePage(
-            title: 'Panel de Control',
-            child: ErrorCard(
-              message: 'No hay sucursal asociada al usuario o no hay datos disponibles.',
-              onRetry: () => ref.invalidate(dashboardDataProvider),
+    return ModulePage(
+      title: 'Panel',
+      description: 'Vista consolidada del negocio.',
+      actions: [
+        OutlinedButton.icon(
+          onPressed: () {
+            ref.invalidate(dashboardHeroKpisProvider);
+            ref.invalidate(dashboardChartProvider);
+          },
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Actualizar'),
+        ),
+      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const NcfStockBanner(),
+          _HeroKpiGrid(heroAsync: heroAsync),
+          const SizedBox(height: AppTokens.s16),
+          const _ShortcutRow(),
+          const SizedBox(height: AppTokens.s24),
+          _QuickActions(),
+          const SizedBox(height: AppTokens.s24),
+          _SalesChartCard(chartAsync: chartAsync),
+          const SizedBox(height: AppTokens.s48),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// F1 — KPI cards
+// ─────────────────────────────────────────────────────────────────────────
+
+// Paleta de las hero KPI cards (diseño original con fondos saturados).
+const _kKpiOrange = Color(0xFFE26B30);
+const _kKpiRed = Color(0xFFC13E3E);
+const _kKpiGreen = Color(0xFF5FA760);
+const _kKpiLavender = Color(0xFF8FA5CA);
+
+class _HeroKpiGrid extends ConsumerWidget {
+  const _HeroKpiGrid({required this.heroAsync});
+
+  final AsyncValue<DashboardHeroKpis> heroAsync;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return heroAsync.when(
+      loading: () => const _KpiSkeletonGrid(),
+      error: (error, _) => ErrorCard(
+        message: 'No se pudieron cargar los KPIs: $error',
+        onRetry: () => ref.invalidate(dashboardHeroKpisProvider),
+      ),
+      data: (kpis) {
+        void goToReports() => context.go('/reportes');
+        return _KpiResponsiveGrid(
+          children: [
+            _HeroKpiCard(
+              label: 'Ventas Hoy',
+              value: money(kpis.salesTodayAmount),
+              caption: '${kpis.salesTodayCount} '
+                  '${kpis.salesTodayCount == 1 ? "transacción" : "transacciones"}',
+              icon: Icons.shopping_cart_outlined,
+              background: _kKpiOrange,
+              onTap: goToReports,
             ),
-          );
-        }
-
-        return ModulePage(
-          title: 'Panel de Control',
-          description: 'Resumen general de tu negocio',
-          actions: [
-            OutlinedButton.icon(
-              onPressed: () => ref.invalidate(dashboardDataProvider),
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('Actualizar'),
+            _HeroKpiCard(
+              label: 'Ventas del Mes',
+              value: money(kpis.salesMonthAmount),
+              caption: '${kpis.salesMonthCount} '
+                  '${kpis.salesMonthCount == 1 ? "venta este mes" : "ventas este mes"}',
+              icon: Icons.trending_up_outlined,
+              background: _kKpiRed,
+              onTap: goToReports,
+            ),
+            _HeroKpiCard(
+              label: 'Inventario',
+              value: kpis.productsActive.toString(),
+              caption: 'Productos activos',
+              icon: Icons.inventory_2_outlined,
+              background: _kKpiGreen,
+              onTap: goToReports,
+            ),
+            _HeroKpiCard(
+              label: 'Clientes',
+              value: kpis.clientsActive.toString(),
+              caption: 'Registrados',
+              icon: Icons.people_outline,
+              background: _kKpiLavender,
+              onTap: goToReports,
             ),
           ],
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _KpisGrid(kpis: kpis),
-              const SizedBox(height: AppTokens.s12),
-              const _QuickActions(),
-              const SizedBox(height: AppTokens.s24),
-
-              // Chart Section
-              Container(
-                decoration: BoxDecoration(
-                  color: AppTokens.card,
-                  borderRadius: BorderRadius.circular(AppTokens.radius),
-                  border: Border.all(color: AppTokens.border),
-                ),
-                padding: const EdgeInsets.all(AppTokens.s20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _ChartHeader(
-                      selectedPeriod: selectedPeriod,
-                      onPeriodChanged: (value) {
-                        ref.read(dashboardPeriodProvider.notifier).state = value;
-                      },
-                    ),
-                    const SizedBox(height: AppTokens.s24),
-                    _SalesBarChart(points: data.salesSummary),
-                  ],
-                ),
-              ),
-              
-              const SizedBox(height: AppTokens.s24),
-              
-              // Latest Sales Section
-              Container(
-                decoration: BoxDecoration(
-                  color: AppTokens.card,
-                  borderRadius: BorderRadius.circular(AppTokens.radius),
-                  border: Border.all(color: AppTokens.border),
-                ),
-                padding: const EdgeInsets.all(AppTokens.s20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.receipt_long_outlined,
-                          color: AppTokens.primary,
-                          size: 20,
-                        ),
-                        const SizedBox(width: AppTokens.s10),
-                        const Text(
-                          'Últimas Ventas',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppTokens.foreground,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: AppTokens.s4),
-                    const Text(
-                      'Transacciones recientes de la sucursal actual',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppTokens.mutedForeground,
-                      ),
-                    ),
-                    const SizedBox(height: AppTokens.s20),
-                    ResponsiveLayout(
-                      mobile: _LatestSalesMobile(sales: data.latestSales),
-                      desktop: DataTableShell(
-                        child: _LatestSalesTable(sales: data.latestSales),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
         );
       },
-      loading: () => const ModulePage(
-        title: 'Panel de Control',
-        child: Center(child: CircularProgressIndicator()),
-      ),
-      error: (error, _) => ModulePage(
-        title: 'Panel de Control',
-        child: ErrorCard(
-          message: 'No se pudo cargar el panel: $error',
-          onRetry: () => ref.invalidate(dashboardDataProvider),
-        ),
-      ),
     );
   }
 }
 
-
-class _ChartHeader extends StatelessWidget {
-  const _ChartHeader({
-    required this.selectedPeriod,
-    required this.onPeriodChanged,
+class _HeroKpiCard extends StatelessWidget {
+  const _HeroKpiCard({
+    required this.label,
+    required this.value,
+    required this.caption,
+    required this.icon,
+    required this.background,
+    required this.onTap,
   });
 
-  final DashboardPeriod selectedPeriod;
-  final ValueChanged<DashboardPeriod> onPeriodChanged;
+  final String label;
+  final String value;
+  final String caption;
+  final IconData icon;
+  final Color background;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = ResponsiveLayout.isMobile(context);
-    final periodButton = SegmentedButton<DashboardPeriod>(
-      segments: const [
-        ButtonSegment(value: DashboardPeriod.monthly, label: Text('Mensual')),
-        ButtonSegment(value: DashboardPeriod.weekly, label: Text('Semanal')),
-      ],
-      selected: {selectedPeriod},
-      onSelectionChanged: (value) => onPeriodChanged(value.first),
-    );
-
-    if (isMobile) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Ventas por Mes',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: AppTokens.s4),
-          Text(
-            'Resumen anual de ventas',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(color: AppTokens.textSecondary),
-          ),
-          const SizedBox(height: AppTokens.s12),
-          periodButton,
-        ],
-      );
-    }
-
-    return Row(
-      children: [
-        Expanded(
+    return Material(
+      color: background,
+      borderRadius: BorderRadius.circular(AppTokens.radius),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        splashColor: Colors.white.withValues(alpha: 0.16),
+        highlightColor: Colors.white.withValues(alpha: 0.08),
+        child: Padding(
+          padding: const EdgeInsets.all(AppTokens.s20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Ventas por Mes',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(AppTokens.s8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(icon, color: Colors.white, size: 20),
+                  ),
+                ],
               ),
-              const SizedBox(height: AppTokens.s4),
+              const SizedBox(height: AppTokens.s24),
               Text(
-                'Resumen anual de ventas',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTokens.textSecondary,
+                value,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 30,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: AppTokens.s8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppTokens.s8,
+                  vertical: AppTokens.s4,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  caption,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],
           ),
         ),
-        periodButton,
-      ],
+      ),
     );
   }
 }
 
-class _KpisGrid extends StatelessWidget {
-  const _KpisGrid({required this.kpis});
-
-  final DashboardKpis kpis;
-
-  static const _kpiColors = [
-    Color(0xFFF97316),
-    Color(0xFFDC2626),
-    Color(0xFF16A34A),
-    Color(0xFFD97706),
-  ];
+class _ShortcutRow extends StatelessWidget {
+  const _ShortcutRow();
 
   @override
   Widget build(BuildContext context) {
-    final cards = [
-      KPICard(
-        label: 'Ventas Hoy',
-        value: money(kpis.salesTodayAmount),
-        trend: '${kpis.salesTodayCount} transacciones',
-        icon: Icons.shopping_cart_rounded,
-        backgroundColor: _kpiColors[0],
-        onTap: () => context.go('/ventas'),
+    final shortcuts = <_Shortcut>[
+      _Shortcut(
+        label: 'Nueva Venta',
+        icon: Icons.shopping_cart_outlined,
+        path: '/ventas',
       ),
-      KPICard(
-        label: 'Ventas del Mes',
-        value: money(kpis.salesMonthAmount),
-        trend: '${kpis.salesMonthCount} ventas este mes',
-        icon: Icons.trending_up_rounded,
-        backgroundColor: _kpiColors[1],
-        onTap: () => context.go('/reportes'),
+      _Shortcut(
+        label: 'Comprobantes',
+        icon: Icons.receipt_long_outlined,
+        path: '/comprobantes',
       ),
-      KPICard(
-        label: 'Inventario',
-        value: '${kpis.productsActive}',
-        trend: 'Productos activos',
-        icon: Icons.inventory_2_rounded,
-        backgroundColor: _kpiColors[2],
-        onTap: () => context.go('/inventario'),
+      _Shortcut(
+        label: 'Nueva Compra',
+        icon: Icons.local_shipping_outlined,
+        path: '/compras',
       ),
-      KPICard(
+      _Shortcut(
+        label: 'Reportes',
+        icon: Icons.bar_chart_rounded,
+        path: '/reportes',
+      ),
+      _Shortcut(
         label: 'Clientes',
-        value: '${kpis.clientsActive}',
-        trend: 'Registrados',
-        icon: Icons.people_rounded,
-        backgroundColor: _kpiColors[3],
-        onTap: () => context.go('/clientes'),
+        icon: Icons.people_outline,
+        path: '/clientes',
+      ),
+      _Shortcut(
+        label: 'Caja',
+        icon: Icons.point_of_sale_outlined,
+        path: '/caja',
       ),
     ];
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        int columns = 1;
-        if (width >= AppTokens.breakpointExpanded) {
-          columns = 4;
-        } else if (width >= AppTokens.breakpointMedium) {
-          columns = 2;
-        }
-
-        return GridView.builder(
-          itemCount: cards.length,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            mainAxisSpacing: AppTokens.s12,
-            crossAxisSpacing: AppTokens.s12,
-            childAspectRatio: width >= AppTokens.breakpointExpanded ? 1.6 : 2.2,
-          ),
-          itemBuilder: (_, index) => cards[index],
+        final cols = constraints.maxWidth >= 1100
+            ? 6
+            : constraints.maxWidth >= 720
+                ? 3
+                : 2;
+        const gap = AppTokens.s12;
+        final itemWidth =
+            (constraints.maxWidth - gap * (cols - 1)) / cols;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: shortcuts
+              .map((s) => SizedBox(width: itemWidth, child: s))
+              .toList(growable: false),
         );
       },
     );
   }
 }
 
-class _QuickActions extends StatelessWidget {
-  const _QuickActions();
+class _Shortcut extends StatelessWidget {
+  const _Shortcut({
+    required this.label,
+    required this.icon,
+    required this.path,
+  });
 
-  static const _actions = [
-    (
-      icon: Icons.add_shopping_cart_outlined,
-      label: 'Nueva Venta',
-      route: '/ventas',
-      color: Color(0xFFF97316),
-    ),
-    (
-      icon: Icons.receipt_outlined,
-      label: 'Comprobantes',
-      route: '/comprobantes',
-      color: Color(0xFF7C3AED),
-    ),
-    (
-      icon: Icons.shopping_bag_outlined,
-      label: 'Nueva Compra',
-      route: '/compras',
-      color: Color(0xFF0369A1),
-    ),
-    (
-      icon: Icons.bar_chart_rounded,
-      label: 'Reportes',
-      route: '/reportes',
-      color: Color(0xFF16A34A),
-    ),
-    (
-      icon: Icons.people_outline,
-      label: 'Clientes',
-      route: '/clientes',
-      color: Color(0xFFD97706),
-    ),
-    (
-      icon: Icons.point_of_sale_outlined,
-      label: 'Caja',
-      route: '/caja',
-      color: Color(0xFFDC2626),
-    ),
-  ];
+  final String label;
+  final IconData icon;
+  final String path;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        final cols = w >= 800 ? 6 : w >= 480 ? 3 : 2;
-        final itemW = (w - (cols - 1) * AppTokens.s8) / cols;
-        return Wrap(
-          spacing: AppTokens.s8,
-          runSpacing: AppTokens.s8,
-          children: _actions.map((a) {
-            return SizedBox(
-              width: itemW,
-              child: Material(
-                color: AppTokens.card,
-                borderRadius: BorderRadius.circular(AppTokens.radius),
-                child: InkWell(
-                  onTap: () => context.go(a.route),
-                  borderRadius: BorderRadius.circular(AppTokens.radius),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppTokens.s12,
-                      vertical: AppTokens.s10,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(AppTokens.radius),
-                      border: Border.all(color: AppTokens.border),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: a.color.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Icon(a.icon, size: 18, color: a.color),
-                        ),
-                        const SizedBox(width: AppTokens.s8),
-                        Expanded(
-                          child: Text(
-                            a.label,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Icon(
-                          Icons.chevron_right,
-                          size: 16,
-                          color: AppTokens.mutedForeground,
-                        ),
-                      ],
-                    ),
+    return Material(
+      color: AppTokens.card,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: () => context.go(path),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTokens.s14,
+            vertical: AppTokens.s12,
+          ),
+          decoration: BoxDecoration(
+            border: Border.all(color: AppTokens.border),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: AppTokens.mutedForeground),
+              const SizedBox(width: AppTokens.s10),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppTokens.foreground,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
-}
-
-
-class _LatestSalesMobile extends StatelessWidget {
-  const _LatestSalesMobile({required this.sales});
-
-  final List<LatestSale> sales;
-
-  @override
-  Widget build(BuildContext context) {
-    if (sales.isEmpty) {
-      return const EmptyStateCard(
-        icon: Icons.receipt_long_outlined,
-        message: 'No hay ventas registradas.',
-      );
-    }
-
-    return Column(
-      children: sales.map((sale) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: AppTokens.s8),
-          child: Container(
-            padding: const EdgeInsets.all(AppTokens.s12),
-            decoration: BoxDecoration(
-              color: AppTokens.background,
-              borderRadius: BorderRadius.circular(AppTokens.radius),
-              border: Border.all(color: AppTokens.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        sale.clientName,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    StatusBadge(label: 'Aprobado', status: sale.dgiiStatus),
-                  ],
-                ),
-                const SizedBox(height: AppTokens.s6),
-                Row(
-                  children: [
-                    Text(
-                      formatDate(sale.saleDate),
-                      style: const TextStyle(
-                        color: AppTokens.mutedForeground,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      money(sale.totalAmount),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ],
-                ),
-                if (sale.ncf != null) ...[
-                  const SizedBox(height: AppTokens.s4),
-                  Text(
-                    'NCF: ${sale.ncf}',
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      color: AppTokens.mutedForeground,
-                    ),
-                  ),
-                ],
-              ],
-            ),
+              const Icon(
+                Icons.chevron_right,
+                size: 18,
+                color: AppTokens.mutedForeground,
+              ),
+            ],
           ),
-        );
-      }).toList(),
-    );
-  }
-}
-
-
-class _SalesBarChart extends StatelessWidget {
-  const _SalesBarChart({required this.points});
-
-  final List<SalesSummaryPoint> points;
-
-  @override
-  Widget build(BuildContext context) {
-    if (points.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(10),
-        child: Text('No hay datos de ventas para el periodo seleccionado.'),
-      );
-    }
-
-    final maxAmount = points.fold<double>(
-      0,
-      (prev, item) => math.max(prev, item.totalAmount),
-    );
-    final topAxis = _roundAxisMax(maxAmount);
-    const chartHeight = 320.0;
-    const axisWidth = 54.0;
-    final yTicks = _buildAxisTicks(topAxis, divisions: 4);
-
-    return SizedBox(
-      height: chartHeight + 22,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(
-            width: axisWidth,
-            child: Column(
-              children: [
-                for (final tick in yTicks.reversed)
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.topRight,
-                      child: Text(
-                        _compactMoney(tick),
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: const Color(0xFF67728A),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              children: [
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      return Stack(
-                        children: [
-                          Column(
-                            children: [
-                              for (int i = yTicks.length - 1; i >= 0; i--)
-                                Expanded(
-                                  child: Container(
-                                    margin: const EdgeInsets.only(bottom: 1),
-                                    decoration: BoxDecoration(
-                                      border: Border(
-                                        top: BorderSide(
-                                          color: i == 0
-                                              ? const Color(0xFF96A4BC)
-                                              : const Color(0xFFD8E0EE),
-                                          width: i == 0 ? 1.4 : 1,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: points
-                                .map((point) {
-                                  final ratio = topAxis == 0
-                                      ? 0.0
-                                      : point.totalAmount / topAxis;
-                                  final barHeight = math.max(
-                                    6.0,
-                                    ratio * (chartHeight - 22),
-                                  );
-                                  return Expanded(
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                      ),
-                                      child: Column(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.end,
-                                        children: [
-                                          Tooltip(
-                                            message:
-                                                '${point.periodLabel}: ${money(point.totalAmount)} (${point.transactionCount})',
-                                            child: Container(
-                                              height: barHeight,
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFF1869E8),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                })
-                                .toList(growable: false),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: points
-                      .map(
-                        (point) => Expanded(
-                          child: Text(
-                            _shortLabel(point.periodLabel),
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(color: const Color(0xFF67728A)),
-                          ),
-                        ),
-                      )
-                      .toList(growable: false),
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _LatestSalesTable extends StatelessWidget {
-  const _LatestSalesTable({required this.sales});
+class _KpiResponsiveGrid extends StatelessWidget {
+  const _KpiResponsiveGrid({required this.children});
 
-  final List<LatestSale> sales;
+  final List<Widget> children;
 
   @override
   Widget build(BuildContext context) {
-    if (sales.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 40, horizontal: 16),
-        child: Center(
-          child: Column(
+    final width = MediaQuery.sizeOf(context).width;
+    final cols = width >= 1024
+        ? 4
+        : width >= 720
+            ? 2
+            : 1;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = AppTokens.s16;
+        final cardWidth =
+            (constraints.maxWidth - gap * (cols - 1)) / cols;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: children
+              .map((c) => SizedBox(width: cardWidth, child: c))
+              .toList(growable: false),
+        );
+      },
+    );
+  }
+}
+
+class _KpiSkeletonGrid extends StatelessWidget {
+  const _KpiSkeletonGrid();
+
+  @override
+  Widget build(BuildContext context) {
+    return _KpiResponsiveGrid(
+      children: List.generate(
+        4,
+        (_) => Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(AppTokens.s20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  height: 28,
+                  width: 80,
+                  decoration: BoxDecoration(
+                    color: AppTokens.muted,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: AppTokens.s8),
+                Container(
+                  height: 14,
+                  width: 120,
+                  decoration: BoxDecoration(
+                    color: AppTokens.muted,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// F2 — Quick Actions
+// ─────────────────────────────────────────────────────────────────────────
+
+class _QuickActions extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final actions = <_QuickAction>[
+      _QuickAction(
+        label: 'Informe de cierre de hoy',
+        icon: Icons.access_time_outlined,
+        accent: false,
+        onTap: () => context.go('/panel/cierre'),
+      ),
+      _QuickAction(
+        label: 'Resumen de artículos vendidos hoy',
+        icon: Icons.assignment_outlined,
+        accent: false,
+        onTap: () => context.go('/reportes'),
+      ),
+      _QuickAction(
+        label: 'Iniciar una nueva venta',
+        icon: Icons.shopping_cart_outlined,
+        accent: false,
+        onTap: () => context.go('/ventas'),
+      ),
+      _QuickAction(
+        label: 'Informe de ventas detallado de hoy',
+        icon: Icons.bar_chart_rounded,
+        accent: true,
+        onTap: () => context.go('/reportes'),
+      ),
+      _QuickAction(
+        label: 'Registrar nueva recepción / compra',
+        icon: Icons.cloud_download_outlined,
+        accent: false,
+        onTap: () => context.go('/compras'),
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 720;
+        final cols = isWide ? 2 : 1;
+        const gap = AppTokens.s12;
+        final itemWidth =
+            (constraints.maxWidth - gap * (cols - 1)) / cols;
+
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: actions
+              .map((a) => SizedBox(width: itemWidth, child: a))
+              .toList(growable: false),
+        );
+      },
+    );
+  }
+}
+
+class _QuickAction extends StatelessWidget {
+  const _QuickAction({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    required this.accent,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  /// Botón destacado en el color primario (F2 — uno solo destacado).
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = accent ? AppTokens.primary : AppTokens.card;
+    final fg = accent ? AppTokens.primaryForeground : AppTokens.foreground;
+    final border = accent ? AppTokens.primary : AppTokens.border;
+
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTokens.s16,
+            vertical: AppTokens.s14,
+          ),
+          decoration: BoxDecoration(
+            border: Border.all(color: border),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
             children: [
-              Icon(Icons.receipt_long_outlined, size: 48, color: AppTokens.mutedForeground),
-              SizedBox(height: 16),
-              Text('No hay ventas registradas.', style: TextStyle(color: AppTokens.mutedForeground)),
+              Icon(icon, color: fg, size: 20),
+              const SizedBox(width: AppTokens.s12),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: fg,
+                    fontWeight:
+                        accent ? FontWeight.w700 : FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(Icons.arrow_forward, color: fg, size: 18),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// F3 — Sales chart Mes / Semana
+// ─────────────────────────────────────────────────────────────────────────
+
+class _SalesChartCard extends ConsumerWidget {
+  const _SalesChartCard({required this.chartAsync});
+
+  final AsyncValue<List<DashboardChartPoint>> chartAsync;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final range = ref.watch(dashboardChartRangeProvider);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(AppTokens.s20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Información de ventas',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                _RangeToggle(
+                  active: range,
+                  onChanged: (r) => ref
+                      .read(dashboardChartRangeProvider.notifier)
+                      .state = r,
+                ),
+              ],
+            ),
+            const SizedBox(height: AppTokens.s16),
+            chartAsync.when(
+              loading: () => const SizedBox(
+                height: 280,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+              error: (error, _) => SizedBox(
+                height: 280,
+                child: Center(
+                  child: Text('No se pudo cargar el gráfico: $error'),
+                ),
+              ),
+              data: (points) => _BarChart(points: points, range: range),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RangeToggle extends StatelessWidget {
+  const _RangeToggle({required this.active, required this.onChanged});
+
+  final DashboardChartRange active;
+  final ValueChanged<DashboardChartRange> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<DashboardChartRange>(
+      segments: const [
+        ButtonSegment(
+          value: DashboardChartRange.month,
+          label: Text('Mes'),
+        ),
+        ButtonSegment(
+          value: DashboardChartRange.week,
+          label: Text('Semana'),
+        ),
+      ],
+      selected: {active},
+      onSelectionChanged: (set) => onChanged(set.first),
+    );
+  }
+}
+
+class _BarChart extends StatelessWidget {
+  const _BarChart({required this.points, required this.range});
+
+  final List<DashboardChartPoint> points;
+  final DashboardChartRange range;
+
+  @override
+  Widget build(BuildContext context) {
+    if (points.isEmpty) {
+      return SizedBox(
+        height: 240,
+        child: Center(
+          child: Text(
+            'No hay ventas en el rango seleccionado.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppTokens.mutedForeground,
+                ),
           ),
         ),
       );
     }
 
-    return DataTable(
-      headingRowColor: WidgetStateProperty.all(const Color(0xFFF8FAFC)),
-      horizontalMargin: 24,
-      columnSpacing: 24,
-      dividerThickness: 1,
-      headingRowHeight: 48,
-      dataRowMaxHeight: 60,
-      dataRowMinHeight: 52,
-      columns: const [
-        DataColumn(label: Text('Fecha', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-        DataColumn(label: Text('Cliente', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-        DataColumn(label: Text('Tipo', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-        DataColumn(label: Text('NCF', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-        DataColumn(label: Text('Total', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-        DataColumn(label: Text('Estado', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569)))),
-      ],
-      rows: sales.map((sale) {
-        return DataRow(
-          cells: [
-            DataCell(Text(formatDate(sale.saleDate), style: const TextStyle(fontSize: 13, color: Color(0xFF64748B)))),
-            DataCell(
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    sale.clientName,
-                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF1E293B)),
+    final maxTransactions = points.fold<int>(
+      0,
+      (prev, item) => math.max(prev, item.transactions),
+    );
+    final topAxis = _roundAxisMax(maxTransactions);
+    const chartHeight = 240.0;
+
+    return SizedBox(
+      height: chartHeight + 28,
+      child: Column(
+        children: [
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: points.map((point) {
+                final ratio = topAxis == 0
+                    ? 0.0
+                    : point.transactions / topAxis;
+                final barHeight = math.max(4.0, ratio * chartHeight);
+                return Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: Tooltip(
+                      message:
+                          '${formatDate(point.date)}\n${point.transactions} ventas · ${money(point.total)}',
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          Container(
+                            height: barHeight,
+                            decoration: BoxDecoration(
+                              color: AppTokens.primary,
+                              borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(6),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  if (sale.receiptType == 'fiscal_credit')
-                    const Text('B15 - Fiscal', style: TextStyle(fontSize: 10, color: AppTokens.primary, fontWeight: FontWeight.w600)),
-                ],
-              ),
+                );
+              }).toList(growable: false),
             ),
-            DataCell(
-              Text(
-                _receiptName(sale.receiptType),
-                style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-              ),
-            ),
-            DataCell(
-              Text(
-                sale.ncf ?? '-',
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFF334155)),
-              ),
-            ),
-            DataCell(
-              Text(
-                money(sale.totalAmount),
-                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF0F172A)),
-              ),
-            ),
-            DataCell(StatusBadge(label: 'Aprobado', status: sale.dgiiStatus)),
-          ],
-        );
-      }).toList(),
+          ),
+          const SizedBox(height: AppTokens.s4),
+          Row(
+            children: points.map((point) {
+              return Expanded(
+                child: Center(
+                  child: Text(
+                    range == DashboardChartRange.week
+                        ? _weekdayShort(point.date)
+                        : point.date.day.toString(),
+                    style:
+                        Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: AppTokens.mutedForeground,
+                            ),
+                  ),
+                ),
+              );
+            }).toList(growable: false),
+          ),
+        ],
+      ),
     );
   }
-}
 
+  String _weekdayShort(DateTime d) {
+    const labels = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+    return labels[d.weekday - 1];
+  }
 
-double _roundAxisMax(double value) {
-  if (value <= 0) return 100000;
-  const step = 100000;
-  return ((value / step).ceil() * step).toDouble();
-}
-
-List<double> _buildAxisTicks(double max, {required int divisions}) {
-  if (divisions <= 0) return [0, max];
-  return List.generate(divisions + 1, (index) => (max / divisions) * index);
-}
-
-String _compactMoney(num value) => moneyShort(value);
-
-String _shortLabel(String value) {
-  final normalized = value.trim();
-  if (normalized.length <= 3) return normalized;
-  return normalized.substring(0, 3);
-}
-
-
-String _receiptName(String value) {
-  switch (value) {
-    case 'fiscal_credit':
-      return 'Crédito Fiscal';
-    case 'consumer_final':
-      return 'Consumidor Final';
-    case 'governmental':
-      return 'Gubernamental';
-    case 'special':
-      return 'Especial';
-    case 'export':
-      return 'Exportación';
-    default:
-      return value;
+  static int _roundAxisMax(int max) {
+    if (max <= 5) return 5;
+    if (max <= 10) return 10;
+    if (max <= 20) return 20;
+    if (max <= 50) return 50;
+    return ((max / 50).ceil()) * 50;
   }
 }
+
+// F4 (Cierre del día) vive ahora en `closeout_page.dart` y se accede vía
+// la quick action "Informe de cierre de hoy" → /panel/cierre.

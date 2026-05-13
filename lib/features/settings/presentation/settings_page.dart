@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/responsive/responsive_layout.dart';
@@ -33,6 +34,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       title: 'Configuración',
       description: 'Perfil, sucursal actual, fiscal y secuencias NCF.',
       actions: [
+        OutlinedButton.icon(
+          onPressed: () => context.go('/configuracion'),
+          icon: const Icon(Icons.arrow_back, size: 18),
+          label: const Text('Configuración global'),
+        ),
         OutlinedButton.icon(
           onPressed: _refresh,
           icon: const Icon(Icons.refresh, size: 18),

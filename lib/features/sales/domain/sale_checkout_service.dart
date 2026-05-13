@@ -34,6 +34,14 @@ class SaleCheckoutService {
         );
       }
 
+      // Guarda app_settings.inv_disallow_no_stock — bloquea el carrito antes
+      // de calcular líneas si el stock disponible <= 0 y el flag está activo.
+      if (input.disallowNoStock && product.stock <= 0) {
+        throw SaleCheckoutValidationException(
+          'El producto ${product.name} no tiene stock disponible.',
+        );
+      }
+
       final existing = normalizedItems[product.id];
       if (existing == null) {
         normalizedItems[product.id] = _MutableSaleLine(
@@ -75,6 +83,12 @@ class SaleCheckoutService {
         })
         .toList(growable: false);
 
+    if (input.asCredit && !input.creditAllowSales) {
+      throw const SaleCheckoutValidationException(
+        'Las ventas a crédito están deshabilitadas en la configuración.',
+      );
+    }
+
     if (input.asCredit && input.clientId == null) {
       throw const SaleCheckoutValidationException(
         'Para ventas a crédito debe seleccionar un cliente.',
@@ -84,6 +98,14 @@ class SaleCheckoutService {
     if (receiptType != 'consumer_final' && input.clientId == null) {
       throw const SaleCheckoutValidationException(
         'Debe seleccionar un cliente para este tipo de comprobante.',
+      );
+    }
+
+    // Guarda app_settings.customer_required_for_sale — exige cliente para
+    // cualquier venta cuando el flag está activo.
+    if (input.customerRequiredForSale && input.clientId == null) {
+      throw const SaleCheckoutValidationException(
+        'La configuración requiere seleccionar un cliente para toda venta.',
       );
     }
 
@@ -123,6 +145,9 @@ class SaleCheckoutServiceInput {
     this.paymentMethod,
     this.clientId,
     this.notes,
+    this.disallowNoStock = false,
+    this.customerRequiredForSale = false,
+    this.creditAllowSales = true,
   });
 
   final List<SaleCheckoutSourceItem> items;
@@ -131,6 +156,15 @@ class SaleCheckoutServiceInput {
   final String? paymentMethod;
   final String? clientId;
   final String? notes;
+
+  /// app_settings.inv_disallow_no_stock
+  final bool disallowNoStock;
+
+  /// app_settings.customer_required_for_sale
+  final bool customerRequiredForSale;
+
+  /// app_settings.credit_allow_sales
+  final bool creditAllowSales;
 }
 
 class SaleCheckoutSourceItem {

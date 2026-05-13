@@ -6,8 +6,10 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../clients/presentation/clients_providers.dart';
+import '../../sales/presentation/sales_providers.dart';
 import '../data/cobros_repository.dart';
 import 'cobros_providers.dart';
 
@@ -123,15 +125,48 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
                                           color: AppTokens.destructive,
                                         ),
                                       ),
-                                      FilledButton.icon(
-                                        onPressed: () => _onRegisterPayment(item),
-                                        icon: const Icon(Icons.attach_money, size: 16),
-                                        label: const Text('Abonar'),
-                                        style: FilledButton.styleFrom(
-                                          minimumSize: const Size(0, 34),
-                                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                        ),
+                                      Wrap(
+                                        spacing: 4,
+                                        children: [
+                                          IconButton(
+                                            tooltip: 'Ver factura',
+                                            onPressed: () =>
+                                                _onViewInvoice(item),
+                                            icon: const Icon(
+                                                Icons.visibility_outlined,
+                                                size: 18),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Reimprimir',
+                                            onPressed: () =>
+                                                _onReprintInvoice(item),
+                                            icon: const Icon(
+                                                Icons.print_outlined,
+                                                size: 18),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                          ),
+                                          FilledButton.icon(
+                                            onPressed: () =>
+                                                _onRegisterPayment(item),
+                                            icon: const Icon(
+                                                Icons.attach_money,
+                                                size: 16),
+                                            label: const Text('Abonar'),
+                                            style: FilledButton.styleFrom(
+                                              minimumSize:
+                                                  const Size(0, 34),
+                                              padding: const EdgeInsets
+                                                  .symmetric(
+                                                  horizontal: 10),
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ])
                                 .toList(growable: false),
@@ -233,6 +268,164 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
         SnackBar(content: Text('No se pudo registrar pago: $error')),
       );
     }
+  }
+
+  /// Abre un diálogo con el detalle de la venta (resumen + opción de imprimir).
+  Future<void> _onViewInvoice(ReceivableSale sale) async {
+    await showDialog(
+      context: context,
+      builder: (_) => _InvoiceViewerDialog(sale: sale),
+    );
+  }
+
+  /// Imprime directamente sin pasar por el viewer (reusa
+  /// `SalesRepository.prepareCompletedSalePrintJob` + `PrintReceiptDialog`).
+  Future<void> _onReprintInvoice(ReceivableSale sale) async {
+    try {
+      final salesRepo = ref.read(salesRepositoryProvider);
+      final job = await salesRepo.prepareCompletedSalePrintJob(
+        saleId: sale.id,
+      );
+      if (!mounted) return;
+      if (job == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No se pudo preparar la factura (¿venta no completada?).',
+            ),
+          ),
+        );
+        return;
+      }
+      await PrintReceiptDialog.show(context, job);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al preparar impresión: $e')),
+      );
+    }
+  }
+}
+
+class _InvoiceViewerDialog extends ConsumerWidget {
+  const _InvoiceViewerDialog({required this.sale});
+
+  final ReceivableSale sale;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(AppTokens.s24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Padding(
+          padding: const EdgeInsets.all(AppTokens.s20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.receipt_long_outlined,
+                      color: AppTokens.primary),
+                  const SizedBox(width: AppTokens.s8),
+                  Expanded(
+                    child: Text(
+                      'Factura ${sale.saleNumber}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 20),
+                  ),
+                ],
+              ),
+              const Divider(),
+              _kv('Cliente', sale.clientName),
+              _kv('Fecha', formatDate(sale.saleDate)),
+              if (sale.ncf != null) _kv('NCF', sale.ncf!),
+              _kv('Total', money(sale.totalAmount),
+                  highlight: true),
+              _kv('Pagado', money(sale.paidAmount)),
+              _kv('Balance', money(sale.balanceDue), danger: true),
+              const SizedBox(height: AppTokens.s16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, size: 18),
+                      label: const Text('Cerrar'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        try {
+                          final salesRepo =
+                              ref.read(salesRepositoryProvider);
+                          final job = await salesRepo
+                              .prepareCompletedSalePrintJob(
+                                  saleId: sale.id);
+                          if (!context.mounted) return;
+                          if (job == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                    'No se pudo preparar la factura.'),
+                              ),
+                            );
+                            return;
+                          }
+                          await PrintReceiptDialog.show(context, job);
+                        } catch (e) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Error: $e')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.print_outlined, size: 18),
+                      label: const Text('Reimprimir'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String label, String value,
+      {bool highlight = false, bool danger = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label,
+                style: const TextStyle(color: AppTokens.mutedForeground)),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: highlight ? FontWeight.w800 : FontWeight.w700,
+              fontSize: highlight ? 16 : 14,
+              color: danger
+                  ? AppTokens.destructive
+                  : (highlight ? AppTokens.primary : AppTokens.foreground),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

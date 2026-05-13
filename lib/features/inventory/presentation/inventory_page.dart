@@ -8,6 +8,7 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../data/file_io_helper.dart';
 import '../data/inventory_excel_service.dart';
@@ -51,11 +52,12 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         const SizedBox(width: AppTokens.s8),
         _buildExcelMenu(),
         const SizedBox(width: AppTokens.s8),
-        FilledButton.icon(
-          onPressed: _onCreateProduct,
-          icon: const Icon(Icons.add, size: 18),
-          label: const Text('Nuevo Producto'),
-        ),
+        if (ref.watch(roleAccessProvider).canEditPrices)
+          FilledButton.icon(
+            onPressed: _onCreateProduct,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Nuevo Producto'),
+          ),
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -154,9 +156,11 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                         columns: const [
                           DataColumn(label: Text('Producto')),
                           DataColumn(label: Text('SKU')),
+                          DataColumn(label: Text('Referencia')),
                           DataColumn(label: Text('Categoría')),
-                          DataColumn(label: Text('Precio')),
-                          DataColumn(label: Text('Stock')),
+                          DataColumn(label: Text('Costo'), numeric: true),
+                          DataColumn(label: Text('Precio'), numeric: true),
+                          DataColumn(label: Text('Stock'), numeric: true),
                           DataColumn(label: Text('Estado')),
                           DataColumn(label: Text('Acciones')),
                         ],
@@ -164,7 +168,14 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                           cells: [
                             DataCell(Text(product.name, style: const TextStyle(fontWeight: FontWeight.w600))),
                             DataCell(Text(product.sku ?? '-')),
+                            DataCell(Text(product.internalCode ?? '-')),
                             DataCell(Text(product.categoryName ?? '-')),
+                            DataCell(Text(
+                              money(product.cost),
+                              style: const TextStyle(
+                                color: AppTokens.mutedForeground,
+                              ),
+                            )),
                             DataCell(Text(money(product.price))),
                             DataCell(Text(
                               qty(product.stock),
@@ -177,23 +188,43 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                               label: product.isActive ? 'Activo' : 'Inactivo',
                               status: product.isActive ? 'active' : 'inactive',
                             )),
-                            DataCell(Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.edit_outlined, size: 20),
-                                  onPressed: () => _onEditProduct(product),
-                                ),
-                                IconButton(
-                                  icon: Icon(
-                                    product.isActive ? Icons.block : Icons.check_circle_outline,
-                                    size: 20,
-                                    color: product.isActive ? AppTokens.error : AppTokens.success,
+                            DataCell(Builder(builder: (_) {
+                              final access = ref.watch(roleAccessProvider);
+                              return Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (access.canEditPrices)
+                                    IconButton(
+                                      tooltip: 'Editar',
+                                      icon: const Icon(Icons.edit_outlined,
+                                          size: 20),
+                                      onPressed: () => _onEditProduct(product),
+                                    ),
+                                  IconButton(
+                                    tooltip: 'Historial',
+                                    icon: const Icon(Icons.history_rounded,
+                                        size: 20),
+                                    onPressed: () => _onShowHistory(product),
                                   ),
-                                  onPressed: () => _onToggleActive(product),
-                                ),
-                              ],
-                            )),
+                                  if (access.canManageInventoryAdjustments)
+                                    IconButton(
+                                      tooltip: product.isActive
+                                          ? 'Desactivar'
+                                          : 'Activar',
+                                      icon: Icon(
+                                        product.isActive
+                                            ? Icons.block
+                                            : Icons.check_circle_outline,
+                                        size: 20,
+                                        color: product.isActive
+                                            ? AppTokens.error
+                                            : AppTokens.success,
+                                      ),
+                                      onPressed: () => _onToggleActive(product),
+                                    ),
+                                ],
+                              );
+                            })),
                           ],
                         )).toList(),
                       ),
@@ -324,6 +355,13 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         SnackBar(content: Text('No se pudo actualizar estado: $error')),
       );
     }
+  }
+
+  Future<void> _onShowHistory(InventoryProduct product) async {
+    await showDialog(
+      context: context,
+      builder: (_) => _ProductHistoryDialog(product: product),
+    );
   }
 
   Future<void> _saveProduct(
@@ -1241,6 +1279,269 @@ class _ImportResultDialog extends StatelessWidget {
           child: const Text('Cerrar'),
         ),
       ],
+    );
+  }
+}
+
+/// Dialog que muestra el historial unificado de movimientos de un producto.
+class _ProductHistoryDialog extends ConsumerStatefulWidget {
+  const _ProductHistoryDialog({required this.product});
+
+  final InventoryProduct product;
+
+  @override
+  ConsumerState<_ProductHistoryDialog> createState() =>
+      _ProductHistoryDialogState();
+}
+
+class _ProductHistoryDialogState
+    extends ConsumerState<_ProductHistoryDialog> {
+  late Future<List<ProductMovementEntry>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<List<ProductMovementEntry>> _load() {
+    return ref
+        .read(inventoryRepositoryProvider)
+        .fetchProductHistory(widget.product.id);
+  }
+
+  void _refresh() => setState(() => _future = _load());
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(AppTokens.s24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
+        child: Padding(
+          padding: const EdgeInsets.all(AppTokens.s20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.history_rounded,
+                      color: AppTokens.primary),
+                  const SizedBox(width: AppTokens.s8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Historial del producto',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          '${widget.product.name}'
+                          '${widget.product.sku != null ? "  ·  SKU ${widget.product.sku}" : ""}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: AppTokens.mutedForeground),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _refresh,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    tooltip: 'Actualizar',
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 20),
+                  ),
+                ],
+              ),
+              const Divider(height: AppTokens.s16),
+              Expanded(
+                child: FutureBuilder<List<ProductMovementEntry>>(
+                  future: _future,
+                  builder: (context, snap) {
+                    if (snap.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                          child: CircularProgressIndicator());
+                    }
+                    if (snap.hasError) {
+                      return Center(
+                        child: Text('Error: ${snap.error}'),
+                      );
+                    }
+                    final entries =
+                        snap.data ?? const <ProductMovementEntry>[];
+                    if (entries.isEmpty) {
+                      return Center(
+                        child: Text(
+                          'Este producto aún no tiene movimientos.',
+                          style: TextStyle(
+                              color: AppTokens.mutedForeground),
+                        ),
+                      );
+                    }
+                    final totalIn = entries
+                        .where((e) => e.isIncoming)
+                        .fold<double>(0, (s, e) => s + e.quantity);
+                    final totalOut = entries
+                        .where((e) => !e.isIncoming)
+                        .fold<double>(0, (s, e) => s + e.quantity.abs());
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(
+                              bottom: AppTokens.s12),
+                          child: Row(
+                            children: [
+                              Text(
+                                '${entries.length} movimientos',
+                                style: const TextStyle(
+                                    color: AppTokens.mutedForeground),
+                              ),
+                              const Spacer(),
+                              Text(
+                                'Entradas: ${qty(totalIn.toInt())}',
+                                style: const TextStyle(
+                                  color: AppTokens.success,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Text(
+                                'Salidas: ${qty(totalOut.toInt())}',
+                                style: const TextStyle(
+                                  color: AppTokens.destructive,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Text(
+                                'Stock actual: ${qty(widget.product.stock.toInt())}',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w800),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.separated(
+                            itemCount: entries.length,
+                            separatorBuilder: (_, _) => const Divider(
+                              height: 1,
+                              color: AppTokens.border,
+                            ),
+                            itemBuilder: (context, i) =>
+                                _MovementTile(entry: entries[i]),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MovementTile extends StatelessWidget {
+  const _MovementTile({required this.entry});
+
+  final ProductMovementEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = entry.isIncoming
+        ? AppTokens.success
+        : AppTokens.destructive;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s10),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              entry.isIncoming
+                  ? Icons.arrow_downward
+                  : Icons.arrow_upward,
+              color: color,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.kind.label,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${formatDateTime(entry.when)}'
+                  '${entry.reference != null ? "  ·  ${entry.reference}" : ""}',
+                  style: const TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                  ),
+                ),
+                if (entry.notes != null && entry.notes!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      entry.notes!,
+                      style: const TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '${entry.isIncoming ? "+" : ""}${entry.quantity.toStringAsFixed(entry.quantity % 1 == 0 ? 0 : 2)}',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              if (entry.amount > 0)
+                Text(
+                  money(entry.amount),
+                  style: const TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 11,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

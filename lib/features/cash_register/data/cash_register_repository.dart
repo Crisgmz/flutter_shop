@@ -87,6 +87,87 @@ class OpenCashInput {
   final String? notes;
 }
 
+/// Movimiento manual de efectivo dentro de la sesión activa.
+class CashMovementInput {
+  CashMovementInput({
+    required this.movementType,
+    required this.amount,
+    this.reason,
+    this.notes,
+  });
+
+  /// 'deposit' | 'withdrawal' | 'adjustment' | 'opening_top_up'.
+  final String movementType;
+  final double amount;
+  final String? reason;
+  final String? notes;
+}
+
+class CashMovementEntity {
+  CashMovementEntity({
+    required this.id,
+    required this.movementType,
+    required this.amount,
+    required this.occurredAt,
+    this.reason,
+    this.notes,
+    this.performedBy,
+  });
+
+  factory CashMovementEntity.fromMap(Map<String, dynamic> map) {
+    return CashMovementEntity(
+      id: (map['id'] ?? '').toString(),
+      movementType: (map['movement_type'] ?? '').toString(),
+      amount: _toDouble(map['amount']),
+      occurredAt:
+          DateTime.tryParse((map['occurred_at'] ?? '').toString()) ??
+              DateTime.now(),
+      reason: map['reason']?.toString(),
+      notes: map['notes']?.toString(),
+      performedBy: map['performed_by']?.toString(),
+    );
+  }
+
+  final String id;
+
+  /// 'deposit' | 'withdrawal' | 'adjustment' | 'opening_top_up'.
+  final String movementType;
+  final double amount;
+  final DateTime occurredAt;
+  final String? reason;
+  final String? notes;
+  final String? performedBy;
+
+  /// Delta con signo: positivo si suma a la caja, negativo si resta.
+  double get signedAmount {
+    switch (movementType) {
+      case 'deposit':
+      case 'opening_top_up':
+      case 'adjustment':
+        return amount;
+      case 'withdrawal':
+        return -amount;
+      default:
+        return 0;
+    }
+  }
+
+  String get typeLabel {
+    switch (movementType) {
+      case 'deposit':
+        return 'Depósito';
+      case 'withdrawal':
+        return 'Sangría';
+      case 'adjustment':
+        return 'Ajuste';
+      case 'opening_top_up':
+        return 'Refuerzo de apertura';
+      default:
+        return movementType;
+    }
+  }
+}
+
 class CloseCashInput {
   CloseCashInput({required this.closingAmount, this.notes});
 
@@ -278,6 +359,82 @@ class CashRegisterRepository {
       totalExpenses: totalExpenses,
       cashExpenses: cashExpenses,
     );
+  }
+
+  /// Registra un movimiento manual de efectivo en la sesión activa.
+  /// El trigger SQL ajusta `cash_sessions.expected_amount` automáticamente.
+  Future<void> addMovement(CashMovementInput input) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      throw Exception('Sesión inválida. Inicia sesión de nuevo.');
+    }
+    final openSession = await _fetchOpenSession(branchId);
+    if (openSession == null) {
+      throw Exception(
+        'No hay una sesión de caja abierta. Abre la caja primero.',
+      );
+    }
+    if (input.amount <= 0) {
+      throw Exception('El monto debe ser mayor que cero.');
+    }
+
+    await _client.from('cash_register_movements').insert({
+      'branch_id': branchId,
+      'cash_session_id': openSession.id,
+      'movement_type': input.movementType,
+      'amount': _round2(input.amount),
+      'reason': _nullIfEmpty(input.reason),
+      'notes': _nullIfEmpty(input.notes),
+      'performed_by': userId,
+    });
+  }
+
+  Future<List<CashMovementEntity>> fetchMovementsForSession(
+    String cashSessionId,
+  ) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final rows = await _client
+        .from('cash_register_movements')
+        .select(
+          'id, movement_type, amount, reason, notes, occurred_at, performed_by',
+        )
+        .eq('branch_id', branchId)
+        .eq('cash_session_id', cashSessionId)
+        .order('occurred_at', ascending: false);
+
+    return rows
+        .map((item) => CashMovementEntity.fromMap(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Sella un cierre Z fiscal (inmutable) para una sesión de caja cerrada.
+  /// Llama al RPC `seal_fiscal_z_closure` que valida que la sesión esté
+  /// cerrada y que no exista ya un cierre Z primario para ella.
+  /// Devuelve el UUID del cierre Z creado.
+  Future<String> sealFiscalZClosure(String cashSessionId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada.');
+    }
+    final result = await _client.rpc(
+      'seal_fiscal_z_closure',
+      params: {
+        'p_branch_id': branchId,
+        'p_cash_session_id': cashSessionId,
+      },
+    );
+    if (result == null) {
+      throw Exception('No se pudo sellar el cierre Z.');
+    }
+    return result.toString();
   }
 
   Future<String?> currentOpenSessionId() async {

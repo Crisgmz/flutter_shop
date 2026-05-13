@@ -62,12 +62,32 @@ class AppShell extends ConsumerWidget {
       }
     }
 
-    final currentNavItem =
-        visibleNavItems.where((item) => item.path == currentPath).firstOrNull ??
-        navItems.where((item) => item.path == currentPath).firstOrNull;
-    final isCurrentPathVisible =
+    final roleCode = accessAsync.valueOrNull?.roleCode ?? userInfo?.roleCode;
+    final isAdmin = roleCode == 'admin';
+
+    bool pathMatches(NavItem item, String path) {
+      return path == item.path || path.startsWith('${item.path}/');
+    }
+
+    final currentNavItem = visibleNavItems
+            .where((item) => pathMatches(item, currentPath))
+            .firstOrNull ??
+        navItems
+            .where((item) => pathMatches(item, currentPath))
+            .firstOrNull;
+
+    // Visibilidad: admin nunca ve "Acceso restringido". Para los demás roles
+    // un path es válido si coincide con (o desciende de) un nav item visible.
+    // `/devoluciones` es una sub-pantalla del POS — hereda el acceso de
+    // `/ventas`.
+    final isCurrentPathVisible = isAdmin ||
         currentPath == '/panel' ||
-        visibleNavItems.any((item) => item.path == currentPath);
+        currentPath.startsWith('/panel/') ||
+        visibleNavItems.any((item) => pathMatches(item, currentPath)) ||
+        (currentPath == '/devoluciones' &&
+            visibleNavItems.any((item) => item.path == '/ventas')) ||
+        (currentPath.startsWith('/devoluciones/') &&
+            visibleNavItems.any((item) => item.path == '/ventas'));
     final layoutMode = appPageLayoutModeForPath(currentPath);
 
     return Scaffold(
@@ -104,19 +124,25 @@ class AppShell extends ConsumerWidget {
                 onSelectBranch: selectBranch,
                 onSignOut: signOut,
               ),
-              body: DecoratedBox(
-                decoration: const BoxDecoration(
-                  gradient: AppTokens.contentGradient,
-                ),
-                child: SafeArea(
-                  top: false,
-                  child: AppPageLayout(
-                    mode: layoutMode,
-                    child: isCurrentPathVisible
-                        ? child
-                        : _RoleRestrictedView(
-                            onGoHome: () => context.go('/panel'),
-                          ),
+              // SelectionArea permite seleccionar y copiar cualquier texto
+              // dentro del shell (totales, NCF, IDs, etc.). Va aquí —no en
+              // MaterialApp.builder— porque necesita un Overlay ancestral
+              // y el Scaffold de arriba lo provee.
+              body: SelectionArea(
+                child: DecoratedBox(
+                  decoration: const BoxDecoration(
+                    gradient: AppTokens.contentGradient,
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    child: AppPageLayout(
+                      mode: layoutMode,
+                      child: isCurrentPathVisible
+                          ? child
+                          : _RoleRestrictedView(
+                              onGoHome: () => context.go('/panel'),
+                            ),
+                    ),
                   ),
                 ),
               ),
@@ -160,26 +186,24 @@ class _TopBar extends StatelessWidget implements PreferredSizeWidget {
     
     return AppBar(
       elevation: 0,
-      backgroundColor: Colors.white,
-      foregroundColor: AppTokens.foreground,
-      surfaceTintColor: Colors.white,
+      backgroundColor: AppTokens.sidebarBackground,
+      foregroundColor: AppTokens.sidebarForeground,
+      surfaceTintColor: AppTokens.sidebarBackground,
+      iconTheme: const IconThemeData(color: AppTokens.sidebarForeground),
       automaticallyImplyLeading: isMobile,
       centerTitle: false,
       title: Row(
         children: [
           if (!isMobile) ...[
-            // Subtle indicator of where we are if needed, or just spacers
             const SizedBox(width: AppTokens.s8),
           ],
           const Spacer(),
-          // Branch Selector
           _BranchSelector(
             currentBranchName: branchName,
             options: branchOptions,
             onSelect: onSelectBranch,
           ),
           const SizedBox(width: AppTokens.s16),
-          // User Profile
           _UserProfileMenu(
             userInfo: userInfo,
             effectiveRoleLabel: effectiveRoleLabel,
@@ -190,7 +214,7 @@ class _TopBar extends StatelessWidget implements PreferredSizeWidget {
       ),
       bottom: const PreferredSize(
         preferredSize: Size.fromHeight(1),
-        child: Divider(height: 1, color: Color(0xFFF1F5F9)),
+        child: Divider(height: 1, color: AppTokens.sidebarBorder),
       ),
     );
   }
@@ -227,20 +251,33 @@ class _BranchSelector extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: const Color(0xFFF1F5F9),
+          color: AppTokens.sidebarAccent,
           borderRadius: BorderRadius.circular(AppTokens.radius),
+          border: Border.all(color: AppTokens.sidebarBorder),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.apartment_rounded, size: 18, color: Color(0xFF64748B)),
+            const Icon(
+              Icons.apartment_rounded,
+              size: 18,
+              color: AppTokens.sidebarForeground,
+            ),
             const SizedBox(width: 8),
             Text(
               currentBranchName,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF334155)),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppTokens.sidebarForeground,
+              ),
             ),
             const SizedBox(width: 4),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Color(0xFF64748B)),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 16,
+              color: AppTokens.sidebarForeground,
+            ),
           ],
         ),
       ),
@@ -280,12 +317,20 @@ class _UserProfileMenu extends StatelessWidget {
           children: [
             Text(
               name.isEmpty ? 'Usuario' : name,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Color(0xFF1E293B)),
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: AppTokens.sidebarForeground,
+              ),
             ),
             if (roleLabel.isNotEmpty)
               Text(
                 roleLabel,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8), fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppTokens.sidebarMuted,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
           ],
         ),
@@ -294,7 +339,7 @@ class _UserProfileMenu extends StatelessWidget {
           width: 36,
           height: 36,
           decoration: const BoxDecoration(
-            color: Color(0xFF2563EB),
+            color: AppTokens.primary,
             shape: BoxShape.circle,
           ),
           child: Center(
@@ -313,7 +358,11 @@ class _UserProfileMenu extends StatelessWidget {
         const SizedBox(width: 4),
         IconButton(
           onPressed: onSignOut,
-          icon: const Icon(Icons.logout_rounded, size: 20, color: Color(0xFF94A3B8)),
+          icon: const Icon(
+            Icons.logout_rounded,
+            size: 20,
+            color: AppTokens.sidebarMuted,
+          ),
           tooltip: 'Cerrar sesión',
         ),
       ],

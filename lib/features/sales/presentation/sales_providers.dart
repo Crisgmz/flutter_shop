@@ -6,6 +6,11 @@ import '../data/sales_repository.dart';
 final salesSearchProvider = StateProvider<String>((ref) => '');
 final salesSelectedCategoryProvider = StateProvider<String?>((ref) => null);
 
+/// Modo del POS: venta normal o registro de devolución (PRD F5).
+enum PosMode { sale, returnMode }
+
+final posModeProvider = StateProvider<PosMode>((ref) => PosMode.sale);
+
 final salesRepositoryProvider = Provider<SalesRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
   return SalesRepository(client);

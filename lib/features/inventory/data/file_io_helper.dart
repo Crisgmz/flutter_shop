@@ -7,18 +7,26 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 class FileIoHelper {
+  /// Guarda bytes con un diálogo nativo de "Guardar como" (desktop/web) o
+  /// dispara compartir (mobile).
+  ///
+  /// `extension` sin el punto (ej: 'xlsx', 'pdf', 'csv', 'txt'). Si el
+  /// usuario no agrega la extensión en el diálogo, la añadimos.
   static Future<bool> saveBytes({
     required Uint8List bytes,
     required String fileName,
     String dialogTitle = 'Guardar archivo',
+    String extension = 'xlsx',
   }) async {
+    final allowed = <String>[extension];
+
     if (kIsWeb) {
       final result = await FilePicker.platform.saveFile(
         dialogTitle: dialogTitle,
         fileName: fileName,
         bytes: bytes,
         type: FileType.custom,
-        allowedExtensions: const ['xlsx'],
+        allowedExtensions: allowed,
       );
       return result != null;
     }
@@ -39,10 +47,11 @@ class FileIoHelper {
       dialogTitle: dialogTitle,
       fileName: fileName,
       type: FileType.custom,
-      allowedExtensions: const ['xlsx'],
+      allowedExtensions: allowed,
     );
     if (path == null) return false;
-    final fixed = path.toLowerCase().endsWith('.xlsx') ? path : '$path.xlsx';
+    final dotExt = '.$extension';
+    final fixed = path.toLowerCase().endsWith(dotExt) ? path : '$path$dotExt';
     await File(fixed).writeAsBytes(bytes, flush: true);
     return true;
   }

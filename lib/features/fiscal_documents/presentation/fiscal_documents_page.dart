@@ -5,6 +5,7 @@ import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../data/fiscal_documents_repository.dart';
 import 'fiscal_documents_providers.dart';
@@ -415,7 +416,9 @@ class _FiscalDocDetailDialogState
     final statusLabel = _statusLabels[doc.fiscalStatus] ?? doc.fiscalStatus;
     final receiptLabel =
         _receiptLabels[doc.receiptType] ?? _pretty(doc.receiptType);
-    final canVoid = !doc.isVoided && doc.fiscalStatus != 'voided';
+    final access = ref.watch(roleAccessProvider);
+    final canVoid =
+        !doc.isVoided && doc.fiscalStatus != 'voided' && access.canVoidSale;
 
     return AlertDialog(
       title: Row(

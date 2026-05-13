@@ -247,7 +247,9 @@ void invalidateBranchScopedData(dynamic ref) {
   invalidate(shellAccessProfileProvider);
   invalidate(shellVisibleNavItemsProvider);
   invalidate(shellVisibleNavSectionsProvider);
-  invalidate(dashboardDataProvider);
+  invalidate(dashboardKpisProvider);
+  invalidate(dashboardChartProvider);
+  invalidate(dashboardCloseoutProvider);
   invalidate(inventoryCategoriesProvider);
   invalidate(inventoryProductsProvider);
   invalidate(salesProductsProvider);

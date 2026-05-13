@@ -15,6 +15,9 @@ class SalesProduct {
     this.barcode,
     this.categoryId,
     this.categoryName,
+    this.priceTier1,
+    this.priceTier2,
+    this.priceTier3,
   });
 
   final String id;
@@ -27,12 +30,38 @@ class SalesProduct {
   final double taxRate;
   final double stock;
   final bool isActive;
+  final double? priceTier1;
+  final double? priceTier2;
+  final double? priceTier3;
+
+  /// Devuelve el precio efectivo según el tier del cliente.
+  /// `tier`: 'retail' | 'tier_1' | 'tier_2' | 'tier_3' | null.
+  /// Si el tier no tiene precio configurado, cae al precio base.
+  double priceFor(String? tier) {
+    switch ((tier ?? 'retail').toLowerCase()) {
+      case 'tier_1':
+        return priceTier1 ?? price;
+      case 'tier_2':
+        return priceTier2 ?? price;
+      case 'tier_3':
+        return priceTier3 ?? price;
+      default:
+        return price;
+    }
+  }
 
   factory SalesProduct.fromMap(
     Map<String, dynamic> map,
     Map<String, String> categoryNames,
   ) {
     final categoryId = map['category_id']?.toString();
+
+    double? optionalDouble(dynamic v) {
+      if (v == null) return null;
+      if (v is double) return v;
+      if (v is int) return v.toDouble();
+      return double.tryParse(v.toString());
+    }
 
     return SalesProduct(
       id: (map['id'] ?? '').toString(),
@@ -45,6 +74,9 @@ class SalesProduct {
       taxRate: _toDouble(map['tax_rate']),
       stock: _toDouble(map['stock']),
       isActive: map['is_active'] == true,
+      priceTier1: optionalDouble(map['price_tier_1']),
+      priceTier2: optionalDouble(map['price_tier_2']),
+      priceTier3: optionalDouble(map['price_tier_3']),
     );
   }
 }
@@ -64,26 +96,42 @@ class SalesCategory {
 }
 
 class SalesClient {
-  SalesClient({required this.id, required this.fullName});
+  SalesClient({
+    required this.id,
+    required this.fullName,
+    this.priceTier = 'retail',
+  });
 
   final String id;
   final String fullName;
+
+  /// 'retail' | 'tier_1' | 'tier_2' | 'tier_3'.
+  final String priceTier;
 
   factory SalesClient.fromMap(Map<String, dynamic> map) {
     return SalesClient(
       id: (map['id'] ?? '').toString(),
       fullName: (map['full_name'] ?? '').toString(),
+      priceTier: (map['price_tier'] ?? 'retail').toString(),
     );
   }
 }
 
 class SaleCartItem {
-  SaleCartItem({required this.product, required this.quantity});
+  SaleCartItem({
+    required this.product,
+    required this.quantity,
+    double? unitPrice,
+  }) : unitPrice = unitPrice ?? product.price;
 
   final SalesProduct product;
   final double quantity;
 
-  double get lineSubtotal => _round2(quantity * product.price);
+  /// Precio aplicado a esta línea. Por defecto = `product.price`; cuando hay
+  /// un cliente con tier asignado, el POS lo setea con `priceFor(tier)`.
+  final double unitPrice;
+
+  double get lineSubtotal => _round2(quantity * unitPrice);
   double get lineTax => _round2(lineSubtotal * (product.taxRate / 100));
   double get lineTotal => _round2(lineSubtotal + lineTax);
 }
@@ -96,6 +144,9 @@ class SaleCheckoutInput {
     this.paymentMethod,
     this.clientId,
     this.notes,
+    this.disallowNoStock = false,
+    this.customerRequiredForSale = false,
+    this.creditAllowSales = true,
   });
 
   final List<SaleCartItem> items;
@@ -104,6 +155,15 @@ class SaleCheckoutInput {
   final String? paymentMethod;
   final String? clientId;
   final String? notes;
+
+  /// app_settings.inv_disallow_no_stock
+  final bool disallowNoStock;
+
+  /// app_settings.customer_required_for_sale
+  final bool customerRequiredForSale;
+
+  /// app_settings.credit_allow_sales
+  final bool creditAllowSales;
 }
 
 class SaleCheckoutResult {
@@ -175,7 +235,8 @@ class SalesRepository {
     final rows = await _client
         .from('products')
         .select(
-          'id, name, sku, barcode, category_id, price, tax_rate, stock, is_active',
+          'id, name, sku, barcode, category_id, price, tax_rate, stock, '
+          'is_active, price_tier_1, price_tier_2, price_tier_3',
         )
         .eq('branch_id', branchId)
         .eq('is_active', true)
@@ -197,7 +258,7 @@ class SalesRepository {
 
     final rows = await _client
         .from('clients')
-        .select('id, full_name')
+        .select('id, full_name, price_tier')
         .eq('branch_id', branchId)
         .eq('is_active', true)
         .order('full_name');
@@ -228,7 +289,8 @@ class SalesRepository {
                 product: SaleCheckoutSourceProduct(
                   id: item.product.id,
                   name: item.product.name,
-                  price: item.product.price,
+                  // unitPrice ya respeta el tier del cliente si aplica
+                  price: item.unitPrice,
                   taxRate: item.product.taxRate,
                   stock: item.product.stock,
                   isActive: item.product.isActive,
@@ -242,6 +304,9 @@ class SalesRepository {
         paymentMethod: input.paymentMethod,
         clientId: _nullIfEmpty(input.clientId),
         notes: input.notes,
+        disallowNoStock: input.disallowNoStock,
+        customerRequiredForSale: input.customerRequiredForSale,
+        creditAllowSales: input.creditAllowSales,
       ),
     );
 
@@ -430,12 +495,253 @@ class SalesRepository {
     );
   }
 
+  /// Busca una venta por número en la sucursal actual y devuelve sus líneas
+  /// listas para precargar el carrito en modo devolución. Si no la encuentra,
+  /// retorna null.
+  Future<SaleLookupResult?> fetchSaleForReturn(String saleNumber) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return null;
+    final cleaned = saleNumber.trim();
+    if (cleaned.isEmpty) return null;
+
+    final rows = await _client
+        .from('sales')
+        .select('id, sale_number, client_id, status, total_amount')
+        .eq('branch_id', branchId)
+        .eq('sale_number', cleaned)
+        .limit(1);
+
+    if (rows.isEmpty) return null;
+    final sale = Map<String, dynamic>.from(rows.first as Map);
+
+    final itemRows = await _client
+        .from('sale_items')
+        .select(
+          'product_id, description, quantity, unit_price, tax_rate, line_total',
+        )
+        .eq('branch_id', branchId)
+        .eq('sale_id', sale['id'])
+        .order('created_at');
+
+    final products = await fetchProducts();
+    final productsById = {for (final p in products) p.id: p};
+
+    final items = <SaleCartItem>[];
+    for (final raw in itemRows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final productId = row['product_id']?.toString();
+      if (productId == null) continue;
+      final product = productsById[productId];
+      if (product == null) continue;
+      final qty = (row['quantity'] is num)
+          ? (row['quantity'] as num).toDouble()
+          : double.tryParse(row['quantity']?.toString() ?? '') ?? 0;
+      if (qty <= 0) continue;
+      items.add(SaleCartItem(product: product, quantity: qty));
+    }
+
+    return SaleLookupResult(
+      saleId: sale['id'].toString(),
+      saleNumber: sale['sale_number']?.toString() ?? cleaned,
+      clientId: sale['client_id']?.toString(),
+      status: (sale['status'] ?? '').toString(),
+      totalAmount: _toDoubleResult(sale['total_amount']),
+      items: items,
+    );
+  }
+
+  /// Lee las últimas devoluciones de la sucursal actual.
+  Future<List<ReturnSummary>> fetchRecentReturns({int limit = 50}) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final rows = await _client
+        .from('returns')
+        .select(
+          'id, return_number, return_date, total_amount, tax_amount, '
+          'notes, original_sale_id, '
+          'clients(full_name), '
+          'return_items(quantity)',
+        )
+        .eq('branch_id', branchId)
+        .order('return_date', ascending: false)
+        .limit(limit);
+
+    return rows
+        .map((item) => ReturnSummary.fromMap(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Procesa una devolución desde el POS llamando al RPC `process_return`.
+  /// El RPC inserta la cabecera + líneas y dispara el trigger que suma stock.
+  /// Si la venta original fue a crédito y se proporciona cliente, descuenta
+  /// `clients.balance_due` automáticamente.
+  Future<ReturnProcessedResult> processReturn(ReturnInput input) async {
+    if (input.items.isEmpty) {
+      throw const SaleCheckoutValidationException(
+        'No hay productos para devolver.',
+      );
+    }
+    final user = _client.auth.currentUser;
+    if (user == null) {
+      throw Exception('La sesión no es válida. Inicia sesión de nuevo.');
+    }
+
+    final payload = {
+      if (input.clientId != null && input.clientId!.isNotEmpty)
+        'p_client_id': input.clientId,
+      if (input.originalSaleId != null && input.originalSaleId!.isNotEmpty)
+        'p_original_sale_id': input.originalSaleId,
+      if (input.notes != null && input.notes!.isNotEmpty)
+        'p_notes': input.notes,
+      'p_items': input.items
+          .map((item) => {
+                'product_id': item.product.id,
+                'quantity': item.quantity,
+                'unit_price': item.product.price,
+                'tax_rate': item.product.taxRate,
+              })
+          .toList(growable: false),
+    };
+
+    final result = await _client.rpc('process_return', params: payload);
+    if (result is! Map) {
+      throw Exception('No se pudo procesar la devolución.');
+    }
+    return ReturnProcessedResult.fromMap(
+      Map<String, dynamic>.from(result),
+    );
+  }
+
   Future<String?> _currentBranchId() async {
     final result = await _client.rpc('current_branch_id');
     if (result == null) return null;
     final value = result.toString();
     return value.isEmpty ? null : value;
   }
+}
+
+class ReturnInput {
+  ReturnInput({
+    required this.items,
+    this.clientId,
+    this.originalSaleId,
+    this.notes,
+  });
+
+  final List<SaleCartItem> items;
+  final String? clientId;
+  final String? originalSaleId;
+  final String? notes;
+}
+
+/// Resultado de buscar una venta por número para precargar una devolución.
+class SaleLookupResult {
+  SaleLookupResult({
+    required this.saleId,
+    required this.saleNumber,
+    required this.status,
+    required this.totalAmount,
+    required this.items,
+    this.clientId,
+  });
+
+  final String saleId;
+  final String saleNumber;
+  final String? clientId;
+
+  /// `'completed' | 'credit' | 'voided' | ...` (enum `sale_status`).
+  final String status;
+  final double totalAmount;
+  final List<SaleCartItem> items;
+}
+
+/// Cabecera de devolución para el historial.
+class ReturnSummary {
+  ReturnSummary({
+    required this.id,
+    required this.returnNumber,
+    required this.returnDate,
+    required this.totalAmount,
+    required this.taxAmount,
+    required this.itemsCount,
+    this.clientName,
+    this.originalSaleId,
+    this.notes,
+  });
+
+  factory ReturnSummary.fromMap(Map<String, dynamic> map) {
+    final clientMap = map['clients'];
+    final clientName = clientMap is Map
+        ? clientMap['full_name']?.toString()
+        : null;
+    final itemsRaw = map['return_items'];
+    final itemsCount = itemsRaw is List ? itemsRaw.length : 0;
+    return ReturnSummary(
+      id: (map['id'] ?? '').toString(),
+      returnNumber: (map['return_number'] ?? '').toString(),
+      returnDate: DateTime.tryParse(map['return_date']?.toString() ?? '') ??
+          DateTime.now(),
+      totalAmount: _toDoubleResult(map['total_amount']),
+      taxAmount: _toDoubleResult(map['tax_amount']),
+      itemsCount: itemsCount,
+      clientName: clientName,
+      originalSaleId: map['original_sale_id']?.toString(),
+      notes: map['notes']?.toString(),
+    );
+  }
+
+  final String id;
+  final String returnNumber;
+  final DateTime returnDate;
+  final double totalAmount;
+  final double taxAmount;
+  final int itemsCount;
+  final String? clientName;
+  final String? originalSaleId;
+  final String? notes;
+}
+
+class ReturnProcessedResult {
+  ReturnProcessedResult({
+    required this.returnId,
+    required this.returnNumber,
+    required this.totalAmount,
+    required this.itemsCount,
+    required this.creditBalanceAdjusted,
+  });
+
+  factory ReturnProcessedResult.fromMap(Map<String, dynamic> map) {
+    return ReturnProcessedResult(
+      returnId: (map['return_id'] ?? '').toString(),
+      returnNumber: (map['return_number'] ?? '').toString(),
+      totalAmount: _toDoubleResult(map['total_amount']),
+      itemsCount: _toIntResult(map['items_count']),
+      creditBalanceAdjusted: map['credit_balance_adjusted'] == true,
+    );
+  }
+
+  final String returnId;
+  final String returnNumber;
+  final double totalAmount;
+  final int itemsCount;
+  final bool creditBalanceAdjusted;
+}
+
+double _toDoubleResult(dynamic value) {
+  if (value == null) return 0;
+  if (value is double) return value;
+  if (value is int) return value.toDouble();
+  return double.tryParse(value.toString()) ?? 0;
+}
+
+int _toIntResult(dynamic value) {
+  if (value == null) return 0;
+  if (value is int) return value;
+  if (value is double) return value.toInt();
+  return int.tryParse(value.toString()) ?? 0;
 }
 
 String? _nullIfEmpty(String? value) {
