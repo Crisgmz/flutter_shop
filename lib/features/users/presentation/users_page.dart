@@ -19,6 +19,46 @@ const _roles = <String, String>{
   'accountant': 'Contador',
 };
 
+// Orden y presentación de módulos en la sección de permisos efectivos.
+const _moduleOrder = <String>[
+  'dashboard',
+  'sales',
+  'clients',
+  'inventory',
+  'purchases',
+  'cash',
+  'reports',
+  'employees',
+  'settings',
+  'ncf',
+];
+
+const _moduleLabels = <String, String>{
+  'dashboard': 'Panel',
+  'sales': 'Ventas',
+  'clients': 'Clientes',
+  'inventory': 'Inventario',
+  'purchases': 'Compras',
+  'cash': 'Caja',
+  'reports': 'Reportes',
+  'employees': 'Empleados',
+  'settings': 'Configuración',
+  'ncf': 'Comprobantes fiscales',
+};
+
+const _moduleIcons = <String, IconData>{
+  'dashboard': Icons.dashboard_outlined,
+  'sales': Icons.point_of_sale_outlined,
+  'clients': Icons.people_outline,
+  'inventory': Icons.inventory_2_outlined,
+  'purchases': Icons.shopping_cart_outlined,
+  'cash': Icons.savings_outlined,
+  'reports': Icons.bar_chart_outlined,
+  'employees': Icons.badge_outlined,
+  'settings': Icons.settings_outlined,
+  'ncf': Icons.receipt_long_outlined,
+};
+
 class UsersPage extends ConsumerStatefulWidget {
   const UsersPage({super.key});
 
@@ -840,12 +880,24 @@ class _UserPermissionsPanel extends ConsumerStatefulWidget {
 class _UserPermissionsPanelState
     extends ConsumerState<_UserPermissionsPanel> {
   String? _selectedBranchId;
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+  final Set<String> _expandedModules = {};
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(_UserPermissionsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.selectedUser?.id != widget.selectedUser?.id) {
       _selectedBranchId = null;
+      _searchQuery = '';
+      _searchController.clear();
+      _expandedModules.clear();
     }
   }
 
@@ -962,106 +1014,225 @@ class _UserPermissionsPanelState
       );
     }
 
+    final q = _searchQuery.trim().toLowerCase();
+    final filtered = q.isEmpty
+        ? perms
+        : perms
+            .where((p) =>
+                p.permissionName.toLowerCase().contains(q) ||
+                p.permissionCode.toLowerCase().contains(q) ||
+                (p.module ?? '').toLowerCase().contains(q))
+            .toList(growable: false);
+
     final grouped = <String, List<EffectivePermission>>{};
-    for (final p in perms) {
+    for (final p in filtered) {
       grouped.putIfAbsent(p.module ?? 'General', () => []).add(p);
     }
+    final orderedKeys = grouped.keys.toList()
+      ..sort((a, b) {
+        final ai = _moduleOrder.indexOf(a);
+        final bi = _moduleOrder.indexOf(b);
+        if (ai == -1 && bi == -1) return a.compareTo(b);
+        if (ai == -1) return 1;
+        if (bi == -1) return -1;
+        return ai.compareTo(bi);
+      });
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppTokens.s20, 0, AppTokens.s20, AppTokens.s16),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: grouped.entries.map((entry) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Buscador + acciones masivas
+          Row(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppTokens.s20,
-                  AppTokens.s12,
-                  AppTokens.s20,
-                  4,
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Buscar permiso, módulo o código…',
+                    prefixIcon:
+                        const Icon(Icons.search, size: 18),
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide:
+                          const BorderSide(color: AppTokens.border),
+                    ),
+                    suffixIcon: _searchQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Limpiar',
+                            icon: const Icon(Icons.close, size: 16),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          ),
+                  ),
+                  onChanged: (v) => setState(() => _searchQuery = v),
                 ),
-                child: Text(
-                  entry.key.toUpperCase(),
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppTokens.mutedForeground,
-                    letterSpacing: 0.8,
+              ),
+              const SizedBox(width: AppTokens.s8),
+              Tooltip(
+                message: 'Expandir todos',
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() {
+                    _expandedModules
+                      ..clear()
+                      ..addAll(grouped.keys);
+                  }),
+                  icon: const Icon(Icons.unfold_more, size: 16),
+                  label: const Text('Expandir'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 40),
                   ),
                 ),
               ),
-              DataTable(
-                columnSpacing: 24,
-                columns: const [
-                  DataColumn(label: Text('Permiso')),
-                  DataColumn(label: Text('Rol'), numeric: true),
-                  DataColumn(label: Text('Override'), numeric: true),
-                  DataColumn(label: Text('Efectivo'), numeric: true),
-                  DataColumn(label: Text(''), numeric: true),
-                ],
-                rows: entry.value
-                    .map((p) => _permissionRow(p, user))
-                    .toList(growable: false),
+              const SizedBox(width: AppTokens.s8),
+              Tooltip(
+                message: 'Colapsar todos',
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(_expandedModules.clear),
+                  icon: const Icon(Icons.unfold_less, size: 16),
+                  label: const Text('Colapsar'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 40),
+                  ),
+                ),
               ),
             ],
-          );
-        }).toList(growable: false),
+          ),
+          const SizedBox(height: AppTokens.s12),
+
+          if (filtered.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: AppTokens.s24),
+              child: Center(
+                child: Text(
+                  'Ningún permiso coincide con la búsqueda.',
+                  style: TextStyle(color: AppTokens.mutedForeground),
+                ),
+              ),
+            )
+          else
+            ...orderedKeys.map((module) {
+              final items = grouped[module]!;
+              final grantedCount =
+                  items.where((p) => p.effectiveGrant).length;
+              final isExpanded = _expandedModules.contains(module) ||
+                  _searchQuery.isNotEmpty;
+              return _ModulePermissionsCard(
+                module: module,
+                granted: grantedCount,
+                total: items.length,
+                isExpanded: isExpanded,
+                onToggle: () => setState(() {
+                  if (_expandedModules.contains(module)) {
+                    _expandedModules.remove(module);
+                  } else {
+                    _expandedModules.add(module);
+                  }
+                }),
+                children: [
+                  for (final p in items) _permissionRowTile(p, user),
+                ],
+              );
+            }),
+        ],
       ),
     );
   }
 
-  DataRow _permissionRow(EffectivePermission p, UserEntity user) {
-    final overrideIcon = p.hasOverride
-        ? Icon(
-            p.userOverride! ? Icons.check_circle : Icons.cancel,
-            size: 16,
-            color: p.userOverride!
-                ? AppTokens.success
-                : AppTokens.destructive,
-          )
-        : const Icon(Icons.remove, size: 16, color: AppTokens.mutedForeground);
+  Widget _permissionRowTile(EffectivePermission p, UserEntity user) {
+    final effective = p.effectiveGrant;
+    final statusColor =
+        effective ? AppTokens.success : AppTokens.destructive;
+    final statusLabel = effective ? 'Permitido' : 'Denegado';
+    final statusIcon =
+        effective ? Icons.check_circle : Icons.cancel_outlined;
 
-    return DataRow(cells: [
-      DataCell(Text(p.permissionName)),
-      DataCell(Icon(
-        p.roleGrant ? Icons.check : Icons.close,
-        size: 16,
-        color: p.roleGrant ? AppTokens.success : AppTokens.mutedForeground,
-      )),
-      DataCell(overrideIcon),
-      DataCell(Icon(
-        p.effectiveGrant ? Icons.check_circle : Icons.cancel,
-        size: 16,
-        color: p.effectiveGrant ? AppTokens.success : AppTokens.destructive,
-      )),
-      DataCell(Row(
-        mainAxisSize: MainAxisSize.min,
+    String sourceLabel;
+    if (p.hasOverride) {
+      sourceLabel = p.userOverride! ? 'Override: permitido' : 'Override: denegado';
+    } else {
+      sourceLabel = p.roleGrant ? 'Heredado del rol' : 'Sin permiso del rol';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTokens.border)),
+      ),
+      child: Row(
         children: [
+          // Status pill
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(statusIcon, size: 14, color: statusColor),
+                const SizedBox(width: 4),
+                Text(
+                  statusLabel,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+          // Permission name + source
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.permissionName,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${p.permissionCode}  ·  $sourceLabel',
+                  style: const TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Actions
           if (p.hasOverride)
             IconButton(
-              tooltip: 'Quitar override',
+              tooltip: 'Quitar override (volver al rol)',
               onPressed: () => _removeOverride(p, user),
-              icon: const Icon(Icons.undo, size: 14),
+              icon: const Icon(Icons.undo, size: 16),
               visualDensity: VisualDensity.compact,
+              color: AppTokens.mutedForeground,
             ),
-          IconButton(
-            tooltip: p.effectiveGrant ? 'Denegar' : 'Permitir',
-            onPressed: () =>
-                _setOverride(p, user, granted: !p.effectiveGrant),
-            icon: Icon(
-              p.effectiveGrant ? Icons.block_outlined : Icons.add_circle_outline,
-              size: 14,
-              color: p.effectiveGrant
-                  ? AppTokens.destructive
-                  : AppTokens.success,
-            ),
-            visualDensity: VisualDensity.compact,
+          Switch(
+            value: effective,
+            onChanged: (v) => _setOverride(p, user, granted: v),
+            activeThumbColor: AppTokens.success,
           ),
         ],
-      )),
-    ]);
+      ),
+    );
   }
 
   Future<void> _setOverride(
@@ -1578,3 +1749,131 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
 }
 
 String _roleLabel(String value) => _roles[value] ?? value;
+
+/// Card colapsable que agrupa los permisos de un módulo. Muestra ícono,
+/// nombre del módulo, contador "X / Y permitidos" y un chevron rotatorio.
+/// Cuando se expande, revela las filas de permisos con un divisor superior.
+class _ModulePermissionsCard extends StatelessWidget {
+  const _ModulePermissionsCard({
+    required this.module,
+    required this.granted,
+    required this.total,
+    required this.isExpanded,
+    required this.onToggle,
+    required this.children,
+  });
+
+  final String module;
+  final int granted;
+  final int total;
+  final bool isExpanded;
+  final VoidCallback onToggle;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final label =
+        _moduleLabels[module] ?? _capitalize(module.replaceAll('_', ' '));
+    final icon = _moduleIcons[module] ?? Icons.tune_outlined;
+    final allGranted = granted == total && total > 0;
+    final noneGranted = granted == 0 && total > 0;
+    final badgeColor = allGranted
+        ? AppTokens.success
+        : noneGranted
+            ? AppTokens.destructive
+            : AppTokens.primary;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppTokens.s10),
+      decoration: BoxDecoration(
+        color: AppTokens.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTokens.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.vertical(
+              top: const Radius.circular(10),
+              bottom: isExpanded ? Radius.zero : const Radius.circular(10),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppTokens.s16, vertical: AppTokens.s12),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(icon, size: 18, color: badgeColor),
+                  ),
+                  const SizedBox(width: AppTokens.s12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$total ${total == 1 ? "permiso" : "permisos"}',
+                          style: const TextStyle(
+                            color: AppTokens.mutedForeground,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '$granted / $total permitidos',
+                      style: TextStyle(
+                        color: badgeColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: AppTokens.s8),
+                  AnimatedRotation(
+                    turns: isExpanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 180),
+                    child: const Icon(
+                      Icons.expand_more,
+                      size: 22,
+                      color: AppTokens.mutedForeground,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...children,
+        ],
+      ),
+    );
+  }
+
+  static String _capitalize(String value) {
+    if (value.isEmpty) return value;
+    return value[0].toUpperCase() + value.substring(1);
+  }
+}
