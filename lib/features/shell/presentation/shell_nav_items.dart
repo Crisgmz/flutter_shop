@@ -40,6 +40,12 @@ const salesNavItem = NavItem(
   label: 'Ventas',
   icon: Icons.receipt_long_outlined,
 );
+const salesHistoryNavItem = NavItem(
+  path: '/ventas/historial',
+  label: 'Historial de ventas',
+  icon: Icons.history,
+  allowedRoles: {'admin', 'supervisor', 'cashier', 'accountant'},
+);
 const quotationsNavItem = NavItem(
   path: '/cotizaciones',
   label: 'Cotizaciones',
@@ -134,6 +140,7 @@ const settingsNavItem = NavItem(
 const navItems = [
   dashboardNavItem,
   salesNavItem,
+  salesHistoryNavItem,
   quotationsNavItem,
   cobrosNavItem,
   inventoryNavItem,
@@ -157,6 +164,7 @@ const navSections = [
     items: [
       dashboardNavItem,
       salesNavItem,
+      salesHistoryNavItem,
       quotationsNavItem,
       cobrosNavItem,
       cashRegisterNavItem,

@@ -1,6 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -8,14 +13,21 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../data/quotations_excel_service.dart';
 import '../data/quotations_models.dart';
 import 'quotations_providers.dart';
 
-class QuotationsPage extends ConsumerWidget {
+class QuotationsPage extends ConsumerStatefulWidget {
   const QuotationsPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<QuotationsPage> createState() => _QuotationsPageState();
+}
+
+class _QuotationsPageState extends ConsumerState<QuotationsPage> {
+  @override
+  Widget build(BuildContext context) {
     final foundationAsync = ref.watch(quotationsFoundationProvider);
 
     return foundationAsync.when(
@@ -28,6 +40,8 @@ class QuotationsPage extends ConsumerWidget {
             icon: const Icon(Icons.refresh_rounded, size: 18),
             label: const Text('Actualizar'),
           ),
+          const SizedBox(width: AppTokens.s8),
+          _buildExportMenu(foundation.recentQuotes),
           const SizedBox(width: AppTokens.s8),
           FilledButton.icon(
             onPressed: () => context.push('/cotizaciones/nueva'),
@@ -60,6 +74,309 @@ class QuotationsPage extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  Widget _buildExportMenu(List<QuoteListItem> quotes) {
+    return PopupMenuButton<String>(
+      tooltip: 'Exportar reporte',
+      position: PopupMenuPosition.under,
+      onSelected: (value) {
+        if (value == 'export_excel') {
+          _onExportQuotesExcel(quotes);
+        } else if (value == 'export_pdf') {
+          _onExportQuotesPdf(quotes);
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'export_excel',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.table_chart_outlined, size: 18),
+            title: Text('Exportar a Excel'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export_pdf',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
+            title: Text('Exportar a PDF'),
+          ),
+        ),
+      ],
+      child: OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.ios_share_rounded, size: 18),
+        label: const Text('Exportar'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTokens.foreground,
+          disabledForegroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onExportQuotesExcel(List<QuoteListItem> quotes) async {
+    if (quotes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay cotizaciones para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = QuotationsExcelService().buildExport(quotes: quotes);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'cotizaciones_${_timestamp()}.xlsx',
+        dialogTitle: 'Guardar Cotizaciones Excel',
+        extension: 'xlsx',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Cotizaciones exportadas a Excel (${quotes.length} cotizaciones)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a Excel: $error')),
+      );
+    }
+  }
+
+  Future<void> _onExportQuotesPdf(List<QuoteListItem> quotes) async {
+    if (quotes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay cotizaciones para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = await _buildQuotesPdf(quotes);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'cotizaciones_${_timestamp()}.pdf',
+        dialogTitle: 'Guardar Reporte de Cotizaciones',
+        extension: 'pdf',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reporte PDF exportado (${quotes.length} cotizaciones)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a PDF: $error')),
+      );
+    }
+  }
+
+  String _timestamp() {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
+  }
+
+  Future<Uint8List> _buildQuotesPdf(List<QuoteListItem> quotes) async {
+    final pdf = pw.Document(
+      theme: pw.ThemeData.withFont(
+        base: await PdfGoogleFonts.robotoRegular(),
+        bold: await PdfGoogleFonts.robotoBold(),
+        italic: await PdfGoogleFonts.robotoItalic(),
+      ),
+    );
+
+    final accent = PdfColor.fromInt(0xFF0D6EFD); // AppTokens.primary
+    final muted = PdfColor.fromInt(0xFF66798E);  // AppTokens.mutedForeground
+    final borderCol = PdfColor.fromInt(0xFFE9ECEF);
+
+    final totalAmount = quotes.fold<double>(0, (sum, q) => sum + q.total);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(32),
+        header: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'REPORTE DE COTIZACIONES',
+                  style: pw.TextStyle(
+                    fontSize: 16,
+                    fontWeight: pw.FontWeight.bold,
+                    color: accent,
+                  ),
+                ),
+                pw.Text(
+                  _fmtDateTime(DateTime.now()),
+                  style: pw.TextStyle(fontSize: 10, color: muted),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 4),
+            pw.Text(
+              'Shop+ RD — Sistema de Gestión Comercial',
+              style: pw.TextStyle(fontSize: 9, color: muted),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 16),
+          ],
+        ),
+        footer: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'Shop+ RD — Reporte generado automáticamente',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+                pw.Text(
+                  'Pág. ${context.pageNumber} de ${context.pagesCount}',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+              ],
+            ),
+          ],
+        ),
+        build: (context) => [
+          // KPI summary
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromInt(0xFFF8F9FA),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                _buildPdfKpi('Total Cotizaciones', quotes.length.toString(), accent),
+                _buildPdfKpi('Monto Acumulado', money(totalAmount), accent),
+              ],
+            ),
+          ),
+
+          // Table
+          pw.Table(
+            border: pw.TableBorder(
+              bottom: pw.BorderSide(color: borderCol, width: 0.5),
+              horizontalInside: pw.BorderSide(color: borderCol, width: 0.5),
+            ),
+            columnWidths: const {
+              0: pw.FlexColumnWidth(1.2), // Código
+              1: pw.FlexColumnWidth(2.5), // Cliente
+              2: pw.FlexColumnWidth(1.5), // Estado
+              3: pw.FlexColumnWidth(1.5), // Emisión
+              4: pw.FlexColumnWidth(1.5), // Vence
+              5: pw.FlexColumnWidth(1.5), // Total
+            },
+            children: [
+              // Header
+              pw.TableRow(
+                decoration: pw.BoxDecoration(
+                  color: PdfColor.fromInt(0xFFF8F9FA),
+                ),
+                children: [
+                  _pdfHeaderCell('Código'),
+                  _pdfHeaderCell('Cliente'),
+                  _pdfHeaderCell('Estado'),
+                  _pdfHeaderCell('Emisión'),
+                  _pdfHeaderCell('Vence'),
+                  _pdfHeaderCell('Total', alignRight: true),
+                ],
+              ),
+              // Rows
+              ...quotes.map(
+                (q) => pw.TableRow(
+                  children: [
+                    _pdfCell(q.code),
+                    _pdfCell(q.clientName, bold: true),
+                    _pdfCell(q.effectiveStatus.label),
+                    _pdfCell(q.createdAt.toIso8601String().split('T').first),
+                    _pdfCell(q.validUntil.toIso8601String().split('T').first),
+                    _pdfCell(money(q.total), alignRight: true),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  pw.Widget _buildPdfKpi(String label, String value, PdfColor color) {
+    return pw.Column(
+      mainAxisSize: pw.MainAxisSize.min,
+      children: [
+        pw.Text(
+          label.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: 8,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColor.fromInt(0xFF66798E),
+          ),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 14,
+            fontWeight: pw.FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _pdfHeaderCell(String text, {bool alignRight = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+        textAlign: alignRight ? pw.TextAlign.right : pw.TextAlign.left,
+      ),
+    );
+  }
+
+  pw.Widget _pdfCell(String text, {bool bold = false, bool alignRight = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontSize: 8, fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
+        textAlign: alignRight ? pw.TextAlign.right : pw.TextAlign.left,
+      ),
+    );
+  }
+
+  String _fmtDateTime(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
   }
 }
 

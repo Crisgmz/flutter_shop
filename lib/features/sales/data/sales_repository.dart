@@ -1,3 +1,6 @@
+import 'dart:io' show HttpClient;
+
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../printing/data/printing.dart';
@@ -122,6 +125,7 @@ class SaleCartItem {
     required this.product,
     required this.quantity,
     double? unitPrice,
+    this.discountPct = 0,
   }) : unitPrice = unitPrice ?? product.price;
 
   final SalesProduct product;
@@ -131,7 +135,18 @@ class SaleCartItem {
   /// un cliente con tier asignado, el POS lo setea con `priceFor(tier)`.
   final double unitPrice;
 
-  double get lineSubtotal => _round2(quantity * unitPrice);
+  /// Descuento porcentual aplicado a esta línea (0-100). 0 = sin descuento.
+  final double discountPct;
+
+  /// Subtotal antes de descuento: cantidad × precio unitario.
+  double get lineGross => _round2(quantity * unitPrice);
+
+  /// Monto del descuento aplicado.
+  double get lineDiscount => _round2(lineGross * (discountPct / 100));
+
+  /// Subtotal después de descuento (base imponible).
+  double get lineSubtotal => _round2(lineGross - lineDiscount);
+
   double get lineTax => _round2(lineSubtotal * (product.taxRate / 100));
   double get lineTotal => _round2(lineSubtotal + lineTax);
 }
@@ -147,6 +162,7 @@ class SaleCheckoutInput {
     this.disallowNoStock = false,
     this.customerRequiredForSale = false,
     this.creditAllowSales = true,
+    this.creditDueDays,
   });
 
   final List<SaleCartItem> items;
@@ -164,6 +180,10 @@ class SaleCheckoutInput {
 
   /// app_settings.credit_allow_sales
   final bool creditAllowSales;
+
+  /// Override del plazo de crédito en días para esta venta. Si `null`, el
+  /// backend usa `app_settings.credit_default_days`. Solo aplica si `asCredit`.
+  final int? creditDueDays;
 }
 
 class SaleCheckoutResult {
@@ -319,6 +339,7 @@ class SalesRepository {
         'p_payment_method': normalizedCheckout.paymentMethod,
         'p_client_id': normalizedCheckout.clientId,
         'p_notes': normalizedCheckout.notes,
+        'p_credit_due_days': input.creditDueDays,
       },
     );
 
@@ -330,7 +351,9 @@ class SalesRepository {
 
     PreparedPrintJobData? preparedPrintJob;
     final status = (payload['status'] ?? '').toString();
-    if (status == 'completed') {
+    // Tanto las ventas completadas como las que quedan a crédito deben generar
+    // recibo — el cliente necesita comprobante del saldo aunque no haya pagado.
+    if (status == 'completed' || status == 'credit') {
       preparedPrintJob = await prepareCompletedSalePrintJob(saleId: saleId);
     }
 
@@ -361,7 +384,7 @@ class SalesRepository {
           'id, branch_id, sale_number, sale_date, receipt_type, status, ncf, notes, '
           'subtotal, discount_amount, tax_amount, total_amount, paid_amount, balance_due, '
           'service_charge_amount, taxable_amount, exempt_amount, '
-          'client_id, cashier_id',
+          'client_id, cashier_id, cash_session_id',
         )
         .eq('id', saleId)
         .limit(1);
@@ -370,7 +393,8 @@ class SalesRepository {
 
     final sale = Map<String, dynamic>.from(saleRows.first as Map);
     final status = (sale['status'] ?? '').toString().trim().toLowerCase();
-    if (status != 'completed') {
+    // Permitimos imprimir tanto ventas pagadas como ventas a crédito.
+    if (status != 'completed' && status != 'credit') {
       return null;
     }
 
@@ -387,6 +411,45 @@ class SalesRepository {
     final branch = branchRows.isEmpty
         ? const <String, dynamic>{}
         : Map<String, dynamic>.from(branchRows.first as Map);
+
+    // app_settings (singleton id=1) — RNC, logo, ocultar barcode.
+    final settingsRows = await _client
+        .from('app_settings')
+        .select('company_tax_id, company_logo_url, receipt_hide_barcode')
+        .eq('id', 1)
+        .limit(1);
+    final settings = settingsRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(settingsRows.first as Map);
+
+    final logoUrl = settings['company_logo_url']?.toString();
+    debugPrint('Logo URL en app_settings: $logoUrl');
+    final logoBytes = await _downloadBytes(logoUrl);
+    debugPrint('Logo bytes descargados: ${logoBytes?.length ?? 0}');
+
+    // Cash session → nombre legible para "Caja registradora".
+    final cashSessionId = sale['cash_session_id']?.toString();
+    String? cashRegisterName;
+    if (cashSessionId != null && cashSessionId.isNotEmpty) {
+      final csRows = await _client
+          .from('cash_sessions')
+          .select('opened_at')
+          .eq('id', cashSessionId)
+          .limit(1);
+      if (csRows.isNotEmpty) {
+        final csMap = Map<String, dynamic>.from(csRows.first as Map);
+        final openedAt =
+            DateTime.tryParse((csMap['opened_at'] ?? '').toString());
+        if (openedAt != null) {
+          final local = openedAt.isUtc ? openedAt.toLocal() : openedAt;
+          final mm = local.month.toString().padLeft(2, '0');
+          final dd = local.day.toString().padLeft(2, '0');
+          cashRegisterName = 'CAJA $mm$dd';
+        } else {
+          cashRegisterName = 'CAJA';
+        }
+      }
+    }
 
     final clientId = sale['client_id']?.toString();
     Map<String, dynamic> client = const <String, dynamic>{};
@@ -444,6 +507,10 @@ class SalesRepository {
       branchName: (branch['name'] ?? 'Sucursal').toString(),
       branchAddress: branch['address']?.toString(),
       branchPhone: branch['phone']?.toString(),
+      branchTaxId: settings['company_tax_id']?.toString(),
+      branchLogoBytes: logoBytes,
+      cashRegisterName: cashRegisterName,
+      showBarcode: settings['receipt_hide_barcode'] != true,
       clientName: client['full_name']?.toString(),
       clientDocument: _buildClientDocumentLabel(
         documentType: client['document_type']?.toString(),
@@ -487,6 +554,11 @@ class SalesRepository {
       totalAmount: _toDouble(sale['total_amount']),
       paidAmount: _toDouble(sale['paid_amount']),
       balanceDue: _toDouble(sale['balance_due']),
+      changeAmount: () {
+        final paid = _toDouble(sale['paid_amount']);
+        final total = _toDouble(sale['total_amount']);
+        return paid >= total ? paid - total : null;
+      }(),
     );
 
     return _salePrintPreparationService.prepareCompletedSaleReceipt(
@@ -620,6 +692,80 @@ class SalesRepository {
     if (result == null) return null;
     final value = result.toString();
     return value.isEmpty ? null : value;
+  }
+
+  /// Descarga los bytes de una URL pública (ej. logo de la empresa).
+  ///
+  /// Si la URL apunta a Supabase Storage (`/storage/v1/object/public/<bucket>/<path>`)
+  /// usa el SDK de Supabase para bajarla — funciona en todas las plataformas
+  /// (incluida web), reutiliza la sesión y respeta las políticas RLS. Para
+  /// URLs externas cae a `dart:io HttpClient` (no disponible en web).
+  /// Devuelve `null` ante cualquier error (el recibo se imprime sin logo).
+  Future<List<int>?> _downloadBytes(String? url) async {
+    if (url == null || url.trim().isEmpty) return null;
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null || !uri.hasScheme) return null;
+
+    // Caso 1: URL pública de Supabase Storage → usar SDK (funciona en web).
+    final storageRef = _parseSupabaseStoragePath(uri);
+    if (storageRef != null) {
+      try {
+        final bytes = await _client.storage
+            .from(storageRef.bucket)
+            .download(storageRef.path);
+        return bytes;
+      } catch (error) {
+        debugPrint('No se pudo bajar logo de Supabase Storage: $error');
+        if (kIsWeb) return null; // En web no hay fallback HTTP.
+      }
+    }
+
+    // Caso 2: URL externa → HTTP plain (sólo nativo).
+    if (kIsWeb) return null;
+    try {
+      final client = HttpClient();
+      try {
+        final request = await client.getUrl(uri);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          debugPrint(
+            'GET $uri devolvió ${response.statusCode} — logo no se descargó.',
+          );
+          return null;
+        }
+        final bytes = <int>[];
+        await for (final chunk in response) {
+          bytes.addAll(chunk);
+        }
+        return bytes;
+      } finally {
+        client.close(force: true);
+      }
+    } catch (error) {
+      debugPrint('Error bajando logo desde $uri: $error');
+      return null;
+    }
+  }
+
+  /// Extrae `(bucket, path)` de un URL público de Supabase Storage.
+  /// Formato esperado: `/storage/v1/object/public/<bucket>/<path...>`.
+  /// Devuelve `null` si el URL no corresponde a Storage.
+  ({String bucket, String path})? _parseSupabaseStoragePath(Uri uri) {
+    final segments = uri.pathSegments;
+    final idx = segments.indexOf('public');
+    if (idx < 0 || idx + 1 >= segments.length) return null;
+    if (idx < 3) return null;
+    // Verificar que el prefijo sea /storage/v1/object/public/
+    if (segments[idx - 3] != 'storage' ||
+        segments[idx - 2] != 'v1' ||
+        segments[idx - 1] != 'object') {
+      return null;
+    }
+    final bucket = segments[idx + 1];
+    if (bucket.isEmpty || idx + 2 > segments.length) return null;
+    final path = segments.sublist(idx + 2).join('/');
+    if (path.isEmpty) return null;
+    return (bucket: bucket, path: path);
   }
 }
 

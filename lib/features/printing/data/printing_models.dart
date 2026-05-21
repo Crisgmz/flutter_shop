@@ -107,6 +107,7 @@ class PrintBranchIdentity {
     this.phone,
     this.email,
     this.taxId,
+    this.logoBytes,
   });
 
   final String name;
@@ -114,6 +115,11 @@ class PrintBranchIdentity {
   final String? phone;
   final String? email;
   final String? taxId;
+
+  /// Bytes del logo (PNG/JPG). Si está presente se muestra centrado al tope
+  /// del recibo. El caller es responsable de descargarlo de
+  /// `app_settings.company_logo_url`.
+  final List<int>? logoBytes;
 }
 
 class PrintParty {
@@ -201,6 +207,10 @@ class PrintDocumentData {
     this.footerMessage,
     this.payments = const <PrintPaymentLine>[],
     this.extra = const <String, dynamic>{},
+    this.priceTierLabel,
+    this.cashRegisterName,
+    this.changeAmount,
+    this.showBarcode = true,
   });
 
   final PrintDocumentType documentType;
@@ -218,6 +228,19 @@ class PrintDocumentData {
   final String? footerMessage;
   final List<PrintPaymentLine> payments;
   final Map<String, dynamic> extra;
+
+  /// Etiqueta del nivel de precio aplicado (ej. "mayorista", "minorista").
+  final String? priceTierLabel;
+
+  /// Nombre/código de la caja registradora.
+  final String? cashRegisterName;
+
+  /// Monto del cambio entregado al cliente (paid - total cuando paid > total).
+  /// Si es null se omite la línea "Cambio".
+  final double? changeAmount;
+
+  /// Si false, no se imprime el código de barras al final del recibo.
+  final bool showBarcode;
 }
 
 class ThermalTicketRow {

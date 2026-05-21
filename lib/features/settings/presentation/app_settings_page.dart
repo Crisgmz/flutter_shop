@@ -17,6 +17,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../inventory/data/file_io_helper.dart';
 import '../data/app_settings.dart';
 import 'app_settings_providers.dart';
 import 'settings_providers.dart';
@@ -881,11 +882,8 @@ class _CompanyInfoSection extends StatelessWidget {
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
-        _TextRow(
-          label: 'URL del logo',
+        _CompanyLogoPicker(
           value: settings.companyLogoUrl,
-          column: 'company_logo_url',
-          helper: 'Pegar URL pública. La subida directa llega en sub-fase 6.D.',
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
@@ -904,6 +902,132 @@ class _CompanyInfoSection extends StatelessWidget {
           onSave: onSave,
         ),
       ],
+    );
+  }
+}
+
+class _CompanyLogoPicker extends ConsumerStatefulWidget {
+  const _CompanyLogoPicker({
+    required this.value,
+    required this.isReadOnly,
+    required this.onSave,
+  });
+
+  final String? value;
+  final bool isReadOnly;
+  final void Function(String column, dynamic value) onSave;
+
+  @override
+  ConsumerState<_CompanyLogoPicker> createState() =>
+      _CompanyLogoPickerState();
+}
+
+class _CompanyLogoPickerState extends ConsumerState<_CompanyLogoPicker> {
+  bool _uploading = false;
+
+  Future<void> _pickAndUpload() async {
+    if (_uploading || widget.isReadOnly) return;
+    final picked = await FileIoHelper.pickImage();
+    if (picked == null || !mounted) return;
+
+    setState(() => _uploading = true);
+    try {
+      final repo = ref.read(appSettingsRepositoryProvider);
+      final url = await repo.uploadCompanyLogo(
+        bytes: picked.bytes,
+        extension: picked.extension,
+      );
+      if (!mounted) return;
+      widget.onSave('company_logo_url', url);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo subir el logo: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  void _clear() {
+    if (widget.isReadOnly || _uploading) return;
+    widget.onSave('company_logo_url', null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final url = widget.value?.trim() ?? '';
+    final hasImage = url.isNotEmpty;
+    final disabled = widget.isReadOnly || _uploading;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Logo de la empresa',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: AppTokens.s6),
+          Row(
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: AppTokens.muted,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTokens.border),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: hasImage
+                    ? Image.network(
+                        url,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const Icon(
+                          Icons.broken_image_outlined,
+                          color: AppTokens.mutedForeground,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.image_outlined,
+                        color: AppTokens.mutedForeground,
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: disabled ? null : _pickAndUpload,
+                      icon: _uploading
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.upload_outlined, size: 18),
+                      label: Text(
+                        _uploading
+                            ? 'Subiendo…'
+                            : (hasImage ? 'Cambiar logo' : 'Seleccionar logo'),
+                      ),
+                    ),
+                    if (hasImage)
+                      TextButton.icon(
+                        onPressed: disabled ? null : _clear,
+                        icon: const Icon(Icons.close, size: 16),
+                        label: const Text('Quitar'),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -974,6 +1098,11 @@ class _InventorySection extends StatelessWidget {
           label: 'Desactivar calculadora de margen de precio',
           column: 'inv_disable_margin_calculator',
           value: settings.invDisableMarginCalculator,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        _PriceTypesEditor(
+          values: settings.salePriceTypes,
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
@@ -1385,6 +1514,24 @@ class _SalesReceiptSection extends StatelessWidget {
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
+        _NumRow(
+          label: 'Días de crédito por defecto',
+          column: 'credit_default_days',
+          value: settings.creditDefaultDays,
+          min: 1,
+          max: 365,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        _NumRow(
+          label: 'Avisar cuando faltan X días para vencer',
+          column: 'credit_warn_days',
+          value: settings.creditWarnDays,
+          min: 0,
+          max: 90,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
         const _SubHeader('Prefijos de documentos'),
         _TextRow(
           label: 'Prefijo de venta',
@@ -1791,6 +1938,314 @@ class _ApplicationSection extends StatelessWidget {
           onSave: onSave,
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Editor de tipos de precios (sale_price_types jsonb)
+// ─────────────────────────────────────────────────────────────────────────
+
+class _PriceTypesEditor extends StatefulWidget {
+  const _PriceTypesEditor({
+    required this.values,
+    required this.isReadOnly,
+    required this.onSave,
+  });
+
+  final List<dynamic> values;
+  final bool isReadOnly;
+  final void Function(String column, dynamic value) onSave;
+
+  @override
+  State<_PriceTypesEditor> createState() => _PriceTypesEditorState();
+}
+
+class _PriceTypesEditorState extends State<_PriceTypesEditor> {
+  static const _column = 'sale_price_types';
+  static const _maxItems = 3;
+  late List<_PriceTypeItem> _items;
+  int _nextId = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = _fromRemote(widget.values);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PriceTypesEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final remote = widget.values.map((v) => v.toString()).toList();
+    final local = _items.map((i) => i.value).toList();
+    if (!_listEquals(remote, local)) {
+      setState(() => _items = _fromRemote(widget.values));
+    }
+  }
+
+  List<_PriceTypeItem> _fromRemote(List<dynamic> raw) {
+    return [
+      for (final v in raw) _PriceTypeItem(id: _nextId++, value: v.toString()),
+    ];
+  }
+
+  bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  void _persist() {
+    final out = _items
+        .map((i) => i.value.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    widget.onSave(_column, out);
+  }
+
+  void _onRowSubmit(int id, String newValue) {
+    final idx = _items.indexWhere((i) => i.id == id);
+    if (idx < 0) return;
+    if (_items[idx].value == newValue) return;
+    setState(() => _items[idx] = _items[idx].copyWith(value: newValue));
+    _persist();
+  }
+
+  void _onAdd() {
+    if (_items.length >= _maxItems) return;
+    setState(() => _items.add(_PriceTypeItem(id: _nextId++, value: '')));
+  }
+
+  void _onDelete(int id) {
+    setState(() => _items.removeWhere((i) => i.id == id));
+    _persist();
+  }
+
+  void _onReorder(int oldIndex, int newIndex) {
+    setState(() {
+      if (newIndex > oldIndex) newIndex -= 1;
+      final item = _items.removeAt(oldIndex);
+      _items.insert(newIndex, item);
+    });
+    _persist();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Tipos de precios',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Hasta $_maxItems listas de precios (p. ej. mayorista, VIP, '
+            'distribuidor) que podrás asignar a los clientes. Cada tipo '
+            'se mapea a uno de los niveles de precio del producto.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTokens.mutedForeground,
+                ),
+          ),
+          const SizedBox(height: AppTokens.s8),
+          const _PriceTypesHeader(),
+          if (_items.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+              child: Text(
+                'No hay tipos configurados.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTokens.mutedForeground,
+                    ),
+              ),
+            )
+          else
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              buildDefaultDragHandles: false,
+              itemCount: _items.length,
+              onReorder: widget.isReadOnly ? (_, _) {} : _onReorder,
+              itemBuilder: (context, index) {
+                final item = _items[index];
+                return _PriceTypeRow(
+                  key: ValueKey('price_type_${item.id}'),
+                  index: index,
+                  item: item,
+                  isReadOnly: widget.isReadOnly,
+                  onSubmit: (v) => _onRowSubmit(item.id, v),
+                  onDelete: () => _onDelete(item.id),
+                );
+              },
+            ),
+          const SizedBox(height: AppTokens.s4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: (widget.isReadOnly || _items.length >= _maxItems)
+                  ? null
+                  : _onAdd,
+              icon: const Icon(Icons.add, size: 18),
+              label: Text(
+                _items.length >= _maxItems
+                    ? 'Máximo $_maxItems tipos'
+                    : 'Añadir tipo',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PriceTypesHeader extends StatelessWidget {
+  const _PriceTypesHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: AppTokens.mutedForeground,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.6,
+        );
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTokens.s4,
+        vertical: AppTokens.s4,
+      ),
+      child: Row(
+        children: [
+          SizedBox(width: 32, child: Text('ESPECIE', style: style)),
+          const SizedBox(width: AppTokens.s12),
+          Expanded(child: Text('TIPO DE PRECIO', style: style)),
+          const SizedBox(width: AppTokens.s12),
+          SizedBox(
+            width: 72,
+            child: Text('BORRAR', style: style, textAlign: TextAlign.center),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PriceTypeItem {
+  const _PriceTypeItem({required this.id, required this.value});
+  final int id;
+  final String value;
+  _PriceTypeItem copyWith({String? value}) =>
+      _PriceTypeItem(id: id, value: value ?? this.value);
+}
+
+class _PriceTypeRow extends StatefulWidget {
+  const _PriceTypeRow({
+    super.key,
+    required this.index,
+    required this.item,
+    required this.isReadOnly,
+    required this.onSubmit,
+    required this.onDelete,
+  });
+
+  final int index;
+  final _PriceTypeItem item;
+  final bool isReadOnly;
+  final ValueChanged<String> onSubmit;
+  final VoidCallback onDelete;
+
+  @override
+  State<_PriceTypeRow> createState() => _PriceTypeRowState();
+}
+
+class _PriceTypeRowState extends State<_PriceTypeRow> {
+  late final TextEditingController _ctrl;
+  late final FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.item.value);
+    _focus = FocusNode()..addListener(_handleFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PriceTypeRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.value != widget.item.value && !_focus.hasFocus) {
+      _ctrl.text = widget.item.value;
+    }
+  }
+
+  void _handleFocus() {
+    if (!_focus.hasFocus) {
+      final v = _ctrl.text.trim();
+      if (v != widget.item.value) widget.onSubmit(v);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_handleFocus);
+    _focus.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 32,
+            child: ReorderableDragStartListener(
+              index: widget.index,
+              enabled: !widget.isReadOnly,
+              child: const MouseRegion(
+                cursor: SystemMouseCursors.grab,
+                child: Icon(
+                  Icons.unfold_more,
+                  size: 20,
+                  color: AppTokens.mutedForeground,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+          Expanded(
+            child: TextField(
+              controller: _ctrl,
+              focusNode: _focus,
+              enabled: !widget.isReadOnly,
+              onSubmitted: (v) => widget.onSubmit(v.trim()),
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+                hintText: 'p. ej. mayorista',
+              ),
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+          SizedBox(
+            width: 72,
+            child: TextButton(
+              onPressed: widget.isReadOnly ? null : widget.onDelete,
+              style: TextButton.styleFrom(
+                foregroundColor: AppTokens.destructive,
+                padding: EdgeInsets.zero,
+              ),
+              child: const Text('Borrar'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -1,5 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -7,6 +12,8 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../data/purchases_excel_service.dart';
 import '../data/purchases_repository.dart';
 import 'purchases_providers.dart';
 
@@ -44,6 +51,8 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
+        const SizedBox(width: AppTokens.s8),
+        _buildExportMenu(),
         const SizedBox(width: AppTokens.s8),
         FilledButton.icon(
           onPressed: _onNewPurchase,
@@ -196,6 +205,366 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo registrar compra: $error')),
       );
+    }
+  }
+
+  Widget _buildExportMenu() {
+    return PopupMenuButton<String>(
+      tooltip: 'Exportar reporte',
+      position: PopupMenuPosition.under,
+      onSelected: (value) {
+        if (value == 'export_excel') {
+          _onExportPurchasesExcel();
+        } else if (value == 'export_pdf') {
+          _onExportPurchasesPdf();
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'export_excel',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.table_chart_outlined, size: 18),
+            title: Text('Exportar a Excel'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export_pdf',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
+            title: Text('Exportar a PDF'),
+          ),
+        ),
+      ],
+      child: OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.ios_share_rounded, size: 18),
+        label: const Text('Exportar'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTokens.foreground,
+          disabledForegroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onExportPurchasesExcel() async {
+    final List<PurchaseSummary> purchases;
+    try {
+      purchases = await ref.read(purchasesListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar compras: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (purchases.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay compras para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = PurchasesExcelService().buildExport(purchases: purchases);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'compras_${_timestamp()}.xlsx',
+        dialogTitle: 'Guardar Compras Excel',
+        extension: 'xlsx',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Compras exportadas a Excel (${purchases.length} compras)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a Excel: $error')),
+      );
+    }
+  }
+
+  Future<void> _onExportPurchasesPdf() async {
+    final List<PurchaseSummary> purchases;
+    try {
+      purchases = await ref.read(purchasesListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar compras: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (purchases.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay compras para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = await _buildPurchasesPdf(purchases);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'compras_${_timestamp()}.pdf',
+        dialogTitle: 'Guardar Reporte de Compras',
+        extension: 'pdf',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reporte PDF exportado (${purchases.length} compras)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a PDF: $error')),
+      );
+    }
+  }
+
+  String _timestamp() {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
+  }
+
+  Future<Uint8List> _buildPurchasesPdf(List<PurchaseSummary> purchases) async {
+    final pdf = pw.Document(
+      theme: pw.ThemeData.withFont(
+        base: await PdfGoogleFonts.robotoRegular(),
+        bold: await PdfGoogleFonts.robotoBold(),
+        italic: await PdfGoogleFonts.robotoItalic(),
+      ),
+    );
+
+    final accent = PdfColor.fromInt(0xFF0D6EFD); // AppTokens.primary
+    final muted = PdfColor.fromInt(0xFF66798E);  // AppTokens.mutedForeground
+    final borderCol = PdfColor.fromInt(0xFFE9ECEF);
+
+    final totalAmount = purchases.fold<double>(0, (sum, p) => sum + p.totalAmount);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(32),
+        header: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'REPORTE DE COMPRAS',
+                  style: pw.TextStyle(
+                    fontSize: 16,
+                    fontWeight: pw.FontWeight.bold,
+                    color: accent,
+                  ),
+                ),
+                pw.Text(
+                  _fmtDateTime(DateTime.now()),
+                  style: pw.TextStyle(fontSize: 10, color: muted),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 4),
+            pw.Text(
+              'Shop+ RD — Sistema de Gestión Comercial',
+              style: pw.TextStyle(fontSize: 9, color: muted),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 16),
+          ],
+        ),
+        footer: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'Shop+ RD — Reporte generado automáticamente',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+                pw.Text(
+                  'Pág. ${context.pageNumber} de ${context.pagesCount}',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+              ],
+            ),
+          ],
+        ),
+        build: (context) => [
+          // KPI summary
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromInt(0xFFF8F9FA),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                _buildPdfKpi('Transacciones', purchases.length.toString(), accent),
+                _buildPdfKpi('Total Compras', money(totalAmount), accent),
+              ],
+            ),
+          ),
+
+          // Table
+          pw.Table(
+            border: pw.TableBorder(
+              bottom: pw.BorderSide(color: borderCol, width: 0.5),
+              horizontalInside: pw.BorderSide(color: borderCol, width: 0.5),
+            ),
+            columnWidths: const {
+              0: pw.FlexColumnWidth(1.2), // Fecha
+              1: pw.FlexColumnWidth(2.0), // Código Compra
+              2: pw.FlexColumnWidth(1.8), // Factura
+              3: pw.FlexColumnWidth(2.5), // Proveedor
+              4: pw.FlexColumnWidth(1.2), // Estado
+              5: pw.FlexColumnWidth(1.2), // Pago
+              6: pw.FlexColumnWidth(1.5), // Total
+            },
+            children: [
+              // Header
+              pw.TableRow(
+                decoration: pw.BoxDecoration(
+                  color: PdfColor.fromInt(0xFFF8F9FA),
+                ),
+                children: [
+                  _pdfHeaderCell('Fecha'),
+                  _pdfHeaderCell('Compra'),
+                  _pdfHeaderCell('Factura'),
+                  _pdfHeaderCell('Proveedor'),
+                  _pdfHeaderCell('Estado'),
+                  _pdfHeaderCell('Pago'),
+                  _pdfHeaderCell('Total', alignRight: true),
+                ],
+              ),
+              // Rows
+              ...purchases.map(
+                (p) => pw.TableRow(
+                  children: [
+                    _pdfCell(p.purchaseDate.toIso8601String().split('T').first),
+                    _pdfCell(p.purchaseNumber ?? '-'),
+                    _pdfCell(p.invoiceNumber ?? '-'),
+                    _pdfCell(p.supplierName, bold: true),
+                    _pdfCell(_statusLabel(p.status)),
+                    _pdfCell(_paymentStatusLabel(p.paymentStatus)),
+                    _pdfCell(money(p.totalAmount), alignRight: true),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  pw.Widget _buildPdfKpi(String label, String value, PdfColor color) {
+    return pw.Column(
+      mainAxisSize: pw.MainAxisSize.min,
+      children: [
+        pw.Text(
+          label.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: 8,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColor.fromInt(0xFF66798E),
+          ),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 14,
+            fontWeight: pw.FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _pdfHeaderCell(String text, {bool alignRight = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+        textAlign: alignRight ? pw.TextAlign.right : pw.TextAlign.left,
+      ),
+    );
+  }
+
+  pw.Widget _pdfCell(String text, {bool bold = false, bool alignRight = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontSize: 8, fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
+        textAlign: alignRight ? pw.TextAlign.right : pw.TextAlign.left,
+      ),
+    );
+  }
+
+  String _fmtDateTime(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  String _statusLabel(String status) {
+    switch (status.toLowerCase()) {
+      case 'draft':
+        return 'Borrador';
+      case 'ordered':
+        return 'Pedido';
+      case 'posted':
+        return 'Registrado';
+      case 'received':
+        return 'Recibido';
+      case 'cancelled':
+        return 'Cancelado';
+      default:
+        return status;
+    }
+  }
+
+  String _paymentStatusLabel(String status) {
+    switch (status.toLowerCase()) {
+      case 'pending':
+        return 'Pendiente';
+      case 'partial':
+        return 'Parcial';
+      case 'paid':
+        return 'Pagado';
+      case 'overdue':
+        return 'Vencido';
+      default:
+        return status;
     }
   }
 }

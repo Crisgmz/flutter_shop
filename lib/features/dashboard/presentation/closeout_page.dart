@@ -80,7 +80,12 @@ class CloseoutPage extends ConsumerWidget {
                   onRetry: () =>
                       ref.invalidate(dashboardCloseoutProvider),
                 ),
-                data: (closeout) => CloseoutBlocks(closeout: closeout),
+                data: (closeout) => CloseoutBlocks(
+                  closeout: closeout,
+                  paymentBreakdown: ref
+                      .watch(dashboardPaymentBreakdownProvider)
+                      .valueOrNull,
+                ),
               ),
             ],
           ),
@@ -93,15 +98,20 @@ class CloseoutPage extends ConsumerWidget {
 /// Bloques visuales del cierre. Exportado para reutilizo desde otras vistas
 /// (en este round sólo lo consume `closeout_page.dart`).
 class CloseoutBlocks extends StatelessWidget {
-  const CloseoutBlocks({super.key, required this.closeout});
+  const CloseoutBlocks({
+    super.key,
+    required this.closeout,
+    this.paymentBreakdown,
+  });
 
   final DashboardCloseout closeout;
+  final DashboardPaymentBreakdown? paymentBreakdown;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+      children: _applyZebra([
         const _BlockHeader('Ventas'),
         _BlockRow('Ventas totales (sin impuestos)',
             money(closeout.sales.salesTotalNoTax)),
@@ -130,6 +140,34 @@ class CloseoutBlocks extends StatelessWidget {
           ),
           for (final cat in closeout.sales.breakdownByCategory)
             _BlockRow('  · ${cat.name}', money(cat.amount)),
+        ],
+
+        const _BlockSpacer(),
+        const _BlockHeader('Distribución de la venta'),
+        if (paymentBreakdown == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: AppTokens.s8),
+            child: SizedBox(
+              height: 18,
+              width: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else if (paymentBreakdown!.entries.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+            child: Text(
+              'Sin pagos registrados este día.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppTokens.mutedForeground,
+                  ),
+            ),
+          )
+        else ...[
+          for (final entry in paymentBreakdown!.entries)
+            _BlockRow(entry.label, money(entry.amount)),
+          const Divider(height: AppTokens.s16, color: AppTokens.border),
+          _BlockRow('Total cobrado', money(paymentBreakdown!.total)),
         ],
 
         const _BlockSpacer(),
@@ -210,8 +248,29 @@ class CloseoutBlocks extends StatelessWidget {
             _BlockRow('Diferencia',
                 money(closeout.cashMonitoring.differenceAmount)),
         ],
-      ],
+      ]),
     );
+  }
+
+  /// Aplica zebra striping a las `_BlockRow` del bloque actual. El contador
+  /// se reinicia con cada `_BlockHeader`. Otros widgets (spacers, padding,
+  /// dividers, mensajes informativos) se dejan intactos sin afectar el
+  /// índice — un párrafo entre dos filas no rompe la alternancia.
+  List<Widget> _applyZebra(List<Widget> children) {
+    final out = <Widget>[];
+    var rowIndex = 0;
+    for (final child in children) {
+      if (child is _BlockHeader) {
+        rowIndex = 0;
+        out.add(child);
+      } else if (child is _BlockRow) {
+        out.add(_ZebraWrap(alt: rowIndex.isOdd, child: child));
+        rowIndex++;
+      } else {
+        out.add(child);
+      }
+    }
+    return out;
   }
 
   String _cashStatusLabel(String? status) {
@@ -287,5 +346,20 @@ class _BlockSpacer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const SizedBox(height: AppTokens.s16);
+  }
+}
+
+/// Fondo alternado para zebra striping en `CloseoutBlocks`.
+/// Aplica `AppTokens.muted` solo a las filas con `alt: true`.
+class _ZebraWrap extends StatelessWidget {
+  const _ZebraWrap({required this.alt, required this.child});
+
+  final bool alt;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!alt) return child;
+    return ColoredBox(color: AppTokens.muted, child: child);
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class InventoryCategory {
@@ -234,6 +236,44 @@ class InventoryRepository {
 
   final SupabaseClient _client;
 
+  static const _imageBucket = 'product_images';
+
+  /// Sube una imagen al bucket `product_images` y devuelve el URL público.
+  /// El path se construye como `<branch_id>/<timestamp>-<random>.<ext>`.
+  Future<String> uploadProductImage({
+    required Uint8List bytes,
+    required String extension,
+  }) async {
+    final branchId = await _currentBranchId() ?? 'no-branch';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final rand = (timestamp % 1000000).toRadixString(36);
+    final path = '$branchId/$timestamp-$rand.$extension';
+
+    final storage = _client.storage.from(_imageBucket);
+    await storage.uploadBinary(
+      path,
+      bytes,
+      fileOptions: FileOptions(
+        upsert: false,
+        contentType: _contentTypeFor(extension),
+      ),
+    );
+    return storage.getPublicUrl(path);
+  }
+
+  String _contentTypeFor(String extension) {
+    switch (extension.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      default:
+        return 'image/jpeg';
+    }
+  }
+
   Future<List<InventoryCategory>> fetchCategories() async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
@@ -285,6 +325,29 @@ class InventoryRepository {
           ),
         )
         .toList(growable: false);
+  }
+
+  Stream<List<InventoryProduct>> productsStream(Map<String, String> categoryNames) async* {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      yield const [];
+      return;
+    }
+
+    yield* _client
+        .from('products')
+        .stream(primaryKey: ['id'])
+        .eq('branch_id', branchId)
+        .map((rows) {
+          final list = rows.map((item) {
+            return InventoryProduct.fromMap(
+              Map<String, dynamic>.from(item),
+              categoryNames,
+            );
+          }).toList();
+          list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+          return list;
+        });
   }
 
   Future<void> saveProduct(InventoryProductInput input) async {

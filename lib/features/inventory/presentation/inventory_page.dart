@@ -10,10 +10,14 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../settings/presentation/app_settings_providers.dart';
 import '../data/file_io_helper.dart';
 import '../data/inventory_excel_service.dart';
 import '../data/inventory_repository.dart';
 import 'inventory_providers.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 class InventoryPage extends ConsumerStatefulWidget {
   const InventoryPage({super.key});
@@ -113,15 +117,18 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                 return searchable.contains(query);
               }).toList();
 
+              final totalCostVal = filtered.fold<double>(0, (sum, p) => sum + (p.cost * p.stock));
+              final totalPriceVal = filtered.fold<double>(0, (sum, p) => sum + (p.price * p.stock));
+              final totalStockVal = filtered.fold<double>(0, (sum, p) => sum + p.stock);
+
+              final Widget mainContent;
               if (filtered.isEmpty) {
-                return const EmptyStateCard(
+                mainContent = const EmptyStateCard(
                   icon: Icons.inventory_2_outlined,
                   message: 'No se encontraron productos con los filtros aplicados.',
                 );
-              }
-
-              if (isMobile) {
-                return ListView.separated(
+              } else if (isMobile) {
+                mainContent = ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: filtered.length,
@@ -132,105 +139,124 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                     onToggle: () => _onToggleActive(filtered[index]),
                   ),
                 );
+              } else {
+                mainContent = Container(
+                  decoration: BoxDecoration(
+                    color: AppTokens.card,
+                    borderRadius: BorderRadius.circular(AppTokens.radius),
+                    border: Border.all(color: AppTokens.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(AppTokens.s20),
+                        child: Text(
+                          'Productos (${filtered.length})',
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      DataTableShell(
+                        child: DataTable(
+                          headingRowColor: WidgetStateProperty.all(AppTokens.background),
+                          columns: const [
+                            DataColumn(label: Text('Producto')),
+                            DataColumn(label: Text('SKU')),
+                            DataColumn(label: Text('Referencia')),
+                            DataColumn(label: Text('Categoría')),
+                            DataColumn(label: Text('Costo'), numeric: true),
+                            DataColumn(label: Text('Precio'), numeric: true),
+                            DataColumn(label: Text('Stock'), numeric: true),
+                            DataColumn(label: Text('Estado')),
+                            DataColumn(label: Text('Acciones')),
+                          ],
+                          rows: filtered.map((product) => DataRow(
+                            cells: [
+                              DataCell(Text(
+                                product.name,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: product.isLowStock ? AppTokens.error : null,
+                                ),
+                              )),
+                              DataCell(Text(product.sku ?? '-')),
+                              DataCell(Text(product.internalCode ?? '-')),
+                              DataCell(Text(product.categoryName ?? '-')),
+                              DataCell(Text(
+                                money(product.cost),
+                                style: const TextStyle(
+                                  color: AppTokens.mutedForeground,
+                                ),
+                              )),
+                              DataCell(Text(money(product.price))),
+                              DataCell(Text(
+                                qty(product.stock),
+                                style: TextStyle(
+                                  color: product.isLowStock ? AppTokens.error : null,
+                                  fontWeight: product.isLowStock ? FontWeight.bold : null,
+                                ),
+                              )),
+                              DataCell(StatusBadge(
+                                label: product.isActive ? 'Activo' : 'Inactivo',
+                                status: product.isActive ? 'active' : 'inactive',
+                              )),
+                              DataCell(Builder(builder: (_) {
+                                final access = ref.watch(roleAccessProvider);
+                                return Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (access.canEditPrices)
+                                      IconButton(
+                                        tooltip: 'Editar',
+                                        icon: const Icon(Icons.edit_outlined,
+                                            size: 20),
+                                        onPressed: () => _onEditProduct(product),
+                                      ),
+                                    IconButton(
+                                      tooltip: 'Historial',
+                                      icon: const Icon(Icons.history_rounded,
+                                          size: 20),
+                                      onPressed: () => _onShowHistory(product),
+                                    ),
+                                    if (access.canManageInventoryAdjustments)
+                                      IconButton(
+                                        tooltip: product.isActive
+                                            ? 'Desactivar'
+                                            : 'Activar',
+                                        icon: Icon(
+                                          product.isActive
+                                              ? Icons.block
+                                              : Icons.check_circle_outline,
+                                          size: 20,
+                                          color: product.isActive
+                                              ? AppTokens.error
+                                              : AppTokens.success,
+                                        ),
+                                        onPressed: () => _onToggleActive(product),
+                                      ),
+                                  ],
+                                );
+                              })),
+                            ],
+                          )).toList(),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
               }
 
-              return Container(
-                decoration: BoxDecoration(
-                  color: AppTokens.card,
-                  borderRadius: BorderRadius.circular(AppTokens.radius),
-                  border: Border.all(color: AppTokens.border),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(AppTokens.s20),
-                      child: Text(
-                        'Productos (${filtered.length})',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    DataTableShell(
-                      child: DataTable(
-                        headingRowColor: WidgetStateProperty.all(AppTokens.background),
-                        columns: const [
-                          DataColumn(label: Text('Producto')),
-                          DataColumn(label: Text('SKU')),
-                          DataColumn(label: Text('Referencia')),
-                          DataColumn(label: Text('Categoría')),
-                          DataColumn(label: Text('Costo'), numeric: true),
-                          DataColumn(label: Text('Precio'), numeric: true),
-                          DataColumn(label: Text('Stock'), numeric: true),
-                          DataColumn(label: Text('Estado')),
-                          DataColumn(label: Text('Acciones')),
-                        ],
-                        rows: filtered.map((product) => DataRow(
-                          cells: [
-                            DataCell(Text(product.name, style: const TextStyle(fontWeight: FontWeight.w600))),
-                            DataCell(Text(product.sku ?? '-')),
-                            DataCell(Text(product.internalCode ?? '-')),
-                            DataCell(Text(product.categoryName ?? '-')),
-                            DataCell(Text(
-                              money(product.cost),
-                              style: const TextStyle(
-                                color: AppTokens.mutedForeground,
-                              ),
-                            )),
-                            DataCell(Text(money(product.price))),
-                            DataCell(Text(
-                              qty(product.stock),
-                              style: TextStyle(
-                                color: product.isLowStock ? AppTokens.error : null,
-                                fontWeight: product.isLowStock ? FontWeight.bold : null,
-                              ),
-                            )),
-                            DataCell(StatusBadge(
-                              label: product.isActive ? 'Activo' : 'Inactivo',
-                              status: product.isActive ? 'active' : 'inactive',
-                            )),
-                            DataCell(Builder(builder: (_) {
-                              final access = ref.watch(roleAccessProvider);
-                              return Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (access.canEditPrices)
-                                    IconButton(
-                                      tooltip: 'Editar',
-                                      icon: const Icon(Icons.edit_outlined,
-                                          size: 20),
-                                      onPressed: () => _onEditProduct(product),
-                                    ),
-                                  IconButton(
-                                    tooltip: 'Historial',
-                                    icon: const Icon(Icons.history_rounded,
-                                        size: 20),
-                                    onPressed: () => _onShowHistory(product),
-                                  ),
-                                  if (access.canManageInventoryAdjustments)
-                                    IconButton(
-                                      tooltip: product.isActive
-                                          ? 'Desactivar'
-                                          : 'Activar',
-                                      icon: Icon(
-                                        product.isActive
-                                            ? Icons.block
-                                            : Icons.check_circle_outline,
-                                        size: 20,
-                                        color: product.isActive
-                                            ? AppTokens.error
-                                            : AppTokens.success,
-                                      ),
-                                      onPressed: () => _onToggleActive(product),
-                                    ),
-                                ],
-                              );
-                            })),
-                          ],
-                        )).toList(),
-                      ),
-                    ),
-                  ],
-                ),
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _InventoryKpis(
+                    totalCostValuation: totalCostVal,
+                    totalPriceValuation: totalPriceVal,
+                    totalStock: totalStockVal,
+                  ),
+                  const SizedBox(height: AppTokens.s24),
+                  mainContent,
+                ],
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
@@ -400,7 +426,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
 
   Widget _buildExcelMenu() {
     return PopupMenuButton<String>(
-      tooltip: 'Excel',
+      tooltip: 'Documentos',
       position: PopupMenuPosition.under,
       onSelected: (value) {
         switch (value) {
@@ -409,6 +435,9 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
             break;
           case 'export':
             _onExportInventory();
+            break;
+          case 'export_pdf':
+            _onExportInventoryPdf();
             break;
           case 'import':
             _onImportInventory();
@@ -428,7 +457,15 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
           value: 'export',
           child: ListTile(
             leading: Icon(Icons.file_download_outlined),
-            title: Text('Exportar inventario'),
+            title: Text('Exportar a Excel'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export_pdf',
+          child: ListTile(
+            leading: Icon(Icons.picture_as_pdf_outlined),
+            title: Text('Exportar a PDF'),
             contentPadding: EdgeInsets.zero,
           ),
         ),
@@ -444,7 +481,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       child: OutlinedButton.icon(
         onPressed: null,
         icon: const Icon(Icons.table_chart_outlined, size: 18),
-        label: const Text('Excel'),
+        label: const Text('Excel / PDF'),
         style: OutlinedButton.styleFrom(
           foregroundColor: AppTokens.foreground,
           disabledForegroundColor: AppTokens.foreground,
@@ -608,6 +645,328 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
   }
+
+  Future<void> _onExportInventoryPdf() async {
+    final List<InventoryProduct> products;
+    try {
+      products = await ref.read(inventoryProductsProvider.future);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar productos: $error')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    if (products.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay productos para exportar.')),
+      );
+      return;
+    }
+
+    final lowStockOnly = ref.read(inventoryLowStockOnlyProvider);
+    final selectedCategoryId = ref.read(inventorySelectedCategoryProvider);
+    final query = ref.read(inventorySearchProvider).trim().toLowerCase();
+
+    final filtered = products.where((product) {
+      if (lowStockOnly && !product.isLowStock) return false;
+      if (selectedCategoryId != null && product.categoryId != selectedCategoryId) {
+        return false;
+      }
+      if (query.isEmpty) return true;
+      final searchable = [
+        product.name,
+        product.sku ?? '',
+        product.barcode ?? '',
+        product.categoryName ?? '',
+      ].join(' ').toLowerCase();
+      return searchable.contains(query);
+    }).toList();
+
+    if (filtered.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay productos filtrados para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = await _buildInventoryPdf(filtered);
+      final fileName = 'inventario_${_timestamp()}.pdf';
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: fileName,
+        dialogTitle: 'Guardar reporte de inventario',
+        extension: 'pdf',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reporte PDF exportado (${filtered.length} productos)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a PDF: $error')),
+      );
+    }
+  }
+
+  Future<Uint8List> _buildInventoryPdf(List<InventoryProduct> products) async {
+    final pdf = pw.Document(
+      title: 'Reporte de Inventario',
+      author: 'Shop+ RD',
+    );
+
+    final theme = pw.ThemeData.withFont(
+      base: await PdfGoogleFonts.robotoRegular(),
+      bold: await PdfGoogleFonts.robotoBold(),
+      italic: await PdfGoogleFonts.robotoItalic(),
+    );
+
+    final totalCostVal = products.fold<double>(0, (sum, p) => sum + (p.cost * p.stock));
+    final totalPriceVal = products.fold<double>(0, (sum, p) => sum + (p.price * p.stock));
+    final totalStockVal = products.fold<double>(0, (sum, p) => sum + p.stock);
+
+    final accent = PdfColor.fromInt(0xFF0D6EFD); // AppTokens.primary
+    final muted = PdfColor.fromInt(0xFF66798E);  // AppTokens.mutedForeground
+    final borderCol = PdfColor.fromInt(0xFFE9ECEF);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        theme: theme,
+        margin: const pw.EdgeInsets.symmetric(horizontal: 36, vertical: 28),
+        header: (ctx) {
+          return pw.Container(
+            margin: const pw.EdgeInsets.only(bottom: 12),
+            padding: const pw.EdgeInsets.only(bottom: 8),
+            decoration: pw.BoxDecoration(
+              border: pw.Border(
+                bottom: pw.BorderSide(color: accent, width: 1.5),
+              ),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'Shop+ RD',
+                      style: pw.TextStyle(
+                        fontSize: 14,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.Text(
+                      'Gestión de Inventario Centralizada',
+                      style: pw.TextStyle(fontSize: 9, color: muted),
+                    ),
+                  ],
+                ),
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    pw.Text(
+                      'REPORTE DE INVENTARIO',
+                      style: pw.TextStyle(
+                        fontSize: 16,
+                        fontWeight: pw.FontWeight.bold,
+                        color: accent,
+                      ),
+                    ),
+                    pw.Text(
+                      'Generado el: ${_fmtDateTime(DateTime.now())}',
+                      style: pw.TextStyle(fontSize: 9, color: muted),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+        footer: (ctx) {
+          return pw.Container(
+            margin: const pw.EdgeInsets.only(top: 12),
+            padding: const pw.EdgeInsets.only(top: 6),
+            decoration: pw.BoxDecoration(
+              border: pw.Border(
+                top: pw.BorderSide(color: muted, width: 0.5),
+              ),
+            ),
+            child: pw.Row(
+              children: [
+                pw.Text(
+                  'Shop+ RD · Reporte de Inventario',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+                pw.Spacer(),
+                pw.Text(
+                  'Página ${ctx.pageNumber} de ${ctx.pagesCount}',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+              ],
+            ),
+          );
+        },
+        build: (ctx) {
+          return [
+            // KPI summary boxes
+            pw.Container(
+              padding: const pw.EdgeInsets.all(10),
+              decoration: pw.BoxDecoration(
+                color: PdfColor.fromInt(0xFFF8F9FA),
+                borderRadius: pw.BorderRadius.circular(4),
+                border: pw.Border.all(color: borderCol, width: 0.5),
+              ),
+              margin: const pw.EdgeInsets.only(bottom: 16),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+                children: [
+                  _buildPdfKpi('Valor Total (Costo)', money(totalCostVal), accent),
+                  _buildPdfKpi('Valor Total (Venta)', money(totalPriceVal), accent),
+                  _buildPdfKpi('Existencias Totales', qty(totalStockVal), accent),
+                  _buildPdfKpi('Productos', products.length.toString(), accent),
+                ],
+              ),
+            ),
+            
+            // Inventory Table
+            pw.Table(
+              border: pw.TableBorder.all(color: borderCol, width: 0.5),
+              columnWidths: const {
+                0: pw.FlexColumnWidth(3), // Producto
+                1: pw.FlexColumnWidth(1.5), // SKU
+                2: pw.FlexColumnWidth(2), // Categoría
+                3: pw.FlexColumnWidth(1.2), // Costo
+                4: pw.FlexColumnWidth(1.2), // Precio
+                5: pw.FlexColumnWidth(1), // Stock
+                6: pw.FlexColumnWidth(1.5), // Total Costo
+              },
+              children: [
+                // Header
+                pw.TableRow(
+                  decoration: pw.BoxDecoration(color: accent),
+                  children: [
+                    _buildPdfTableHeaderCell('Producto'),
+                    _buildPdfTableHeaderCell('SKU'),
+                    _buildPdfTableHeaderCell('Categoría'),
+                    _buildPdfTableHeaderCell('Costo', align: pw.TextAlign.right),
+                    _buildPdfTableHeaderCell('Precio', align: pw.TextAlign.right),
+                    _buildPdfTableHeaderCell('Stock', align: pw.TextAlign.right),
+                    _buildPdfTableHeaderCell('Val. Costo', align: pw.TextAlign.right),
+                  ],
+                ),
+                // Rows
+                ...List.generate(products.length, (index) {
+                  final p = products[index];
+                  final valCosto = p.cost * p.stock;
+                  final isEven = index % 2 == 0;
+                  final bg = isEven ? PdfColors.white : PdfColor.fromInt(0xFFF8F9FA);
+
+                  return pw.TableRow(
+                    decoration: pw.BoxDecoration(color: bg),
+                    children: [
+                      _buildPdfTableCellCell(p.name, isBold: true),
+                      _buildPdfTableCellCell(p.sku ?? '-'),
+                      _buildPdfTableCellCell(p.categoryName ?? '-'),
+                      _buildPdfTableCellCell(money(p.cost), align: pw.TextAlign.right),
+                      _buildPdfTableCellCell(money(p.price), align: pw.TextAlign.right),
+                      _buildPdfTableCellCell(qty(p.stock), align: pw.TextAlign.right, isAlert: p.isLowStock),
+                      _buildPdfTableCellCell(money(valCosto), align: pw.TextAlign.right),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          ];
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  pw.Widget _buildPdfKpi(String label, String value, PdfColor color) {
+    return pw.Column(
+      mainAxisSize: pw.MainAxisSize.min,
+      crossAxisAlignment: pw.CrossAxisAlignment.center,
+      children: [
+        pw.Text(
+          label,
+          style: pw.TextStyle(
+            fontSize: 8,
+            color: PdfColor.fromInt(0xFF66798E),
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+        pw.SizedBox(height: 3),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 12,
+            fontWeight: pw.FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _buildPdfTableHeaderCell(String text, {pw.TextAlign align = pw.TextAlign.left}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: pw.FontWeight.bold,
+          color: PdfColors.white,
+        ),
+        textAlign: align,
+      ),
+    );
+  }
+
+  pw.Widget _buildPdfTableCellCell(
+    String text, {
+    pw.TextAlign align = pw.TextAlign.left,
+    bool isBold = false,
+    bool isAlert = false,
+  }) {
+    final alertColor = PdfColor.fromInt(0xFFDC3545); // AppTokens.error
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: isBold || isAlert ? pw.FontWeight.bold : pw.FontWeight.normal,
+          color: isAlert ? alertColor : PdfColor.fromInt(0xFF212529),
+        ),
+        textAlign: align,
+      ),
+    );
+  }
+
+  String _fmtDate(DateTime d) {
+    return '${d.day.toString().padLeft(2, '0')}/'
+        '${d.month.toString().padLeft(2, '0')}/'
+        '${d.year}';
+  }
+
+  String _fmtDateTime(DateTime d) {
+    final local = d.isUtc ? d.toLocal() : d;
+    return '${_fmtDate(local)} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
 }
 
 /// Mobile card for a single product.
@@ -635,7 +994,11 @@ class _InventoryProductCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     product.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: product.isLowStock ? AppTokens.error : null,
+                    ),
                   ),
                 ),
                 StatusBadge(
@@ -698,17 +1061,17 @@ class _InventoryProductCard extends StatelessWidget {
   }
 }
 
-class _ProductDialog extends StatefulWidget {
+class _ProductDialog extends ConsumerStatefulWidget {
   const _ProductDialog({required this.categories, this.initial});
 
   final List<InventoryCategory> categories;
   final InventoryProduct? initial;
 
   @override
-  State<_ProductDialog> createState() => _ProductDialogState();
+  ConsumerState<_ProductDialog> createState() => _ProductDialogState();
 }
 
-class _ProductDialogState extends State<_ProductDialog> {
+class _ProductDialogState extends ConsumerState<_ProductDialog> {
   final _formKey = GlobalKey<FormState>();
 
   late final TextEditingController _nameController;
@@ -725,12 +1088,16 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController _modelController;
   late final TextEditingController _notesController;
   late final TextEditingController _imageUrlController;
+  late final TextEditingController _priceTier1Controller;
+  late final TextEditingController _priceTier2Controller;
+  late final TextEditingController _priceTier3Controller;
 
   String? _categoryId;
   bool _isActive = true;
   bool _isService = false;
   bool _isTaxExempt = false;
   bool _trackInventory = true;
+  bool _uploadingImage = false;
 
   @override
   void initState() {
@@ -761,6 +1128,15 @@ class _ProductDialogState extends State<_ProductDialog> {
     _modelController = TextEditingController(text: product?.model ?? '');
     _notesController = TextEditingController(text: product?.notes ?? '');
     _imageUrlController = TextEditingController(text: product?.imageUrl ?? '');
+    _priceTier1Controller = TextEditingController(
+      text: product?.priceTier1?.toString() ?? '0',
+    );
+    _priceTier2Controller = TextEditingController(
+      text: product?.priceTier2?.toString() ?? '0',
+    );
+    _priceTier3Controller = TextEditingController(
+      text: product?.priceTier3?.toString() ?? '0',
+    );
 
     _categoryId = product?.categoryId;
     _isActive = product?.isActive ?? true;
@@ -785,6 +1161,9 @@ class _ProductDialogState extends State<_ProductDialog> {
     _modelController.dispose();
     _notesController.dispose();
     _imageUrlController.dispose();
+    _priceTier1Controller.dispose();
+    _priceTier2Controller.dispose();
+    _priceTier3Controller.dispose();
     super.dispose();
   }
 
@@ -925,6 +1304,13 @@ class _ProductDialogState extends State<_ProductDialog> {
                   ),
                 ]),
                 const SizedBox(height: 10),
+                _PriceTierFields(
+                  isMobile: isMobile,
+                  tier1: _priceTier1Controller,
+                  tier2: _priceTier2Controller,
+                  tier3: _priceTier3Controller,
+                ),
+                const SizedBox(height: 10),
                 _formRow(isMobile, [
                   TextFormField(
                     controller: _stockController,
@@ -983,12 +1369,12 @@ class _ProductDialogState extends State<_ProductDialog> {
                   ),
                 ]),
                 const SizedBox(height: 10),
-                TextFormField(
+                _ProductImagePicker(
                   controller: _imageUrlController,
-                  decoration: const InputDecoration(
-                    labelText: 'URL de imagen',
-                    hintText: 'https://...',
-                  ),
+                  uploading: _uploadingImage,
+                  onPick: _pickAndUploadImage,
+                  onClear: () =>
+                      setState(() => _imageUrlController.text = ''),
                 ),
                 const SizedBox(height: 10),
                 TextFormField(
@@ -1077,9 +1463,196 @@ class _ProductDialogState extends State<_ProductDialog> {
       isService: _isService,
       isTaxExempt: _isTaxExempt,
       trackInventory: _trackInventory,
+      priceTier1: _parseTier(_priceTier1Controller.text),
+      priceTier2: _parseTier(_priceTier2Controller.text),
+      priceTier3: _parseTier(_priceTier3Controller.text),
     );
 
     Navigator.of(context).pop(input);
+  }
+
+  double? _parseTier(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    return double.tryParse(trimmed);
+  }
+
+  Future<void> _pickAndUploadImage() async {
+    if (_uploadingImage) return;
+    final picked = await FileIoHelper.pickImage();
+    if (picked == null || !mounted) return;
+
+    setState(() => _uploadingImage = true);
+    try {
+      final repo = ref.read(inventoryRepositoryProvider);
+      final url = await repo.uploadProductImage(
+        bytes: picked.bytes,
+        extension: picked.extension,
+      );
+      if (!mounted) return;
+      setState(() => _imageUrlController.text = url);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo subir la imagen: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _uploadingImage = false);
+    }
+  }
+}
+
+class _ProductImagePicker extends StatelessWidget {
+  const _ProductImagePicker({
+    required this.controller,
+    required this.uploading,
+    required this.onPick,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final bool uploading;
+  final VoidCallback onPick;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final url = controller.text.trim();
+        final hasImage = url.isNotEmpty;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Imagen del producto',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: AppTokens.muted,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTokens.border),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: hasImage
+                      ? Image.network(
+                          url,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const Icon(
+                            Icons.broken_image_outlined,
+                            color: AppTokens.mutedForeground,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.image_outlined,
+                          color: AppTokens.mutedForeground,
+                        ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: uploading ? null : onPick,
+                        icon: uploading
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.upload_outlined, size: 18),
+                        label: Text(
+                          uploading
+                              ? 'Subiendo…'
+                              : (hasImage
+                                  ? 'Cambiar imagen'
+                                  : 'Seleccionar imagen'),
+                        ),
+                      ),
+                      if (hasImage)
+                        TextButton.icon(
+                          onPressed: uploading ? null : onClear,
+                          icon: const Icon(Icons.close, size: 16),
+                          label: const Text('Quitar'),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Campos de precio por nivel: etiquetas vienen de app_settings.sale_price_types.
+// Un slot se oculta si no tiene nombre configurado y el producto tampoco
+// tiene valor guardado en ese tier.
+// ─────────────────────────────────────────────────────────────────────────
+
+class _PriceTierFields extends ConsumerWidget {
+  const _PriceTierFields({
+    required this.isMobile,
+    required this.tier1,
+    required this.tier2,
+    required this.tier3,
+  });
+
+  final bool isMobile;
+  final TextEditingController tier1;
+  final TextEditingController tier2;
+  final TextEditingController tier3;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final priceTypes =
+        ref.watch(appSettingsProvider).valueOrNull?.salePriceTypes ?? const [];
+    final controllers = [tier1, tier2, tier3];
+
+    final rows = <Widget>[];
+    for (var i = 0; i < 3; i++) {
+      final hasName = i < priceTypes.length &&
+          priceTypes[i].toString().trim().isNotEmpty;
+      if (!hasName) continue;
+      final label = priceTypes[i].toString();
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: TextFormField(
+            controller: controllers[i],
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(labelText: label),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) return null;
+              final parsed = double.tryParse(value);
+              if (parsed == null || parsed < 0) return 'Precio inválido';
+              return null;
+            },
+          ),
+        ),
+      );
+    }
+
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: rows,
+    );
   }
 }
 
@@ -1392,12 +1965,17 @@ class _ProductHistoryDialogState
                     final totalOut = entries
                         .where((e) => !e.isIncoming)
                         .fold<double>(0, (s, e) => s + e.quantity.abs());
+                    final runningStocks = List<double>.filled(entries.length, 0);
+                    double currentStock = widget.product.stock;
+                    for (int i = 0; i < entries.length; i++) {
+                      runningStocks[i] = currentStock;
+                      currentStock -= entries[i].quantity;
+                    }
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Padding(
-                          padding: const EdgeInsets.only(
-                              bottom: AppTokens.s12),
+                          padding: const EdgeInsets.only(bottom: AppTokens.s12),
                           child: Row(
                             children: [
                               Text(
@@ -1430,6 +2008,64 @@ class _ProductHistoryDialogState
                             ],
                           ),
                         ),
+                        // Column Headers Row
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: AppTokens.s8),
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 44), // matches leading icon + spacing
+                              const Expanded(
+                                child: Text(
+                                  'Detalle / Concepto',
+                                  style: TextStyle(
+                                    color: AppTokens.mutedForeground,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              SizedBox(
+                                width: 80,
+                                child: Text(
+                                  'Entradas',
+                                  textAlign: TextAlign.end,
+                                  style: TextStyle(
+                                    color: AppTokens.success.withValues(alpha: 0.85),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: AppTokens.s12),
+                              SizedBox(
+                                width: 80,
+                                child: Text(
+                                  'Salidas',
+                                  textAlign: TextAlign.end,
+                                  style: TextStyle(
+                                    color: AppTokens.destructive.withValues(alpha: 0.85),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: AppTokens.s12),
+                              const SizedBox(
+                                width: 80,
+                                child: Text(
+                                  'Stock',
+                                  textAlign: TextAlign.end,
+                                  style: TextStyle(
+                                    color: AppTokens.mutedForeground,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Divider(height: 1, color: AppTokens.border),
                         Expanded(
                           child: ListView.separated(
                             itemCount: entries.length,
@@ -1437,8 +2073,10 @@ class _ProductHistoryDialogState
                               height: 1,
                               color: AppTokens.border,
                             ),
-                            itemBuilder: (context, i) =>
-                                _MovementTile(entry: entries[i]),
+                            itemBuilder: (context, i) => _MovementTile(
+                              entry: entries[i],
+                              runningStock: runningStocks[i],
+                            ),
                           ),
                         ),
                       ],
@@ -1455,9 +2093,13 @@ class _ProductHistoryDialogState
 }
 
 class _MovementTile extends StatelessWidget {
-  const _MovementTile({required this.entry});
+  const _MovementTile({
+    required this.entry,
+    required this.runningStock,
+  });
 
   final ProductMovementEntry entry;
+  final double runningStock;
 
   @override
   Widget build(BuildContext context) {
@@ -1519,29 +2161,172 @@ class _MovementTile extends StatelessWidget {
               ],
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '${entry.isIncoming ? "+" : ""}${entry.quantity.toStringAsFixed(entry.quantity % 1 == 0 ? 0 : 2)}',
-                style: TextStyle(
-                  color: color,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              if (entry.amount > 0)
+          // Column 1: Entradas (Green)
+          SizedBox(
+            width: 80,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (entry.isIncoming) ...[
+                  Text(
+                    '+${qty(entry.quantity)}',
+                    style: const TextStyle(
+                      color: AppTokens.success,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (entry.amount > 0)
+                    Text(
+                      money(entry.amount),
+                      style: const TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 11,
+                      ),
+                    ),
+                ] else
+                  const Text(
+                    '-',
+                    style: TextStyle(
+                      color: AppTokens.mutedForeground,
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+
+          // Column 2: Salidas (Red)
+          SizedBox(
+            width: 80,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (!entry.isIncoming) ...[
+                  Text(
+                    '-${qty(entry.quantity.abs())}',
+                    style: const TextStyle(
+                      color: AppTokens.destructive,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (entry.amount > 0)
+                    Text(
+                      money(entry.amount),
+                      style: const TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 11,
+                      ),
+                    ),
+                ] else
+                  const Text(
+                    '-',
+                    style: TextStyle(
+                      color: AppTokens.mutedForeground,
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+
+          // Column 3: Stock (Black)
+          SizedBox(
+            width: 80,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
                 Text(
-                  money(entry.amount),
+                  qty(runningStock),
                   style: const TextStyle(
-                    color: AppTokens.mutedForeground,
-                    fontSize: 11,
+                    color: AppTokens.foreground,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 }
+
+class _InventoryKpis extends StatelessWidget {
+  const _InventoryKpis({
+    required this.totalCostValuation,
+    required this.totalPriceValuation,
+    required this.totalStock,
+  });
+
+  final double totalCostValuation;
+  final double totalPriceValuation;
+  final double totalStock;
+
+  @override
+  Widget build(BuildContext context) {
+    final cards = [
+      KPICard(
+        label: 'Valor Total de Inventario',
+        value: money(totalCostValuation),
+        icon: Icons.inventory_2_outlined,
+        trend: 'Costo de adquisición',
+      ),
+      KPICard(
+        label: 'Valor Total (Venta)',
+        value: money(totalPriceValuation),
+        icon: Icons.monetization_on_outlined,
+        trend: 'Ingresos potenciales',
+      ),
+      KPICard(
+        label: 'Existencias Totales',
+        value: qty(totalStock),
+        icon: Icons.grid_view_rounded,
+        trend: 'Productos en almacén',
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 600) {
+          return Column(
+            children: cards
+                .map((card) => Padding(
+                      padding: const EdgeInsets.only(bottom: AppTokens.s12),
+                      child: card,
+                    ))
+                .toList(),
+          );
+        } else if (constraints.maxWidth < 900) {
+          return Wrap(
+            spacing: AppTokens.s12,
+            runSpacing: AppTokens.s12,
+            children: cards
+                .map((card) => SizedBox(
+                      width: (constraints.maxWidth - AppTokens.s12) / 2,
+                      child: card,
+                    ))
+                .toList(),
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: cards[0]),
+            const SizedBox(width: AppTokens.s12),
+            Expanded(child: cards[1]),
+            const SizedBox(width: AppTokens.s12),
+            Expanded(child: cards[2]),
+          ],
+        );
+      },
+    );
+  }
+}
+

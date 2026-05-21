@@ -20,6 +20,8 @@ import '../features/quotations/presentation/quotation_create_page.dart';
 import '../features/quotations/presentation/quotations_page.dart';
 import '../features/reports/presentation/reports_page.dart';
 import '../features/returns/presentation/returns_page.dart';
+import '../features/sales/presentation/sales_edit_page.dart';
+import '../features/sales/presentation/sales_history_page.dart';
 import '../features/sales/presentation/sales_page.dart';
 import '../features/settings/presentation/app_settings_page.dart';
 import '../features/settings/presentation/settings_page.dart';
@@ -65,6 +67,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           _page('/panel', const DashboardPage()),
           _page('/panel/cierre', const CloseoutPage()),
           _page('/ventas', const SalesPage()),
+          _page('/ventas/historial', const SalesHistoryPage()),
+          GoRoute(
+            path: '/ventas/historial/:saleId/editar',
+            pageBuilder: (_, state) => NoTransitionPage(
+              child: SalesEditPage(
+                saleId: state.pathParameters['saleId'] ?? '',
+              ),
+            ),
+          ),
           _page('/devoluciones', const ReturnsPage()),
           _page('/cotizaciones', const QuotationsPage()),
           GoRoute(

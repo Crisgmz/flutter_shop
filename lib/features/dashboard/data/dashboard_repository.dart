@@ -164,6 +164,34 @@ class DashboardCategoryAmount {
   final double amount;
 }
 
+/// Distribución de la venta del día agrupada por método de pago.
+/// Se calcula desde la tabla `payments` en `fetchPaymentBreakdown`.
+class DashboardPaymentBreakdown {
+  const DashboardPaymentBreakdown({
+    required this.entries,
+    required this.total,
+  });
+
+  final List<DashboardPaymentEntry> entries;
+  final double total;
+
+  static const empty = DashboardPaymentBreakdown(entries: [], total: 0);
+}
+
+class DashboardPaymentEntry {
+  const DashboardPaymentEntry({
+    required this.method,
+    required this.label,
+    required this.amount,
+    required this.count,
+  });
+
+  final String method;
+  final String label;
+  final double amount;
+  final int count;
+}
+
 class DashboardCloseoutCredit {
   const DashboardCloseoutCredit({
     required this.debits,
@@ -450,6 +478,63 @@ class DashboardRepository {
         ? Map<String, dynamic>.from(result)
         : <String, dynamic>{};
     return DashboardCloseout.fromMap(map);
+  }
+
+  /// Distribución de los cobros del día agrupada por método de pago.
+  /// Lee directamente de `payments` filtrando por la sucursal del usuario
+  /// y el rango [day 00:00, day+1 00:00) en hora local.
+  Future<DashboardPaymentBreakdown> fetchPaymentBreakdown(DateTime date) async {
+    final start = DateTime(date.year, date.month, date.day);
+    final end = start.add(const Duration(days: 1));
+
+    final rows = await _client
+        .from('payments')
+        .select('payment_method, amount')
+        .gte('paid_at', start.toIso8601String())
+        .lt('paid_at', end.toIso8601String());
+
+    final totals = <String, double>{};
+    final counts = <String, int>{};
+    for (final row in rows) {
+      final map = Map<String, dynamic>.from(row as Map);
+      final method = (map['payment_method'] ?? '').toString();
+      if (method.isEmpty) continue;
+      final amount = _toDouble(map['amount']);
+      totals[method] = (totals[method] ?? 0) + amount;
+      counts[method] = (counts[method] ?? 0) + 1;
+    }
+
+    final entries = totals.entries
+        .map((e) => DashboardPaymentEntry(
+              method: e.key,
+              label: _paymentMethodLabel(e.key),
+              amount: e.value,
+              count: counts[e.key] ?? 0,
+            ))
+        .toList()
+      ..sort((a, b) => b.amount.compareTo(a.amount));
+
+    final total = totals.values.fold<double>(0, (a, b) => a + b);
+    return DashboardPaymentBreakdown(entries: entries, total: total);
+  }
+
+  String _paymentMethodLabel(String method) {
+    switch (method) {
+      case 'cash':
+        return 'Efectivo';
+      case 'card':
+        return 'Tarjeta';
+      case 'transfer':
+        return 'Transferencia';
+      case 'mobile':
+        return 'Pago móvil';
+      case 'credit':
+        return 'Crédito';
+      case 'mixed':
+        return 'Mixto';
+      default:
+        return method;
+    }
   }
 }
 

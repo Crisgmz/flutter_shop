@@ -19,6 +19,8 @@ class SalePrintSource {
     this.balanceDue = 0,
     this.branchAddress,
     this.branchPhone,
+    this.branchTaxId,
+    this.branchLogoBytes,
     this.clientName,
     this.clientDocument,
     this.clientAddress,
@@ -28,6 +30,10 @@ class SalePrintSource {
     this.ncf,
     this.notes,
     this.payments = const <SalePrintPaymentSource>[],
+    this.cashRegisterName,
+    this.priceTierLabel,
+    this.changeAmount,
+    this.showBarcode = true,
   });
 
   final String saleId;
@@ -39,6 +45,8 @@ class SalePrintSource {
   final String branchName;
   final String? branchAddress;
   final String? branchPhone;
+  final String? branchTaxId;
+  final List<int>? branchLogoBytes;
   final String? clientName;
   final String? clientDocument;
   final String? clientAddress;
@@ -56,6 +64,19 @@ class SalePrintSource {
   final double totalAmount;
   final double paidAmount;
   final double balanceDue;
+
+  /// Nombre/código de la caja registradora abierta en el momento de la venta.
+  final String? cashRegisterName;
+
+  /// Etiqueta del nivel de precio aplicado (ej. "Mayorista", "Minorista").
+  final String? priceTierLabel;
+
+  /// Cambio entregado al cliente (paid - total). Si null se omite.
+  final double? changeAmount;
+
+  /// Si false oculta el barcode del recibo (alineado con
+  /// `app_settings.receipt_hide_barcode`).
+  final bool showBarcode;
 }
 
 class SalePrintItemSource {
@@ -106,9 +127,15 @@ class SalePrintDocumentAdapter {
         name: source.branchName,
         address: source.branchAddress,
         phone: source.branchPhone,
+        taxId: source.branchTaxId,
+        logoBytes: source.branchLogoBytes,
       ),
       customer: _customerForSale(source),
       cashierName: _nullIfBlank(source.cashierName),
+      cashRegisterName: _nullIfBlank(source.cashRegisterName),
+      priceTierLabel: _nullIfBlank(source.priceTierLabel),
+      changeAmount: source.changeAmount,
+      showBarcode: source.showBarcode,
       receiptTypeLabel: _receiptTypeLabel(source.receiptType),
       ncf: _nullIfBlank(source.ncf),
       notes: _nullIfBlank(source.notes),

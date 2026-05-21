@@ -149,7 +149,10 @@ class ReportPdfRenderer {
     final widgets = <pw.Widget>[];
     for (var i = 0; i < data.sections.length; i++) {
       final section = data.sections[i];
-      widgets.add(_buildSection(section));
+      // Aplanamos cada sección al nivel del MultiPage. Si envolviéramos
+      // todos los hijos en un Column, pdf no podría partir una tabla larga
+      // entre páginas y lanzaría `TooManyPagesException`.
+      widgets.addAll(_buildSectionWidgets(section));
       if (i < data.sections.length - 1) {
         widgets.add(pw.SizedBox(height: 12));
       }
@@ -173,7 +176,10 @@ class ReportPdfRenderer {
     return widgets;
   }
 
-  pw.Widget _buildSection(ReportSection section) {
+  /// Devuelve los hijos de una sección como widgets independientes (no
+  /// envueltos en un Column) para que `pw.MultiPage` pueda paginar la tabla
+  /// si excede una página.
+  List<pw.Widget> _buildSectionWidgets(ReportSection section) {
     final children = <pw.Widget>[];
     if ((section.title ?? '').isNotEmpty) {
       children.add(
@@ -220,10 +226,7 @@ class ReportPdfRenderer {
         ),
       );
     }
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: children,
-    );
+    return children;
   }
 
   pw.Widget _buildTable(ReportTable table) {

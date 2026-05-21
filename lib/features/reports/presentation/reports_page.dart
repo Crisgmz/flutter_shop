@@ -44,6 +44,29 @@ class ReportsPage extends ConsumerWidget {
     final atHub = !atLeaf && selected != null;
     final canGoBack = selected != null;
 
+    // Si el usuario clickeó "PDF" o "Excel" en una tarjeta Gráfico/Resumen,
+    // se setea `pendingExportFormatProvider` antes de navegar. Cuando el
+    // Nivel 2 publica su snapshot, este listener dispara la descarga
+    // automáticamente y limpia el estado pendiente.
+    ref.listen<ReportExportSnapshot?>(
+      currentReportExportProvider,
+      (previous, next) {
+        if (next == null) return;
+        final pending = ref.read(pendingExportFormatProvider);
+        if (pending == null) return;
+        // Limpiamos primero para evitar disparar dos veces si el snapshot
+        // se republica.
+        ref.read(pendingExportFormatProvider.notifier).state = null;
+        final format = pending == 'pdf'
+            ? ReportExportFormat.pdf
+            : ReportExportFormat.xlsx;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          _exportCurrentSnapshot(context, ref, format);
+        });
+      },
+    );
+
     final (title, description) = _resolveHeader(selected, mode, ventasSub);
 
     return ModulePage(
@@ -391,6 +414,16 @@ class _DualCards extends ConsumerWidget {
           ? (constraints.maxWidth - AppTokens.s16) / 2
           : constraints.maxWidth;
 
+      void openMode(ReportMode mode, {String? autoExport}) {
+        // Si se pidió auto-exportar, guardamos el formato pendiente ANTES de
+        // cambiar el modo. El listener montado en ReportsPage detectará el
+        // próximo snapshot y disparará la descarga.
+        if (autoExport != null) {
+          ref.read(pendingExportFormatProvider.notifier).state = autoExport;
+        }
+        ref.read(reportModeProvider.notifier).state = mode;
+      }
+
       return Wrap(
         spacing: AppTokens.s16,
         runSpacing: AppTokens.s16,
@@ -404,9 +437,11 @@ class _DualCards extends ConsumerWidget {
                     'Visualización temporal: tendencias y comparativas.',
                 icon: Icons.bar_chart_rounded,
                 accent: category.group.accent,
-                onTap: () =>
-                    ref.read(reportModeProvider.notifier).state =
-                        ReportMode.graphic,
+                onTap: () => openMode(ReportMode.graphic),
+                onExportPdf: () =>
+                    openMode(ReportMode.graphic, autoExport: 'pdf'),
+                onExportXlsx: () =>
+                    openMode(ReportMode.graphic, autoExport: 'xlsx'),
               ),
             ),
           SizedBox(
@@ -417,8 +452,11 @@ class _DualCards extends ConsumerWidget {
                   'Tabla densa con totales, subtotales y desglose.',
               icon: Icons.table_chart_outlined,
               accent: category.group.accent,
-              onTap: () => ref.read(reportModeProvider.notifier).state =
-                  ReportMode.summary,
+              onTap: () => openMode(ReportMode.summary),
+              onExportPdf: () =>
+                  openMode(ReportMode.summary, autoExport: 'pdf'),
+              onExportXlsx: () =>
+                  openMode(ReportMode.summary, autoExport: 'xlsx'),
             ),
           ),
         ],
@@ -434,6 +472,8 @@ class _ModeCard extends StatelessWidget {
     required this.icon,
     required this.accent,
     required this.onTap,
+    required this.onExportPdf,
+    required this.onExportXlsx,
   });
 
   final String title;
@@ -441,6 +481,8 @@ class _ModeCard extends StatelessWidget {
   final IconData icon;
   final Color accent;
   final VoidCallback onTap;
+  final VoidCallback onExportPdf;
+  final VoidCallback onExportXlsx;
 
   @override
   Widget build(BuildContext context) {
@@ -488,6 +530,38 @@ class _ModeCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 4),
                   Icon(Icons.arrow_forward, size: 16, color: accent),
+                ],
+              ),
+              const SizedBox(height: AppTokens.s12),
+              Wrap(
+                spacing: AppTokens.s8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: onExportPdf,
+                    icon: const Icon(
+                      Icons.picture_as_pdf_outlined,
+                      size: 16,
+                    ),
+                    label: const Text('PDF'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 34),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onExportXlsx,
+                    icon: const Icon(
+                      Icons.table_chart_outlined,
+                      size: 16,
+                    ),
+                    label: const Text('Excel'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 34),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -4285,6 +4359,8 @@ String _timestamp() {
       '${n.minute.toString().padLeft(2, '0')}';
 }
 
+/// Dos botones separados — "PDF" y "Excel" — para exportar el reporte
+/// activo. Se deshabilitan si todavía no hay snapshot publicado.
 class _ExportMenuButton extends ConsumerWidget {
   const _ExportMenuButton();
 
@@ -4292,75 +4368,74 @@ class _ExportMenuButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final snapshot = ref.watch(currentReportExportProvider);
     final enabled = snapshot != null;
-    return PopupMenuButton<String>(
-      tooltip: 'Exportar',
-      enabled: enabled,
-      onSelected: (action) async {
-        final snap = ref.read(currentReportExportProvider);
-        if (snap == null) return;
-        final settings = ref.read(appSettingsProvider).valueOrNull;
-        final branchName =
-            ref.read(shellCurrentBranchNameProvider).valueOrNull;
-        final format = action == 'pdf'
-            ? ReportExportFormat.pdf
-            : ReportExportFormat.xlsx;
-        try {
-          final bytes = await ReportExportService().renderBytes(
-            data: snap.buildData(),
-            format: format,
-            settings: settings,
-            branchName: branchName,
-          );
-          if (!context.mounted) return;
-          final ext = format == ReportExportFormat.pdf ? 'pdf' : 'xlsx';
-          final saved = await FileIoHelper.saveBytes(
-            bytes: bytes,
-            fileName: '${snap.fileBaseName}_${_timestamp()}.$ext',
-            extension: ext,
-            dialogTitle: 'Guardar reporte',
-          );
-          if (!context.mounted) return;
-          if (saved) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Reporte exportado.')),
-            );
-          }
-        } catch (e) {
-          if (!context.mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error al exportar: $e')),
-          );
-        }
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(
-          value: 'pdf',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
-            title: Text('Exportar PDF'),
-          ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        OutlinedButton.icon(
+          onPressed: enabled
+              ? () => _exportCurrentSnapshot(
+                    context,
+                    ref,
+                    ReportExportFormat.pdf,
+                  )
+              : null,
+          icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+          label: const Text('PDF'),
         ),
-        PopupMenuItem(
-          value: 'xlsx',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.table_chart_outlined, size: 18),
-            title: Text('Exportar XLSX'),
-          ),
+        const SizedBox(width: AppTokens.s8),
+        OutlinedButton.icon(
+          onPressed: enabled
+              ? () => _exportCurrentSnapshot(
+                    context,
+                    ref,
+                    ReportExportFormat.xlsx,
+                  )
+              : null,
+          icon: const Icon(Icons.table_chart_outlined, size: 18),
+          label: const Text('Excel'),
         ),
       ],
-      child: OutlinedButton.icon(
-        onPressed: null,
-        icon: const Icon(Icons.file_download_outlined, size: 18),
-        label: const Text('Exportar'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor:
-              enabled ? AppTokens.foreground : AppTokens.mutedForeground,
-        ),
-      ),
+    );
+  }
+}
+
+/// Helper compartido: lee el snapshot publicado, lo renderiza con el formato
+/// pedido y dispara el "Guardar archivo". Lo usan tanto el botón del header
+/// como los botones directos en las tarjetas Gráfico/Resumen.
+Future<void> _exportCurrentSnapshot(
+  BuildContext context,
+  WidgetRef ref,
+  ReportExportFormat format,
+) async {
+  final snap = ref.read(currentReportExportProvider);
+  if (snap == null) return;
+  final settings = ref.read(appSettingsProvider).valueOrNull;
+  final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+  try {
+    final bytes = await ReportExportService().renderBytes(
+      data: snap.buildData(),
+      format: format,
+      settings: settings,
+      branchName: branchName,
+    );
+    if (!context.mounted) return;
+    final ext = format == ReportExportFormat.pdf ? 'pdf' : 'xlsx';
+    final saved = await FileIoHelper.saveBytes(
+      bytes: bytes,
+      fileName: '${snap.fileBaseName}_${_timestamp()}.$ext',
+      extension: ext,
+      dialogTitle: 'Guardar reporte',
+    );
+    if (!context.mounted) return;
+    if (saved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reporte exportado.')),
+      );
+    }
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error al exportar: $e')),
     );
   }
 }

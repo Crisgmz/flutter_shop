@@ -6,6 +6,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../shared/io/web_download_stub.dart'
+    if (dart.library.html) '../../../shared/io/web_download_html.dart';
+
 class FileIoHelper {
   /// Guarda bytes con un diálogo nativo de "Guardar como" (desktop/web) o
   /// dispara compartir (mobile).
@@ -21,14 +24,17 @@ class FileIoHelper {
     final allowed = <String>[extension];
 
     if (kIsWeb) {
-      final result = await FilePicker.platform.saveFile(
-        dialogTitle: dialogTitle,
-        fileName: fileName,
+      // `FilePicker.platform.saveFile` no está implementado en web — usamos
+      // un anchor invisible con Object URL para forzar la descarga.
+      final dotExt = '.$extension';
+      final finalName = fileName.toLowerCase().endsWith(dotExt)
+          ? fileName
+          : '$fileName$dotExt';
+      return downloadBytesInBrowser(
         bytes: bytes,
-        type: FileType.custom,
-        allowedExtensions: allowed,
+        fileName: finalName,
+        mimeType: _mimeFor(extension),
       );
-      return result != null;
     }
 
     if (Platform.isAndroid || Platform.isIOS) {
@@ -68,5 +74,52 @@ class FileIoHelper {
     final path = file.path;
     if (path == null) return null;
     return File(path).readAsBytes();
+  }
+
+  /// MIME type aproximado a partir de la extensión sin punto. Usado por la
+  /// descarga web; el resto de plataformas no lo necesitan.
+  static String _mimeFor(String extension) {
+    switch (extension.toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'csv':
+        return 'text/csv';
+      case 'txt':
+        return 'text/plain';
+      case 'json':
+        return 'application/json';
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  /// Abre el picker filtrado a imágenes y devuelve {bytes, extension}.
+  /// `extension` siempre en minúsculas sin punto (jpg, png, webp...).
+  static Future<({Uint8List bytes, String extension})?> pickImage() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+
+    Uint8List? bytes = file.bytes;
+    if (bytes == null) {
+      final path = file.path;
+      if (path == null) return null;
+      bytes = await File(path).readAsBytes();
+    }
+
+    final rawExt = (file.extension ?? '').toLowerCase();
+    final ext = rawExt.isEmpty ? 'jpg' : rawExt;
+    return (bytes: bytes, extension: ext);
   }
 }

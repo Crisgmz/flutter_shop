@@ -13,6 +13,7 @@ class ReceivableSale {
     required this.paidAmount,
     required this.balanceDue,
     required this.status,
+    required this.dueDate,
   });
 
   final String id;
@@ -27,11 +28,36 @@ class ReceivableSale {
   final double balanceDue;
   final String status;
 
+  /// Fecha de vencimiento del crédito (null si la venta no es a crédito o
+  /// si es una venta antigua sin migrar).
+  final DateTime? dueDate;
+
+  /// Días hasta el vencimiento desde "hoy". Negativo si ya venció.
+  /// `null` si no tiene `dueDate`.
+  int? get daysUntilDue {
+    if (dueDate == null) return null;
+    final today = DateTime.now();
+    final t = DateTime(today.year, today.month, today.day);
+    final d = DateTime(dueDate!.year, dueDate!.month, dueDate!.day);
+    return d.difference(t).inDays;
+  }
+
+  bool get isOverdue {
+    final d = daysUntilDue;
+    return d != null && d < 0;
+  }
+
+  bool isNearDue(int warnDays) {
+    final d = daysUntilDue;
+    return d != null && d >= 0 && d <= warnDays;
+  }
+
   factory ReceivableSale.fromMap(
     Map<String, dynamic> map,
     Map<String, String> clientsById,
   ) {
     final clientId = map['client_id']?.toString();
+    final rawDue = map['due_date']?.toString();
 
     return ReceivableSale(
       id: (map['id'] ?? '').toString(),
@@ -49,6 +75,9 @@ class ReceivableSale {
       paidAmount: _toDouble(map['paid_amount']),
       balanceDue: _toDouble(map['balance_due']),
       status: (map['status'] ?? '').toString(),
+      dueDate: rawDue == null || rawDue.isEmpty
+          ? null
+          : DateTime.tryParse(rawDue),
     );
   }
 }
@@ -129,11 +158,12 @@ class CobrosRepository {
     final rows = await _client
         .from('sales')
         .select(
-          'id, sale_number, sale_date, client_id, receipt_type, ncf, total_amount, paid_amount, balance_due, status',
+          'id, sale_number, sale_date, client_id, receipt_type, ncf, total_amount, paid_amount, balance_due, status, due_date',
         )
         .eq('branch_id', branchId)
         .gt('balance_due', 0)
         .inFilter('status', ['credit', 'pending', 'completed'])
+        .order('due_date', ascending: true, nullsFirst: false)
         .order('sale_date', ascending: false);
 
     return rows
@@ -250,6 +280,78 @@ class CobrosRepository {
           .eq('id', clientId)
           .eq('branch_id', branchId);
     }
+  }
+
+  /// Extiende (o redefine) la fecha de vencimiento de una venta a crédito.
+  /// Si `additionalDays` se pasa, se suma a la `due_date` actual; si se pasa
+  /// `newDueDate`, se reemplaza directamente.
+  Future<void> extendCreditDueDate({
+    required String saleId,
+    int? additionalDays,
+    DateTime? newDueDate,
+  }) async {
+    if (additionalDays == null && newDueDate == null) {
+      throw ArgumentError(
+        'Debes pasar `additionalDays` o `newDueDate`.',
+      );
+    }
+
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    DateTime resolvedDue;
+    if (newDueDate != null) {
+      resolvedDue = newDueDate;
+    } else {
+      final row = await _client
+          .from('sales')
+          .select('due_date, sale_date')
+          .eq('id', saleId)
+          .eq('branch_id', branchId)
+          .single();
+      final base = DateTime.tryParse(
+            (row['due_date'] ?? row['sale_date'] ?? '').toString(),
+          ) ??
+          DateTime.now();
+      resolvedDue = base.add(Duration(days: additionalDays!));
+    }
+
+    final iso = '${resolvedDue.year.toString().padLeft(4, '0')}-'
+        '${resolvedDue.month.toString().padLeft(2, '0')}-'
+        '${resolvedDue.day.toString().padLeft(2, '0')}';
+
+    await _client
+        .from('sales')
+        .update({'due_date': iso})
+        .eq('id', saleId)
+        .eq('branch_id', branchId);
+  }
+
+  /// Cuenta cuántos créditos pendientes vencen dentro de `warnDays` días
+  /// (próximos a vencer pero aún no vencidos). Usado por el banner de login.
+  Future<int> countCreditsNearDue({required int warnDays}) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return 0;
+
+    final today = DateTime.now();
+    final limit = today.add(Duration(days: warnDays));
+    String iso(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+
+    final rows = await _client
+        .from('sales')
+        .select('id')
+        .eq('branch_id', branchId)
+        .eq('status', 'credit')
+        .gt('balance_due', 0)
+        .gte('due_date', iso(today))
+        .lte('due_date', iso(limit));
+
+    return rows.length;
   }
 
   Future<Map<String, String>> _loadClientsById(String branchId) async {

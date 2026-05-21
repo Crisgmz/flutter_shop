@@ -43,3 +43,10 @@ final dashboardCloseoutProvider =
   final repo = ref.watch(dashboardRepositoryProvider);
   return repo.fetchCloseout(date);
 });
+
+final dashboardPaymentBreakdownProvider =
+    FutureProvider<DashboardPaymentBreakdown>((ref) async {
+  final date = ref.watch(dashboardCloseoutDateProvider);
+  final repo = ref.watch(dashboardRepositoryProvider);
+  return repo.fetchPaymentBreakdown(date);
+});

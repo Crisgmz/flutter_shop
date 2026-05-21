@@ -1,5 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -7,6 +12,8 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../data/expenses_excel_service.dart';
 import '../data/expenses_repository.dart';
 import 'expenses_providers.dart';
 
@@ -43,6 +50,8 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
+        const SizedBox(width: AppTokens.s8),
+        _buildExportMenu(),
         const SizedBox(width: AppTokens.s8),
         FilledButton.icon(
           onPressed: _onNewExpense,
@@ -180,6 +189,347 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
         SnackBar(content: Text('No se pudo registrar gasto: $error')),
       );
     }
+  }
+
+  // ─── Exportación Excel / PDF ──────────────────────────────────────────────
+
+  Widget _buildExportMenu() {
+    return PopupMenuButton<String>(
+      tooltip: 'Exportar gastos',
+      onSelected: (action) {
+        switch (action) {
+          case 'export':
+            _onExportExpensesExcel();
+          case 'export_pdf':
+            _onExportExpensesPdf();
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'export',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.table_chart_outlined, size: 18),
+            title: Text('Exportar a Excel'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export_pdf',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
+            title: Text('Exportar a PDF'),
+          ),
+        ),
+      ],
+      child: OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.ios_share_rounded, size: 18),
+        label: const Text('Exportar'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onExportExpensesExcel() async {
+    final List<ExpenseEntity> expenses;
+    try {
+      expenses = await ref.read(expensesListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar gastos: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (expenses.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay gastos para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = ExpensesExcelService().buildExport(expenses: expenses);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'gastos_${_timestamp()}.xlsx',
+        dialogTitle: 'Guardar Gastos Excel',
+        extension: 'xlsx',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gastos exportados a Excel (${expenses.length} gastos)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a Excel: $error')),
+      );
+    }
+  }
+
+  Future<void> _onExportExpensesPdf() async {
+    final List<ExpenseEntity> expenses;
+    try {
+      expenses = await ref.read(expensesListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar gastos: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (expenses.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay gastos para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = await _buildExpensesPdf(expenses);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'gastos_${_timestamp()}.pdf',
+        dialogTitle: 'Guardar Reporte de Gastos',
+        extension: 'pdf',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reporte PDF exportado (${expenses.length} gastos)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a PDF: $error')),
+      );
+    }
+  }
+
+  Future<Uint8List> _buildExpensesPdf(List<ExpenseEntity> expenses) async {
+    final pdf = pw.Document(
+      theme: pw.ThemeData.withFont(
+        base: await PdfGoogleFonts.robotoRegular(),
+        bold: await PdfGoogleFonts.robotoBold(),
+        italic: await PdfGoogleFonts.robotoItalic(),
+      ),
+    );
+
+    final accent = PdfColor.fromInt(0xFF0D6EFD); // AppTokens.primary
+    final muted = PdfColor.fromInt(0xFF66798E);  // AppTokens.mutedForeground
+    final borderCol = PdfColor.fromInt(0xFFE9ECEF);
+
+    final totalAmount = expenses.fold<double>(0, (sum, e) => sum + e.amount);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(32),
+        header: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'REPORTE DE GASTOS',
+                  style: pw.TextStyle(
+                    fontSize: 16,
+                    fontWeight: pw.FontWeight.bold,
+                    color: accent,
+                  ),
+                ),
+                pw.Text(
+                  formatDateTime(DateTime.now()),
+                  style: pw.TextStyle(fontSize: 10, color: muted),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 4),
+            pw.Text(
+              'Shop+ RD — Sistema de Gestión Comercial',
+              style: pw.TextStyle(fontSize: 9, color: muted),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 16),
+          ],
+        ),
+        footer: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'Shop+ RD — Reporte generado automáticamente',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+                pw.Text(
+                  'Pág. ${context.pageNumber} de ${context.pagesCount}',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+              ],
+            ),
+          ],
+        ),
+        build: (context) => [
+          // KPI summary
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromInt(0xFFF8F9FA),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                _buildPdfKpi('Transacciones', expenses.length.toString(), accent),
+                _buildPdfKpi('Monto Total', money(totalAmount), accent),
+              ],
+            ),
+          ),
+
+          // Table
+          pw.Table(
+            border: pw.TableBorder(
+              bottom: pw.BorderSide(color: borderCol, width: 0.5),
+              horizontalInside: pw.BorderSide(color: borderCol, width: 0.5),
+            ),
+            columnWidths: const {
+              0: pw.FlexColumnWidth(1.5), // Fecha
+              1: pw.FlexColumnWidth(2),   // Categoría
+              2: pw.FlexColumnWidth(2.5), // Proveedor
+              3: pw.FlexColumnWidth(2),   // Método
+              4: pw.FlexColumnWidth(3),   // Descripción
+              5: pw.FlexColumnWidth(1.8), // Monto
+            },
+            children: [
+              // Header
+              pw.TableRow(
+                decoration: pw.BoxDecoration(
+                  color: accent,
+                  borderRadius: const pw.BorderRadius.only(
+                    topLeft: pw.Radius.circular(4),
+                    topRight: pw.Radius.circular(4),
+                  ),
+                ),
+                children: [
+                  _buildPdfTableHeaderCell('Fecha'),
+                  _buildPdfTableHeaderCell('Categoría'),
+                  _buildPdfTableHeaderCell('Proveedor'),
+                  _buildPdfTableHeaderCell('Método'),
+                  _buildPdfTableHeaderCell('Descripción'),
+                  _buildPdfTableHeaderCell('Monto', align: pw.TextAlign.right),
+                ],
+              ),
+              // Rows
+              ...List.generate(expenses.length, (idx) {
+                final e = expenses[idx];
+                return pw.TableRow(
+                  children: [
+                    _buildPdfTableCellCell(formatDate(e.expenseDate)),
+                    _buildPdfTableCellCell(e.category, isBold: true),
+                    _buildPdfTableCellCell(e.supplierName ?? '-'),
+                    _buildPdfTableCellCell(_pretty(e.paymentMethod)),
+                    _buildPdfTableCellCell(e.description ?? '-'),
+                    _buildPdfTableCellCell(money(e.amount), align: pw.TextAlign.right, isBold: true),
+                  ],
+                );
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  String _timestamp() {
+    final n = DateTime.now();
+    return '${n.year}${n.month.toString().padLeft(2, '0')}'
+        '${n.day.toString().padLeft(2, '0')}_'
+        '${n.hour.toString().padLeft(2, '0')}'
+        '${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  pw.Widget _buildPdfKpi(String label, String value, PdfColor color) {
+    return pw.Column(
+      mainAxisSize: pw.MainAxisSize.min,
+      children: [
+        pw.Text(
+          label.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: 8,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColor.fromInt(0xFF66798E),
+          ),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 14,
+            fontWeight: pw.FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _buildPdfTableHeaderCell(String text, {pw.TextAlign align = pw.TextAlign.left}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+      child: pw.Text(
+        text,
+        textAlign: align,
+        style: pw.TextStyle(
+          color: PdfColors.white,
+          fontSize: 8,
+          fontWeight: pw.FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  pw.Widget _buildPdfTableCellCell(
+    String text, {
+    pw.TextAlign align = pw.TextAlign.left,
+    bool isBold = false,
+    bool isAlert = false,
+  }) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+      child: pw.Text(
+        text,
+        textAlign: align,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: isBold ? pw.FontWeight.bold : pw.FontWeight.normal,
+          color: isAlert ? PdfColor.fromInt(0xFFDC3545) : PdfColors.black,
+        ),
+      ),
+    );
   }
 }
 

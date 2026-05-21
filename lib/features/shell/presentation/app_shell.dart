@@ -7,6 +7,8 @@ import '../../../shared/extensions/iterable_extensions.dart';
 import '../../../shared/responsive/responsive.dart';
 import '../../../shared/widgets/app_page_layout.dart';
 import '../../auth/presentation/auth_providers.dart';
+import '../../cobros/presentation/cobros_providers.dart';
+import '../../settings/presentation/app_settings_providers.dart';
 import 'shell_nav_items.dart';
 import 'shell_providers.dart';
 
@@ -135,13 +137,21 @@ class AppShell extends ConsumerWidget {
                   ),
                   child: SafeArea(
                     top: false,
-                    child: AppPageLayout(
-                      mode: layoutMode,
-                      child: isCurrentPathVisible
-                          ? child
-                          : _RoleRestrictedView(
-                              onGoHome: () => context.go('/panel'),
-                            ),
+                    child: Stack(
+                      children: [
+                        AppPageLayout(
+                          mode: layoutMode,
+                          child: isCurrentPathVisible
+                              ? child
+                              : _RoleRestrictedView(
+                                  onGoHome: () => context.go('/panel'),
+                                ),
+                        ),
+                        // Notificación post-login: chequea cuántos créditos
+                        // están por vencer y muestra un SnackBar una vez por
+                        // sesión. No ocupa espacio en el layout.
+                        Positioned.fill(child: const _LoginCreditAlert()),
+                      ],
                     ),
                   ),
                 ),
@@ -604,6 +614,80 @@ class _SidebarSectionLabel extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Estado de notificación de créditos por sesión. `true` después de que el
+/// SnackBar se haya mostrado al menos una vez en la sesión actual; se
+/// resetea al cerrar sesión (cuando los providers `autoDispose` se reciclan).
+final _loginAlertShownProvider = StateProvider<bool>((ref) => false);
+
+/// Widget invisible que, al montarse por primera vez en la sesión, consulta
+/// los créditos próximos a vencer y muestra un SnackBar discreto.
+class _LoginCreditAlert extends ConsumerStatefulWidget {
+  const _LoginCreditAlert();
+
+  @override
+  ConsumerState<_LoginCreditAlert> createState() => _LoginCreditAlertState();
+}
+
+class _LoginCreditAlertState extends ConsumerState<_LoginCreditAlert> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+  }
+
+  Future<void> _check() async {
+    if (!mounted) return;
+    if (ref.read(_loginAlertShownProvider)) return;
+
+    final settings = ref.read(appSettingsProvider).valueOrNull;
+    if (settings == null) {
+      // Settings aún no cargados — reintentar tras un breve delay.
+      Future.delayed(const Duration(milliseconds: 600), _check);
+      return;
+    }
+    final warnDays = settings.creditWarnDays;
+    if (warnDays <= 0) return;
+
+    try {
+      final count = await ref
+          .read(cobrosRepositoryProvider)
+          .countCreditsNearDue(warnDays: warnDays);
+      if (!mounted || count == 0) return;
+      ref.read(_loginAlertShownProvider.notifier).state = true;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 8),
+          backgroundColor: AppTokens.warning,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          width: 380,
+          action: SnackBarAction(
+            label: 'Ver',
+            textColor: Colors.white,
+            onPressed: () => context.go('/cobros'),
+          ),
+          content: Text(
+            count == 1
+                ? 'Tienes 1 cliente con crédito próximo a vencer.'
+                : 'Tienes $count clientes con créditos próximos a vencer.',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    } catch (_) {
+      // Silencioso: la notificación no es crítica.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // No ocupa espacio — IgnorePointer evita robarle clicks al contenido.
+    return const IgnorePointer(child: SizedBox.shrink());
   }
 }
 

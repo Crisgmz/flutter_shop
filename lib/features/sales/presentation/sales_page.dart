@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -247,7 +248,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                 crossAxisCount: columns,
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: 0.82,
+                childAspectRatio: 1, // cuadrado perfecto
               ),
               itemCount: filtered.length,
               itemBuilder: (context, index) => _ProductCard(
@@ -369,10 +370,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                     padding: const EdgeInsets.all(AppTokens.s12),
                     itemCount: _cart.length,
                     itemBuilder: (context, i) => _CartLineTile(
+                      key: ValueKey(_cart[i].product.id),
                       item: _cart[i],
-                      onDecrease: () => _changeQty(i, -1),
-                      onIncrease: () => _changeQty(i, 1),
                       onRemove: () => _removeItem(i),
+                      onPriceChanged: (value) => _setUnitPrice(i, value),
+                      onQuantityChanged: (value) => _setQty(i, value),
+                      onDiscountChanged: (value) => _setDiscountPct(i, value),
                     ),
                   ),
           ),
@@ -493,7 +496,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                                 ),
                                 onPressed: _isSubmitting
                                     ? null
-                                    : () => _checkout(asCredit: true),
+                                    : _confirmCreditCheckout,
                                 icon:
                                     const Icon(Icons.access_time_rounded, size: 18),
                                 label: const Text('CRÉDITO',
@@ -580,24 +583,56 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           product: current.product,
           quantity: current.quantity + 1,
           unitPrice: current.unitPrice,
+          discountPct: current.discountPct,
         );
       }
     });
   }
 
-  void _changeQty(int index, int delta) {
+  /// Setea la cantidad a un valor específico (desde el input del cart line).
+  /// Si es <= 0 elimina el item.
+  void _setQty(int index, double value) {
+    if (value <= 0) {
+      _removeItem(index);
+      return;
+    }
     final item = _cart[index];
-    final next = item.quantity + delta;
-    if (next <= 0) { _removeItem(index); return; }
-    if (next > item.product.stock) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sin stock suficiente')));
+    if (value > item.product.stock) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sin stock suficiente')),
+      );
       return;
     }
     setState(() => _cart[index] = SaleCartItem(
-      product: item.product,
-      quantity: next,
-      unitPrice: item.unitPrice,
-    ));
+          product: item.product,
+          quantity: value,
+          unitPrice: item.unitPrice,
+          discountPct: item.discountPct,
+        ));
+  }
+
+  /// Setea el precio unitario de una línea (override manual).
+  void _setUnitPrice(int index, double value) {
+    if (value < 0) return;
+    final item = _cart[index];
+    setState(() => _cart[index] = SaleCartItem(
+          product: item.product,
+          quantity: item.quantity,
+          unitPrice: value,
+          discountPct: item.discountPct,
+        ));
+  }
+
+  /// Setea el descuento porcentual de una línea (0-100).
+  void _setDiscountPct(int index, double value) {
+    final clamped = value.clamp(0, 100).toDouble();
+    final item = _cart[index];
+    setState(() => _cart[index] = SaleCartItem(
+          product: item.product,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discountPct: clamped,
+        ));
   }
 
   /// Cuando cambia el cliente, re-precia las líneas del carrito según el
@@ -625,6 +660,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           product: item.product,
           quantity: item.quantity,
           unitPrice: item.product.priceFor(tier),
+          discountPct: item.discountPct,
         );
       }
     });
@@ -719,7 +755,92 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     }
   }
 
-  Future<void> _checkout({required bool asCredit}) async {
+  /// Abre un diálogo que pide los días de plazo (default desde settings) y
+  /// luego ejecuta el checkout a crédito.
+  Future<void> _confirmCreditCheckout() async {
+    if (_cart.isEmpty) return;
+    if (_clientId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Para ventas a crédito debe seleccionar un cliente.'),
+      ));
+      return;
+    }
+    final settings = ref.read(appSettingsProvider).valueOrNull;
+    final defaultDays = settings?.creditDefaultDays ?? 30;
+    final controller = TextEditingController(text: defaultDays.toString());
+    final today = DateTime.now();
+
+    int parseDays() {
+      final raw = int.tryParse(controller.text.trim()) ?? defaultDays;
+      return raw.clamp(1, 365);
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          final days = parseDays();
+          final due = today.add(Duration(days: days));
+          return AlertDialog(
+            title: const Text('Venta a crédito'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Total: ${money(_cartTotal)}',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Días de plazo',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (_) => setLocal(() {}),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Vence: ${due.day.toString().padLeft(2, '0')}/'
+                  '${due.month.toString().padLeft(2, '0')}/${due.year}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTokens.mutedForeground,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(ctx, true),
+                icon: const Icon(Icons.check, size: 18),
+                label: const Text('Confirmar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (confirmed == true) {
+      await _checkout(asCredit: true, creditDueDays: parseDays());
+    }
+    controller.dispose();
+  }
+
+  Future<void> _checkout({
+    required bool asCredit,
+    int? creditDueDays,
+  }) async {
     if (_cart.isEmpty) return;
     if (asCredit && _clientId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Para ventas a crédito debe seleccionar un cliente.')));
@@ -741,6 +862,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         customerRequiredForSale:
             settings?.customerRequiredForSale ?? false,
         creditAllowSales: settings?.creditAllowSales ?? true,
+        creditDueDays: creditDueDays,
       ));
 
       _clearCart();
@@ -1205,98 +1327,346 @@ class _ProductCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final initial = product.name.isNotEmpty ? product.name[0].toUpperCase() : '?';
     final isLowStock = product.stock <= 5;
-    
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: const Color(0xFFF1F5F9)),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 4, offset: const Offset(0, 2)),
-          ],
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(8)),
-              child: Center(child: Text(initial, style: const TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.w800))),
+      // Stack para superponer el badge de stock en la esquina superior
+      // derecha sin alterar el layout interior de la tarjeta.
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Tarjeta plana: borde gris visible, fondo blanco, contenido
+          // centrado (inicial grande, nombre y precio).
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border.all(color: const Color(0xFFCBD5E1), width: 1),
+              borderRadius: BorderRadius.circular(12),
             ),
-            const SizedBox(height: 10),
-            Text(product.name, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
-            const SizedBox(height: 6),
-            Text(money(product.price), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFF2563EB))),
-            if (isLowStock) ...[
-              const SizedBox(height: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: const Color(0xFFFEE2E2), borderRadius: BorderRadius.circular(4)),
-                child: const Text('Bajo stock', style: TextStyle(fontSize: 9, color: Color(0xFFB91C1C), fontWeight: FontWeight.bold)),
-              ),
-            ],
-          ],
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Center(
+                    child: Text(
+                      initial,
+                      style: const TextStyle(
+                        color: Color(0xFF2563EB),
+                        fontWeight: FontWeight.w800,
+                        fontSize: 20,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  product.name,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF334155),
+                    height: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  money(product.price),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF2563EB),
+                  ),
+                ),
+                if (isLowStock) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'Bajo stock',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Color(0xFFB91C1C),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          Positioned(
+            top: 8,
+            right: 8,
+            child: _StockBadge(stock: product.stock),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Badge circular con la cantidad en existencia. Color según nivel:
+///   - rojo si 0
+///   - ámbar si ≤ 5
+///   - verde si > 5
+class _StockBadge extends StatelessWidget {
+  const _StockBadge({required this.stock});
+
+  final double stock;
+
+  @override
+  Widget build(BuildContext context) {
+    final (bg, fg) = switch (stock) {
+      <= 0 => (const Color(0xFFDC2626), Colors.white),
+      <= 5 => (const Color(0xFFF59E0B), Colors.white),
+      _ => (const Color(0xFF16A34A), Colors.white),
+    };
+    // Formato: entero si es redondo, una decimal si no.
+    final label = stock == stock.roundToDouble()
+        ? stock.toInt().toString()
+        : stock.toStringAsFixed(1);
+
+    return Container(
+      constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: Colors.white, width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Center(
+        child: Text(
+          label,
+          style: TextStyle(
+            color: fg,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            height: 1,
+          ),
         ),
       ),
     );
   }
 }
 
-class _CartLineTile extends ConsumerWidget {
-  const _CartLineTile({required this.item, required this.onDecrease, required this.onIncrease, required this.onRemove});
+/// Línea del carrito con campos editables: Precio, Cantidad, Descuento y
+/// Total calculado. Cada campo es un mini-TextField. Total se actualiza al
+/// salir del foco de cualquiera de los inputs.
+class _CartLineTile extends ConsumerStatefulWidget {
+  const _CartLineTile({
+    super.key,
+    required this.item,
+    required this.onRemove,
+    required this.onPriceChanged,
+    required this.onQuantityChanged,
+    required this.onDiscountChanged,
+  });
+
   final SaleCartItem item;
-  final VoidCallback onDecrease, onIncrease, onRemove;
+  final VoidCallback onRemove;
+  final ValueChanged<double> onPriceChanged;
+  final ValueChanged<double> onQuantityChanged;
+  final ValueChanged<double> onDiscountChanged;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_CartLineTile> createState() => _CartLineTileState();
+}
+
+class _CartLineTileState extends ConsumerState<_CartLineTile> {
+  late final TextEditingController _priceCtrl;
+  late final TextEditingController _qtyCtrl;
+  late final TextEditingController _discountCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _priceCtrl = TextEditingController(text: _fmtNum(widget.item.unitPrice));
+    _qtyCtrl = TextEditingController(text: _fmtNum(widget.item.quantity));
+    _discountCtrl =
+        TextEditingController(text: _fmtNum(widget.item.discountPct));
+  }
+
+  @override
+  void didUpdateWidget(covariant _CartLineTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Sincronizamos los controllers cuando el padre cambia el item desde
+    // afuera (ej. tier-change re-pricia, suma de cantidad por re-add, etc.).
+    if (oldWidget.item.unitPrice != widget.item.unitPrice) {
+      _priceCtrl.text = _fmtNum(widget.item.unitPrice);
+    }
+    if (oldWidget.item.quantity != widget.item.quantity) {
+      _qtyCtrl.text = _fmtNum(widget.item.quantity);
+    }
+    if (oldWidget.item.discountPct != widget.item.discountPct) {
+      _discountCtrl.text = _fmtNum(widget.item.discountPct);
+    }
+  }
+
+  @override
+  void dispose() {
+    _priceCtrl.dispose();
+    _qtyCtrl.dispose();
+    _discountCtrl.dispose();
+    super.dispose();
+  }
+
+  static String _fmtNum(double v) {
+    if (v == v.roundToDouble()) return v.toInt().toString();
+    return v.toStringAsFixed(2);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
     final isReturn = ref.watch(posModeProvider) == PosMode.returnMode;
-    final qtyDisplay = isReturn
-        ? '↩ -${item.quantity.toInt()}'
-        : item.quantity.toInt().toString();
-    final qtyColor =
-        isReturn ? const Color(0xFFEF4444) : const Color(0xFF1E293B);
     final bgColor =
         isReturn ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-          color: bgColor, borderRadius: BorderRadius.circular(10)),
-      child: Row(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(item.product.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1E293B))),
-                Text(money(item.product.price), style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-              ],
-            ),
-          ),
+          // ── Fila superior: nombre + botón quitar ──
           Row(
             children: [
-              _QtySmallBtn(icon: Icons.remove, onTap: onDecrease),
-              SizedBox(
-                width: isReturn ? 56 : 24,
-                child: Center(
-                  child: Text(
-                    qtyDisplay,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                      color: qtyColor,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.product.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                        color: Color(0xFF1E293B),
+                      ),
                     ),
-                  ),
+                    Text(
+                      'Inventario: ${_fmtNum(item.product.stock)}'
+                      '${item.product.sku != null ? '  ·  SKU: ${item.product.sku}' : ''}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF94A3B8),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              _QtySmallBtn(icon: Icons.add, onTap: onIncrease),
-              const SizedBox(width: 8),
-              IconButton(onPressed: onRemove, icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Color(0xFFF87171)), visualDensity: VisualDensity.compact),
+              IconButton(
+                onPressed: widget.onRemove,
+                icon: const Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: Color(0xFFF87171),
+                ),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // ── Fila inferior: 4 campos (Precio, Cant, Desc, Total) ──
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: _CartField(
+                  label: 'Precio',
+                  controller: _priceCtrl,
+                  suffix: r'$',
+                  onSubmit: (raw) {
+                    final v = double.tryParse(raw) ?? item.unitPrice;
+                    widget.onPriceChanged(v);
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _CartField(
+                  label: 'Cantidad',
+                  controller: _qtyCtrl,
+                  onSubmit: (raw) {
+                    final v = double.tryParse(raw) ?? item.quantity;
+                    widget.onQuantityChanged(v);
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _CartField(
+                  label: 'Descuento',
+                  controller: _discountCtrl,
+                  suffix: '%',
+                  onSubmit: (raw) {
+                    final v = double.tryParse(raw) ?? item.discountPct;
+                    widget.onDiscountChanged(v);
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Total',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Text(
+                        money(item.lineTotal),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                          color: isReturn
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFF2563EB),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ],
@@ -1305,20 +1675,91 @@ class _CartLineTile extends ConsumerWidget {
   }
 }
 
-class _QtySmallBtn extends StatelessWidget {
-  const _QtySmallBtn({required this.icon, required this.onTap});
-  final IconData icon;
-  final VoidCallback onTap;
+/// Mini-input usado dentro de la línea del carrito (Precio / Cant / Desc).
+/// Tiene label arriba y commitea el valor al perder el foco o al presionar
+/// enter para que setState del padre se dispare una sola vez por edición.
+class _CartField extends StatefulWidget {
+  const _CartField({
+    required this.label,
+    required this.controller,
+    required this.onSubmit,
+    this.suffix,
+  });
+
+  final String label;
+  final TextEditingController controller;
+  final ValueChanged<String> onSubmit;
+  final String? suffix;
+
+  @override
+  State<_CartField> createState() => _CartFieldState();
+}
+
+class _CartFieldState extends State<_CartField> {
+  late final FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _focus = FocusNode();
+    _focus.addListener(_onFocus);
+  }
+
+  void _onFocus() {
+    if (!_focus.hasFocus) widget.onSubmit(widget.controller.text);
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    _focus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        width: 24, height: 24,
-        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: const Color(0xFFE2E8F0)), borderRadius: BorderRadius.circular(6)),
-        child: Icon(icon, size: 14, color: const Color(0xFF64748B)),
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.label,
+          style: const TextStyle(
+            fontSize: 10,
+            color: Color(0xFF64748B),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 2),
+        TextField(
+          controller: widget.controller,
+          focusNode: _focus,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          textAlignVertical: TextAlignVertical.center,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          onSubmitted: widget.onSubmit,
+          decoration: InputDecoration(
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+            suffixText: widget.suffix,
+            suffixStyle: const TextStyle(
+              fontSize: 11,
+              color: Color(0xFF94A3B8),
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            filled: true,
+            fillColor: Colors.white,
+          ),
+        ),
+      ],
     );
   }
 }
+

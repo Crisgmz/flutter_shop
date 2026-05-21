@@ -19,9 +19,18 @@ final inventoryCategoriesProvider = FutureProvider<List<InventoryCategory>>((
   return repository.fetchCategories();
 });
 
-final inventoryProductsProvider = FutureProvider<List<InventoryProduct>>((
-  ref,
-) async {
+final inventoryProductsProvider = StreamProvider<List<InventoryProduct>>((ref) {
   final repository = ref.watch(inventoryRepositoryProvider);
-  return repository.fetchProducts();
+  final categoriesAsync = ref.watch(inventoryCategoriesProvider);
+
+  return categoriesAsync.when(
+    data: (categories) {
+      final categoryNames = {
+        for (final c in categories) c.id: c.name,
+      };
+      return repository.productsStream(categoryNames);
+    },
+    error: (err, stack) => Stream.error(err, stack),
+    loading: () => const Stream<List<InventoryProduct>>.empty(),
+  );
 });

@@ -2,6 +2,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -11,6 +14,7 @@ import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../inventory/data/file_io_helper.dart';
+import '../../settings/presentation/app_settings_providers.dart';
 import '../data/clients_excel_service.dart';
 import '../data/clients_repository.dart';
 import 'clients_providers.dart';
@@ -55,7 +59,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
           label: const Text('Actualizar'),
         ),
         const SizedBox(width: AppTokens.s8),
-        _buildExcelMenu(),
+        _buildExportMenu(),
         const SizedBox(width: AppTokens.s8),
         FilledButton.icon(
           onPressed: _onCreateClient,
@@ -362,17 +366,19 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
     );
   }
 
-  // ─── Excel: plantilla, exportar, importar ────────────────────────────
+  // ─── Excel / PDF: plantilla, exportar, importar ────────────────────────────
 
-  Widget _buildExcelMenu() {
+  Widget _buildExportMenu() {
     return PopupMenuButton<String>(
-      tooltip: 'Excel',
+      tooltip: 'Exportar / Importar',
       onSelected: (action) {
         switch (action) {
           case 'template':
             _onDownloadTemplate();
           case 'export':
             _onExportClients();
+          case 'export_pdf':
+            _onExportClientsPdf();
           case 'import':
             _onImportClients();
         }
@@ -384,7 +390,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.download_outlined, size: 18),
-            title: Text('Descargar plantilla'),
+            title: Text('Descargar plantilla Excel'),
           ),
         ),
         PopupMenuItem(
@@ -392,8 +398,17 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.upload_file_outlined, size: 18),
-            title: Text('Exportar clientes'),
+            leading: Icon(Icons.table_chart_outlined, size: 18),
+            title: Text('Exportar a Excel'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'export_pdf',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
+            title: Text('Exportar a PDF'),
           ),
         ),
         PopupMenuItem(
@@ -408,10 +423,261 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
       ],
       child: OutlinedButton.icon(
         onPressed: null,
-        icon: const Icon(Icons.table_chart_outlined, size: 18),
-        label: const Text('Excel'),
+        icon: const Icon(Icons.ios_share_rounded, size: 18),
+        label: const Text('Exportar'),
         style: OutlinedButton.styleFrom(
           foregroundColor: AppTokens.foreground,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onExportClientsPdf() async {
+    final List<ClientEntity> clients;
+    try {
+      clients = await ref.read(clientsListProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar clientes: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (clients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay clientes para exportar.')),
+      );
+      return;
+    }
+
+    try {
+      final bytes = await _buildClientsPdf(clients);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'clientes_${_timestamp()}.pdf',
+        dialogTitle: 'Guardar Reporte de Clientes',
+        extension: 'pdf',
+      );
+      if (!mounted) return;
+      if (saved) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reporte PDF exportado (${clients.length} clientes)'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar a PDF: $error')),
+      );
+    }
+  }
+
+  Future<Uint8List> _buildClientsPdf(List<ClientEntity> clients) async {
+    final pdf = pw.Document(
+      theme: pw.ThemeData.withFont(
+        base: await PdfGoogleFonts.robotoRegular(),
+        bold: await PdfGoogleFonts.robotoBold(),
+        italic: await PdfGoogleFonts.robotoItalic(),
+      ),
+    );
+
+    final accent = PdfColor.fromInt(0xFF0D6EFD); // AppTokens.primary
+    final muted = PdfColor.fromInt(0xFF66798E);  // AppTokens.mutedForeground
+    final borderCol = PdfColor.fromInt(0xFFE9ECEF);
+
+    final totalBalance = clients.fold<double>(0, (sum, c) => sum + c.balanceDue);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(32),
+        header: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'REPORTE DE CLIENTES',
+                  style: pw.TextStyle(
+                    fontSize: 16,
+                    fontWeight: pw.FontWeight.bold,
+                    color: accent,
+                  ),
+                ),
+                pw.Text(
+                  formatDateTime(DateTime.now()),
+                  style: pw.TextStyle(fontSize: 10, color: muted),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 4),
+            pw.Text(
+              'Shop+ RD — Sistema de Gestión Comercial',
+              style: pw.TextStyle(fontSize: 9, color: muted),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 16),
+          ],
+        ),
+        footer: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Divider(height: 1, color: borderCol),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text(
+                  'Shop+ RD — Reporte generado automáticamente',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+                pw.Text(
+                  'Pág. ${context.pageNumber} de ${context.pagesCount}',
+                  style: pw.TextStyle(fontSize: 8, color: muted),
+                ),
+              ],
+            ),
+          ],
+        ),
+        build: (context) => [
+          // KPI summary
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromInt(0xFFF8F9FA),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                _buildPdfKpi('Total Clientes', clients.length.toString(), accent),
+                _buildPdfKpi('Balance Pendiente', money(totalBalance), accent),
+              ],
+            ),
+          ),
+
+          // Table
+          pw.Table(
+            border: pw.TableBorder(
+              bottom: pw.BorderSide(color: borderCol, width: 0.5),
+              horizontalInside: pw.BorderSide(color: borderCol, width: 0.5),
+            ),
+            columnWidths: const {
+              0: pw.FlexColumnWidth(3), // Nombre
+              1: pw.FlexColumnWidth(1.5), // Documento
+              2: pw.FlexColumnWidth(1.5), // Teléfono
+              3: pw.FlexColumnWidth(2), // Email
+              4: pw.FlexColumnWidth(1.5), // Límite crédito
+              5: pw.FlexColumnWidth(1.5), // Balance
+            },
+            children: [
+              // Header
+              pw.TableRow(
+                decoration: pw.BoxDecoration(
+                  color: accent,
+                  borderRadius: const pw.BorderRadius.only(
+                    topLeft: pw.Radius.circular(4),
+                    topRight: pw.Radius.circular(4),
+                  ),
+                ),
+                children: [
+                  _buildPdfTableHeaderCell('Nombre'),
+                  _buildPdfTableHeaderCell('Documento'),
+                  _buildPdfTableHeaderCell('Teléfono'),
+                  _buildPdfTableHeaderCell('Email'),
+                  _buildPdfTableHeaderCell('Límite crédito', align: pw.TextAlign.right),
+                  _buildPdfTableHeaderCell('Balance', align: pw.TextAlign.right),
+                ],
+              ),
+              // Rows
+              ...List.generate(clients.length, (idx) {
+                final c = clients[idx];
+                final isEven = idx % 2 == 0;
+                final bg = isEven ? PdfColors.white : PdfColor.fromInt(0xFFF8F9FA);
+
+                return pw.TableRow(
+                  decoration: pw.BoxDecoration(color: bg),
+                  children: [
+                    _buildPdfTableCellCell(c.fullName, isBold: true),
+                    _buildPdfTableCellCell(c.documentNumber ?? '-'),
+                    _buildPdfTableCellCell(c.phone ?? '-'),
+                    _buildPdfTableCellCell(c.email ?? '-'),
+                    _buildPdfTableCellCell(money(c.creditLimit), align: pw.TextAlign.right),
+                    _buildPdfTableCellCell(money(c.balanceDue),
+                        align: pw.TextAlign.right, isAlert: c.balanceDue > 0),
+                  ],
+                );
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  pw.Widget _buildPdfKpi(String label, String value, PdfColor color) {
+    return pw.Column(
+      mainAxisSize: pw.MainAxisSize.min,
+      children: [
+        pw.Text(
+          label.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: 8,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColor.fromInt(0xFF66798E),
+          ),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 14,
+            fontWeight: pw.FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _buildPdfTableHeaderCell(String text, {pw.TextAlign align = pw.TextAlign.left}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+      child: pw.Text(
+        text,
+        textAlign: align,
+        style: pw.TextStyle(
+          color: PdfColors.white,
+          fontSize: 8,
+          fontWeight: pw.FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  pw.Widget _buildPdfTableCellCell(
+    String text, {
+    pw.TextAlign align = pw.TextAlign.left,
+    bool isBold = false,
+    bool isAlert = false,
+  }) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+      child: pw.Text(
+        text,
+        textAlign: align,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: isBold ? pw.FontWeight.bold : pw.FontWeight.normal,
+          color: isAlert ? PdfColor.fromInt(0xFFDC3545) : PdfColors.black,
         ),
       ),
     );
@@ -1156,16 +1422,16 @@ class _KpisGrid extends StatelessWidget {
 
 // ─── Client dialog ───────────────────────────────────────────────────────────
 
-class _ClientDialog extends StatefulWidget {
+class _ClientDialog extends ConsumerStatefulWidget {
   const _ClientDialog({this.initial});
 
   final ClientEntity? initial;
 
   @override
-  State<_ClientDialog> createState() => _ClientDialogState();
+  ConsumerState<_ClientDialog> createState() => _ClientDialogState();
 }
 
-class _ClientDialogState extends State<_ClientDialog> {
+class _ClientDialogState extends ConsumerState<_ClientDialog> {
   final _formKey = GlobalKey<FormState>();
 
   // Datos generales
@@ -1490,26 +1756,9 @@ class _ClientDialogState extends State<_ClientDialog> {
                   ),
                 ]),
                 const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  initialValue: _priceTier,
-                  decoration: const InputDecoration(
-                    labelText: 'Nivel de precio',
-                  ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: 'retail',
-                      child: Text('Detalle'),
-                    ),
-                    DropdownMenuItem(
-                      value: 'wholesale',
-                      child: Text('Mayoreo'),
-                    ),
-                    DropdownMenuItem(value: 'vip', child: Text('VIP')),
-                  ],
-                  onChanged: (value) {
-                    if (value == null) return;
-                    setState(() => _priceTier = value);
-                  },
+                _PriceTierDropdown(
+                  value: _priceTier,
+                  onChanged: (v) => setState(() => _priceTier = v),
                 ),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String?>(
@@ -1699,4 +1948,50 @@ DateTime? _parseDate(String? value) {
   final text = (value ?? '').trim();
   if (text.isEmpty) return null;
   return DateTime.tryParse(text);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Dropdown de nivel de precio, alimentado por app_settings.sale_price_types.
+// Mapeo posicional: índice 0 → tier_1, 1 → tier_2, 2 → tier_3. Más
+// 'Detalle' (retail) como base siempre disponible. Valores legados
+// ('wholesale', 'vip', etc.) se preservan como opción "(antiguo)".
+// ─────────────────────────────────────────────────────────────────────────
+
+const _kPriceTierBase = 'retail';
+const _kPriceTierSlots = ['tier_1', 'tier_2', 'tier_3'];
+
+class _PriceTierDropdown extends ConsumerWidget {
+  const _PriceTierDropdown({required this.value, required this.onChanged});
+
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settingsAsync = ref.watch(appSettingsProvider);
+    final priceTypes = settingsAsync.valueOrNull?.salePriceTypes ?? const [];
+
+    final labels = <String, String>{_kPriceTierBase: 'Detalle'};
+    for (var i = 0; i < _kPriceTierSlots.length && i < priceTypes.length; i++) {
+      final name = priceTypes[i].toString().trim();
+      if (name.isEmpty) continue;
+      labels[_kPriceTierSlots[i]] = name;
+    }
+
+    if (!labels.containsKey(value)) {
+      labels[value] = '$value (antiguo)';
+    }
+
+    return DropdownButtonFormField<String>(
+      initialValue: value,
+      decoration: const InputDecoration(labelText: 'Nivel de precio'),
+      items: [
+        for (final entry in labels.entries)
+          DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+      ],
+      onChanged: (v) {
+        if (v != null) onChanged(v);
+      },
+    );
+  }
 }

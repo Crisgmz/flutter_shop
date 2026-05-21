@@ -272,6 +272,12 @@ final currentReportExportProvider = StateProvider<ReportExportSnapshot?>(
   (ref) => null,
 );
 
+/// Formato pendiente a auto-exportar al cargar el siguiente snapshot.
+/// Se setea cuando el usuario clickea PDF/Excel en una tarjeta del Nivel 1
+/// (dual cards Gráfico/Resumen). Al publicar el snapshot del Nivel 2, un
+/// listener dispara la descarga y limpia este estado.
+final pendingExportFormatProvider = StateProvider<String?>((ref) => null);
+
 /// Snapshot del reporte exportable.
 class ReportExportSnapshot {
   ReportExportSnapshot({

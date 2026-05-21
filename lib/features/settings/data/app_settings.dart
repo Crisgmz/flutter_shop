@@ -142,6 +142,8 @@ class AppSettings {
   bool get creditAskCcvOnCard => _bool('credit_ask_ccv_on_card', false);
   String get creditBlockWhen =>
       _str('credit_block_when', 'exceeds_balance_limit');
+  int get creditDefaultDays => _int('credit_default_days', 30);
+  int get creditWarnDays => _int('credit_warn_days', 7);
   bool get fiscalAllowForExemptProducts =>
       _bool('fiscal_allow_for_exempt_products', true);
   bool get saleDisableNotifications =>

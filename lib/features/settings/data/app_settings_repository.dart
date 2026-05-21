@@ -11,6 +11,8 @@
 //   - Si el RLS rechaza el update (no admin), Supabase lanza PostgrestException
 //     que se propaga.
 
+import 'dart:typed_data';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_settings.dart';
@@ -22,6 +24,45 @@ class AppSettingsRepository {
 
   static const _table = 'app_settings';
   static const _auditTable = 'app_settings_audit';
+
+  /// Bucket compartido para assets globales de la empresa (logo, sello, firma).
+  /// Reutiliza `product_images` (público + RLS para autenticados); los archivos
+  /// de empresa se guardan bajo el prefijo `_company/` para diferenciarlos.
+  static const _assetsBucket = 'product_images';
+
+  /// Sube los bytes del logo de la empresa a Storage y devuelve el URL público.
+  /// El path se construye como `_company/logo-<timestamp>.<ext>`.
+  Future<String> uploadCompanyLogo({
+    required Uint8List bytes,
+    required String extension,
+  }) async {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final path = '_company/logo-$timestamp.$extension';
+
+    final storage = _client.storage.from(_assetsBucket);
+    await storage.uploadBinary(
+      path,
+      bytes,
+      fileOptions: FileOptions(
+        upsert: false,
+        contentType: _contentTypeFor(extension),
+      ),
+    );
+    return storage.getPublicUrl(path);
+  }
+
+  String _contentTypeFor(String extension) {
+    switch (extension.toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      default:
+        return 'image/jpeg';
+    }
+  }
 
   /// Devuelve la fila singleton. Si por alguna razón no existe, llama a la
   /// función de inicialización y reintenta.
