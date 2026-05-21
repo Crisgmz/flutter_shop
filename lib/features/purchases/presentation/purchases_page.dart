@@ -587,12 +587,12 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   final _categoryController = TextEditingController();
   final _qtyController = TextEditingController(text: '1');
   final _costController = TextEditingController(text: '0');
-  final _taxController = TextEditingController(text: '18');
+  final _taxController = TextEditingController(text: '0');
 
   String? _supplierId;
   DateTime _purchaseDate = DateTime.now();
   DateTime? _expectedAt;
-  String _paymentStatus = 'pending';
+  String _paymentStatus = 'paid';
 
   String? _lineProductId;
   final List<PurchaseLineInput> _lines = [];
@@ -600,10 +600,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   @override
   void initState() {
     super.initState();
-    if (widget.products.isNotEmpty) {
-      _lineProductId = widget.products.first.id;
-      _costController.text = widget.products.first.cost.toStringAsFixed(2);
-    }
+    // El producto se elige escribiendo en el autocomplete — sin preselección.
   }
 
   @override
@@ -698,7 +695,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                           DropdownMenuItem(value: 'partial', child: Text('Parcial')),
                           DropdownMenuItem(value: 'paid', child: Text('Pagado')),
                         ],
-                        onChanged: (v) => setState(() => _paymentStatus = v ?? 'pending'),
+                        onChanged: (v) => setState(() => _paymentStatus = v ?? 'paid'),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -747,26 +744,12 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                 if (dialogMobile)
                   Column(
                     children: [
-                      DropdownButtonFormField<String>(
-                        initialValue: _lineProductId,
-                        decoration: const InputDecoration(
-                          labelText: 'Producto',
-                        ),
-                        items: widget.products
-                            .map(
-                              (product) => DropdownMenuItem<String>(
-                                value: product.id,
-                                child: Text(product.name),
-                              ),
-                            )
-                            .toList(growable: false),
-                        onChanged: (value) {
-                          if (value == null) return;
-                          final product = widget.products.firstWhere(
-                            (item) => item.id == value,
-                          );
+                      _ProductAutocomplete(
+                        products: widget.products,
+                        selectedId: _lineProductId,
+                        onSelected: (product) {
                           setState(() {
-                            _lineProductId = value;
+                            _lineProductId = product.id;
                             _costController.text = product.cost.toStringAsFixed(
                               2,
                             );
@@ -832,26 +815,12 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                     children: [
                       Expanded(
                         flex: 3,
-                        child: DropdownButtonFormField<String>(
-                          initialValue: _lineProductId,
-                          decoration: const InputDecoration(
-                            labelText: 'Producto',
-                          ),
-                          items: widget.products
-                              .map(
-                                (product) => DropdownMenuItem<String>(
-                                  value: product.id,
-                                  child: Text(product.name),
-                                ),
-                              )
-                              .toList(growable: false),
-                          onChanged: (value) {
-                            if (value == null) return;
-                            final product = widget.products.firstWhere(
-                              (item) => item.id == value,
-                            );
+                        child: _ProductAutocomplete(
+                          products: widget.products,
+                          selectedId: _lineProductId,
+                          onSelected: (product) {
                             setState(() {
-                              _lineProductId = value;
+                              _lineProductId = product.id;
                               _costController.text = product.cost
                                   .toStringAsFixed(2);
                             });
@@ -1184,6 +1153,123 @@ class _ReceiptProgress extends StatelessWidget {
         const SizedBox(width: 6),
         Text(label, style: const TextStyle(fontSize: 12)),
       ],
+    );
+  }
+}
+
+/// Campo de selección de producto con búsqueda por nombre.
+/// Reemplaza al Dropdown para que el usuario pueda tipear y filtrar.
+class _ProductAutocomplete extends StatefulWidget {
+  const _ProductAutocomplete({
+    required this.products,
+    required this.selectedId,
+    required this.onSelected,
+  });
+
+  final List<PurchaseProduct> products;
+  final String? selectedId;
+  final ValueChanged<PurchaseProduct> onSelected;
+
+  @override
+  State<_ProductAutocomplete> createState() => _ProductAutocompleteState();
+}
+
+class _ProductAutocompleteState extends State<_ProductAutocomplete> {
+  @override
+  Widget build(BuildContext context) {
+    return Autocomplete<PurchaseProduct>(
+      initialValue: widget.selectedId == null
+          ? const TextEditingValue()
+          : TextEditingValue(
+              text: widget.products
+                  .firstWhere(
+                    (p) => p.id == widget.selectedId,
+                    orElse: () => widget.products.first,
+                  )
+                  .name,
+            ),
+      displayStringForOption: (product) => product.name,
+      optionsBuilder: (textEditingValue) {
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) return widget.products.take(20);
+        return widget.products.where(
+          (product) => product.name.toLowerCase().contains(query),
+        );
+      },
+      onSelected: widget.onSelected,
+      fieldViewBuilder: (
+        context,
+        controller,
+        focusNode,
+        onFieldSubmitted,
+      ) {
+        return TextFormField(
+          controller: controller,
+          focusNode: focusNode,
+          decoration: InputDecoration(
+            labelText: 'Producto',
+            hintText: 'Escribí para buscar…',
+            suffixIcon: controller.text.isEmpty
+                ? const Icon(Icons.search, size: 18)
+                : IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    onPressed: () {
+                      controller.clear();
+                      focusNode.requestFocus();
+                    },
+                  ),
+          ),
+          onFieldSubmitted: (_) => onFieldSubmitted(),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260, maxWidth: 420),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (context, index) {
+                  final product = options.elementAt(index);
+                  return InkWell(
+                    onTap: () => onSelected(product),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              product.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            money(product.cost),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppTokens.mutedForeground,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

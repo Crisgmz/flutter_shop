@@ -410,8 +410,69 @@ class _RowActions extends ConsumerWidget {
           onPressed: () =>
               context.go('/ventas/historial/${row.id}/editar'),
         ),
+        IconButton(
+          tooltip: 'Eliminar (anular y devolver stock)',
+          icon: const Icon(
+            Icons.delete_outline,
+            size: 18,
+            color: AppTokens.error,
+          ),
+          visualDensity: VisualDensity.compact,
+          onPressed: () => _voidSale(context, ref, row),
+        ),
       ],
     );
+  }
+
+  Future<void> _voidSale(
+    BuildContext context,
+    WidgetRef ref,
+    SalesHistoryRow row,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final saleLabel = row.saleNumber.isEmpty
+        ? row.id.substring(0, 8)
+        : row.saleNumber;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Anular venta'),
+        content: Text(
+          '¿Anular la venta $saleLabel?\n\n'
+          'Esto va a:\n'
+          '• Devolver el stock de los productos vendidos\n'
+          '• Borrar los pagos asociados\n'
+          '• Marcar la venta como anulada (sale_status = voided)\n\n'
+          'La acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Anular venta'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await ref
+          .read(salesHistoryRepositoryProvider)
+          .voidSaleWithStockReturn(row.id);
+      ref.invalidate(salesHistoryPageProvider);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Venta anulada y stock devuelto.')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('No se pudo anular: $error')),
+      );
+    }
   }
 
   Future<void> _showDetail(

@@ -231,6 +231,17 @@ class SalesHistoryRepository {
     );
   }
 
+  /// Anula una venta y devuelve el stock + borra los pagos asociados.
+  /// Llama al RPC `void_sale_with_stock_return` que hace todo atómicamente
+  /// dentro de una transacción. El trigger trg_sale_items_stock se encarga
+  /// de sumar el stock devuelto al producto.
+  Future<void> voidSaleWithStockReturn(String saleId) async {
+    await _client.rpc(
+      'void_sale_with_stock_return',
+      params: {'p_sale_id': saleId},
+    );
+  }
+
   /// Actualiza notas y/o cliente de una venta. No toca items ni totales.
   Future<void> updateSaleMetadata({
     required String saleId,
@@ -302,6 +313,19 @@ class SalesHistoryRepository {
       }
     }
 
+    // Método de pago primario: tomamos el de la primera fila de payments.
+    // Si la venta tiene varios pagos con métodos distintos, la UI lo va a
+    // mostrar como el primero registrado.
+    final paymentRows = await _client
+        .from('payments')
+        .select('payment_method')
+        .eq('sale_id', saleId)
+        .order('created_at')
+        .limit(1);
+    final paymentMethod = paymentRows.isEmpty
+        ? null
+        : (paymentRows.first as Map)['payment_method']?.toString();
+
     return SalesHistoryDetail(
       sale: SalesHistoryRow.fromMap({
         ...sale,
@@ -315,7 +339,25 @@ class SalesHistoryRepository {
           .toList(growable: false),
       subtotal: _d(sale['subtotal']),
       taxAmount: _d(sale['tax_amount']),
+      paymentMethod: paymentMethod,
     );
+  }
+
+  /// Cambia el método de pago de todos los `payments` de una venta.
+  /// Llama al RPC `update_sale_payment_method` que valida acceso y rol.
+  Future<int> updateSalePaymentMethod({
+    required String saleId,
+    required String paymentMethod,
+  }) async {
+    final result = await _client.rpc(
+      'update_sale_payment_method',
+      params: {
+        'p_sale_id': saleId,
+        'p_payment_method': paymentMethod,
+      },
+    );
+    if (result is int) return result;
+    return int.tryParse(result?.toString() ?? '') ?? 0;
   }
 
   Future<Map<String, int>> _loadItemsCount(
@@ -372,12 +414,17 @@ class SalesHistoryDetail {
     required this.items,
     required this.subtotal,
     required this.taxAmount,
+    this.paymentMethod,
   });
 
   final SalesHistoryRow sale;
   final List<SalesHistoryItem> items;
   final double subtotal;
   final double taxAmount;
+
+  /// Método de pago primario de la venta (de la primera fila en `payments`).
+  /// Null si la venta no tiene pagos registrados todavía.
+  final String? paymentMethod;
 }
 
 class SalesEditResult {

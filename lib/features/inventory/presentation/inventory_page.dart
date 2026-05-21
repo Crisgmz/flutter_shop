@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -220,19 +221,13 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                                     ),
                                     if (access.canManageInventoryAdjustments)
                                       IconButton(
-                                        tooltip: product.isActive
-                                            ? 'Desactivar'
-                                            : 'Activar',
-                                        icon: Icon(
-                                          product.isActive
-                                              ? Icons.block
-                                              : Icons.check_circle_outline,
+                                        tooltip: 'Eliminar',
+                                        icon: const Icon(
+                                          Icons.delete_outline,
                                           size: 20,
-                                          color: product.isActive
-                                              ? AppTokens.error
-                                              : AppTokens.success,
+                                          color: AppTokens.error,
                                         ),
-                                        onPressed: () => _onToggleActive(product),
+                                        onPressed: () => _onDelete(product),
                                       ),
                                   ],
                                 );
@@ -379,6 +374,78 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo actualizar estado: $error')),
+      );
+    }
+  }
+
+  Future<void> _onDelete(InventoryProduct product) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar producto'),
+        content: Text(
+          '¿Eliminar "${product.name}"?\n\n'
+          'Si el producto tiene ventas o compras registradas, no se podrá '
+          'borrar y se desactivará en su lugar (queda fuera del POS y de '
+          'las listas activas).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repository = ref.read(inventoryRepositoryProvider);
+    try {
+      await repository.deleteProduct(product.id);
+      if (!mounted) return;
+      ref.invalidate(inventoryProductsProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Producto "${product.name}" eliminado')),
+      );
+    } on PostgrestException catch (e) {
+      // Foreign key violation = el producto tiene ventas/compras. Caemos a
+      // soft-delete y avisamos por qué.
+      if (e.code == '23503') {
+        try {
+          await repository.setProductActive(
+            productId: product.id,
+            isActive: false,
+          );
+          if (!mounted) return;
+          ref.invalidate(inventoryProductsProvider);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Tenía ventas/compras vinculadas. Se desactivó en su lugar.',
+              ),
+            ),
+          );
+        } catch (innerError) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No se pudo desactivar: $innerError')),
+          );
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo eliminar: ${e.message}')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo eliminar: $error')),
       );
     }
   }
@@ -1088,9 +1155,10 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   late final TextEditingController _modelController;
   late final TextEditingController _notesController;
   late final TextEditingController _imageUrlController;
-  late final TextEditingController _priceTier1Controller;
-  late final TextEditingController _priceTier2Controller;
-  late final TextEditingController _priceTier3Controller;
+  /// Controllers de los 10 tiers de precio. Cada índice 0..9 corresponde al
+  /// tier 1..10. Si el tier no está nombrado en app_settings.sale_price_types,
+  /// el `_PriceTierFields` no renderiza ese input.
+  late final List<TextEditingController> _priceTierControllers;
 
   String? _categoryId;
   bool _isActive = true;
@@ -1128,14 +1196,11 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _modelController = TextEditingController(text: product?.model ?? '');
     _notesController = TextEditingController(text: product?.notes ?? '');
     _imageUrlController = TextEditingController(text: product?.imageUrl ?? '');
-    _priceTier1Controller = TextEditingController(
-      text: product?.priceTier1?.toString() ?? '0',
-    );
-    _priceTier2Controller = TextEditingController(
-      text: product?.priceTier2?.toString() ?? '0',
-    );
-    _priceTier3Controller = TextEditingController(
-      text: product?.priceTier3?.toString() ?? '0',
+    _priceTierControllers = List.generate(
+      10,
+      (i) => TextEditingController(
+        text: product?.priceTier(i + 1)?.toString() ?? '0',
+      ),
     );
 
     _categoryId = product?.categoryId;
@@ -1161,9 +1226,9 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _modelController.dispose();
     _notesController.dispose();
     _imageUrlController.dispose();
-    _priceTier1Controller.dispose();
-    _priceTier2Controller.dispose();
-    _priceTier3Controller.dispose();
+    for (final ctrl in _priceTierControllers) {
+      ctrl.dispose();
+    }
     super.dispose();
   }
 
@@ -1306,9 +1371,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                 const SizedBox(height: 10),
                 _PriceTierFields(
                   isMobile: isMobile,
-                  tier1: _priceTier1Controller,
-                  tier2: _priceTier2Controller,
-                  tier3: _priceTier3Controller,
+                  controllers: _priceTierControllers,
                 ),
                 const SizedBox(height: 10),
                 _formRow(isMobile, [
@@ -1463,9 +1526,16 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       isService: _isService,
       isTaxExempt: _isTaxExempt,
       trackInventory: _trackInventory,
-      priceTier1: _parseTier(_priceTier1Controller.text),
-      priceTier2: _parseTier(_priceTier2Controller.text),
-      priceTier3: _parseTier(_priceTier3Controller.text),
+      priceTier1: _parseTier(_priceTierControllers[0].text),
+      priceTier2: _parseTier(_priceTierControllers[1].text),
+      priceTier3: _parseTier(_priceTierControllers[2].text),
+      priceTier4: _parseTier(_priceTierControllers[3].text),
+      priceTier5: _parseTier(_priceTierControllers[4].text),
+      priceTier6: _parseTier(_priceTierControllers[5].text),
+      priceTier7: _parseTier(_priceTierControllers[6].text),
+      priceTier8: _parseTier(_priceTierControllers[7].text),
+      priceTier9: _parseTier(_priceTierControllers[8].text),
+      priceTier10: _parseTier(_priceTierControllers[9].text),
     );
 
     Navigator.of(context).pop(input);
@@ -1607,24 +1677,23 @@ class _ProductImagePicker extends StatelessWidget {
 class _PriceTierFields extends ConsumerWidget {
   const _PriceTierFields({
     required this.isMobile,
-    required this.tier1,
-    required this.tier2,
-    required this.tier3,
+    required this.controllers,
   });
 
   final bool isMobile;
-  final TextEditingController tier1;
-  final TextEditingController tier2;
-  final TextEditingController tier3;
+
+  /// Lista de 10 controllers (uno por cada tier 1..10). Se renderiza solo
+  /// el subconjunto que tiene nombre configurado en app_settings.sale_price_types.
+  final List<TextEditingController> controllers;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final priceTypes =
         ref.watch(appSettingsProvider).valueOrNull?.salePriceTypes ?? const [];
-    final controllers = [tier1, tier2, tier3];
 
+    final maxTiers = controllers.length; // 10
     final rows = <Widget>[];
-    for (var i = 0; i < 3; i++) {
+    for (var i = 0; i < maxTiers; i++) {
       final hasName = i < priceTypes.length &&
           priceTypes[i].toString().trim().isNotEmpty;
       if (!hasName) continue;

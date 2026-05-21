@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../core/config/env.dart';
 import '../features/auth/presentation/auth_providers.dart';
 import '../features/auth/presentation/login_page.dart';
+import '../features/auth/presentation/signup_page.dart';
+import '../features/auth/presentation/signup_success_page.dart';
 import '../features/branches/presentation/branches_page.dart';
 import '../features/cash_register/presentation/cash_register_page.dart';
 import '../features/clients/presentation/clients_page.dart';
@@ -51,14 +53,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     refreshListenable: refreshStream,
     redirect: (_, state) {
       final loggedIn = authRepo.currentSession != null;
-      final inLogin = state.matchedLocation == '/login';
+      final loc = state.matchedLocation;
+      final isPublic = loc == '/login' ||
+          loc == '/registro' ||
+          loc == '/registro/exito';
 
-      if (!loggedIn && !inLogin) return '/login';
-      if (loggedIn && inLogin) return '/panel';
+      // No autenticado y la ruta no es pública → forzar login.
+      if (!loggedIn && !isPublic) return '/login';
+      // Autenticado entrando a login/registro → ir al panel.
+      if (loggedIn && isPublic) return '/panel';
       return null;
     },
     routes: [
       GoRoute(path: '/login', builder: (_, _) => const LoginPage()),
+      GoRoute(path: '/registro', builder: (_, _) => const SignupPage()),
+      GoRoute(
+        path: '/registro/exito',
+        builder: (_, state) => SignupSuccessPage(
+          companyName: state.uri.queryParameters['empresa'],
+        ),
+      ),
 
       // All authenticated module routes share the AppShell via ShellRoute.
       ShellRoute(

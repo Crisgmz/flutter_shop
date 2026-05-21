@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import 'auth_providers.dart';
 
@@ -16,6 +17,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   final _formKey = GlobalKey<FormState>();
 
   bool _isLoading = false;
+  bool _showPassword = false;
 
   @override
   void dispose() {
@@ -116,8 +118,23 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _passwordController,
-                        obscureText: true,
-                        decoration: const InputDecoration(labelText: 'Clave'),
+                        obscureText: !_showPassword,
+                        decoration: InputDecoration(
+                          labelText: 'Clave',
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _showPassword
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                            ),
+                            tooltip: _showPassword
+                                ? 'Ocultar clave'
+                                : 'Mostrar clave',
+                            onPressed: () => setState(
+                              () => _showPassword = !_showPassword,
+                            ),
+                          ),
+                        ),
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
                             return 'Ingresa la clave';
@@ -141,6 +158,15 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                 ),
                               )
                             : const Text('Entrar'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: _isLoading
+                            ? null
+                            : () => context.go('/registro'),
+                        child: const Text(
+                          '¿No tenés cuenta? Crear mi negocio',
+                        ),
                       ),
                     ],
                   ),

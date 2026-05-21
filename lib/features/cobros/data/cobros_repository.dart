@@ -388,12 +388,17 @@ class CobrosRepository {
     return value.isEmpty ? null : value;
   }
 
+  /// Sesión de caja abierta DEL USUARIO ACTUAL. Con multi-caja cada cajero
+  /// tiene su propia sesión; los abonos van a la sesión del que los registra.
   Future<String?> _currentOpenCashSessionId(String branchId) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return null;
     final rows = await _client
         .from('cash_sessions')
         .select('id')
         .eq('branch_id', branchId)
         .eq('status', 'open')
+        .eq('opened_by', userId)
         .order('opened_at', ascending: false)
         .limit(1);
 

@@ -72,21 +72,16 @@ class AppSettingsRepository {
       throw Exception('Debes iniciar sesión para leer la configuración.');
     }
 
-    final rows = await _client.from(_table).select().eq('id', 1).limit(1);
+    // Multi-tenant: la RLS de `app_settings` ya garantiza que el usuario
+    // solo ve la fila de SU empresa (la asociada vía `has_company_access`).
+    // No filtramos por `id` aquí.
+    final rows = await _client.from(_table).select().limit(1);
 
     if (rows.isEmpty) {
-      // Singleton sin fila: invocar init y reintentar (admin only).
-      try {
-        await _client.rpc('initialize_app_settings');
-      } catch (_) {
-        // Si no es admin, fallará silenciosamente; el SELECT siguiente
-        // devolverá vacío y armamos defaults locales.
-      }
-      final retry = await _client.from(_table).select().eq('id', 1).limit(1);
-      if (retry.isEmpty) {
-        return const AppSettings(<String, dynamic>{'id': 1});
-      }
-      return AppSettings(Map<String, dynamic>.from(retry.first as Map));
+      // Sin fila visible: puede pasar para usuarios nuevos antes del
+      // bootstrap (fase 2 onboarding) o cuentas en estado raro. Devolvemos
+      // defaults locales en vez de fallar.
+      return const AppSettings(<String, dynamic>{});
     }
 
     return AppSettings(Map<String, dynamic>.from(rows.first as Map));
@@ -113,10 +108,13 @@ class AppSettingsRepository {
       'updated_by': user.id,
     };
 
+    // Multi-tenant: la RLS limita el UPDATE a la fila de la empresa del
+    // usuario. Usamos un filtro siempre-verdadero (`id > 0`) para satisfacer
+    // la política de Supabase que exige WHERE en updates.
     final rows = await _client
         .from(_table)
         .update(payload)
-        .eq('id', 1)
+        .gt('id', 0)
         .select()
         .limit(1);
 

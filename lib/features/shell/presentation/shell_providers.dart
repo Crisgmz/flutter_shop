@@ -67,6 +67,7 @@ class ShellAccessProfile {
 final shellBranchOptionsProvider = FutureProvider<List<ShellBranchOption>>((
   ref,
 ) async {
+  ref.watch(authStateChangesProvider);
   final client = ref.watch(supabaseClientProvider);
   final user = client.auth.currentUser;
   if (user == null) return const [];
@@ -106,6 +107,7 @@ final shellCurrentBranchNameProvider = FutureProvider<String>((ref) async {
 });
 
 final shellUserInfoProvider = FutureProvider<ShellUserInfo>((ref) async {
+  ref.watch(authStateChangesProvider);
   final client = ref.watch(supabaseClientProvider);
   final user = client.auth.currentUser;
   if (user == null) {
@@ -150,6 +152,7 @@ final shellUserInfoProvider = FutureProvider<ShellUserInfo>((ref) async {
 final shellAccessProfileProvider = FutureProvider<ShellAccessProfile>((
   ref,
 ) async {
+  ref.watch(authStateChangesProvider);
   final client = ref.watch(supabaseClientProvider);
   final user = client.auth.currentUser;
   final userInfo = await ref.watch(shellUserInfoProvider.future);

@@ -63,6 +63,13 @@ class InventoryProduct {
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
+    this.priceTier4,
+    this.priceTier5,
+    this.priceTier6,
+    this.priceTier7,
+    this.priceTier8,
+    this.priceTier9,
+    this.priceTier10,
   });
 
   final String id;
@@ -96,6 +103,42 @@ class InventoryProduct {
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
+  final double? priceTier4;
+  final double? priceTier5;
+  final double? priceTier6;
+  final double? priceTier7;
+  final double? priceTier8;
+  final double? priceTier9;
+  final double? priceTier10;
+
+  /// Devuelve el precio del tier 1-10 (índice 1-based) o null si no está
+  /// configurado.
+  double? priceTier(int index) {
+    switch (index) {
+      case 1:
+        return priceTier1;
+      case 2:
+        return priceTier2;
+      case 3:
+        return priceTier3;
+      case 4:
+        return priceTier4;
+      case 5:
+        return priceTier5;
+      case 6:
+        return priceTier6;
+      case 7:
+        return priceTier7;
+      case 8:
+        return priceTier8;
+      case 9:
+        return priceTier9;
+      case 10:
+        return priceTier10;
+      default:
+        return null;
+    }
+  }
 
   bool get isLowStock => !isService && trackInventory && stock <= minStock;
 
@@ -136,6 +179,13 @@ class InventoryProduct {
       priceTier1: map['price_tier_1'] == null ? null : _toDouble(map['price_tier_1']),
       priceTier2: map['price_tier_2'] == null ? null : _toDouble(map['price_tier_2']),
       priceTier3: map['price_tier_3'] == null ? null : _toDouble(map['price_tier_3']),
+      priceTier4: map['price_tier_4'] == null ? null : _toDouble(map['price_tier_4']),
+      priceTier5: map['price_tier_5'] == null ? null : _toDouble(map['price_tier_5']),
+      priceTier6: map['price_tier_6'] == null ? null : _toDouble(map['price_tier_6']),
+      priceTier7: map['price_tier_7'] == null ? null : _toDouble(map['price_tier_7']),
+      priceTier8: map['price_tier_8'] == null ? null : _toDouble(map['price_tier_8']),
+      priceTier9: map['price_tier_9'] == null ? null : _toDouble(map['price_tier_9']),
+      priceTier10: map['price_tier_10'] == null ? null : _toDouble(map['price_tier_10']),
     );
   }
 }
@@ -171,6 +221,13 @@ class InventoryProductInput {
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
+    this.priceTier4,
+    this.priceTier5,
+    this.priceTier6,
+    this.priceTier7,
+    this.priceTier8,
+    this.priceTier9,
+    this.priceTier10,
   });
 
   final String? id;
@@ -202,6 +259,41 @@ class InventoryProductInput {
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
+  final double? priceTier4;
+  final double? priceTier5;
+  final double? priceTier6;
+  final double? priceTier7;
+  final double? priceTier8;
+  final double? priceTier9;
+  final double? priceTier10;
+
+  /// Devuelve el precio del tier 1-10 (índice 1-based) o null.
+  double? priceTier(int index) {
+    switch (index) {
+      case 1:
+        return priceTier1;
+      case 2:
+        return priceTier2;
+      case 3:
+        return priceTier3;
+      case 4:
+        return priceTier4;
+      case 5:
+        return priceTier5;
+      case 6:
+        return priceTier6;
+      case 7:
+        return priceTier7;
+      case 8:
+        return priceTier8;
+      case 9:
+        return priceTier9;
+      case 10:
+        return priceTier10;
+      default:
+        return null;
+    }
+  }
 }
 
 class InventoryBulkUpsertError {
@@ -294,6 +386,80 @@ class InventoryRepository {
         .toList(growable: false);
   }
 
+  /// Crea una nueva categoría de producto en la sucursal actual.
+  Future<InventoryCategory> createCategory(String name) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('El nombre de la categoría es requerido.');
+    }
+    final row = await _client
+        .from('product_categories')
+        .insert({
+          'branch_id': branchId,
+          'name': trimmed,
+          'is_active': true,
+        })
+        .select('id, name, color_hex, icon_name, sort_order, parent_id')
+        .single();
+    return InventoryCategory.fromMap(Map<String, dynamic>.from(row));
+  }
+
+  /// Renombra una categoría existente.
+  Future<void> updateCategoryName({
+    required String categoryId,
+    required String newName,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('El nombre de la categoría es requerido.');
+    }
+    await _client
+        .from('product_categories')
+        .update({'name': trimmed})
+        .eq('id', categoryId)
+        .eq('branch_id', branchId);
+  }
+
+  /// Borra una categoría. Si tiene productos vinculados, la DB la bloquea
+  /// con FK violation (23503) — el caller puede caer a soft-delete con
+  /// `setCategoryActive(false)`.
+  Future<void> deleteCategory(String categoryId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    await _client
+        .from('product_categories')
+        .delete()
+        .eq('id', categoryId)
+        .eq('branch_id', branchId);
+  }
+
+  /// Soft-delete: marca la categoría como inactiva. Útil cuando deleteCategory
+  /// falla por FK (la categoría tiene productos vinculados).
+  Future<void> setCategoryActive({
+    required String categoryId,
+    required bool isActive,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    await _client
+        .from('product_categories')
+        .update({'is_active': isActive})
+        .eq('id', categoryId)
+        .eq('branch_id', branchId);
+  }
+
   Future<List<InventoryProduct>> fetchProducts() async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
@@ -312,7 +478,9 @@ class InventoryRepository {
           'is_service, is_tax_exempt, track_inventory, '
           'size_label, variant_name, purchase_unit, '
           'reorder_level, max_stock, allow_negative_stock, '
-          'price_tier_1, price_tier_2, price_tier_3',
+          'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
+          'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
+          'price_tier_9, price_tier_10',
         )
         .eq('branch_id', branchId)
         .order('name');
@@ -473,6 +641,13 @@ class InventoryRepository {
       'price_tier_1': input.priceTier1 ?? input.price,
       'price_tier_2': input.priceTier2,
       'price_tier_3': input.priceTier3,
+      'price_tier_4': input.priceTier4,
+      'price_tier_5': input.priceTier5,
+      'price_tier_6': input.priceTier6,
+      'price_tier_7': input.priceTier7,
+      'price_tier_8': input.priceTier8,
+      'price_tier_9': input.priceTier9,
+      'price_tier_10': input.priceTier10,
     };
   }
 
@@ -488,6 +663,22 @@ class InventoryRepository {
     await _client
         .from('products')
         .update({'is_active': isActive})
+        .eq('id', productId)
+        .eq('branch_id', branchId);
+  }
+
+  /// Borra el producto físicamente. Si tiene ventas/compras vinculadas la
+  /// DB lo bloquea con FK violation (código 23503). El caller decide si
+  /// hacer fallback a soft-delete.
+  Future<void> deleteProduct(String productId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    await _client
+        .from('products')
+        .delete()
         .eq('id', productId)
         .eq('branch_id', branchId);
   }

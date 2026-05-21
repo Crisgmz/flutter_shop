@@ -21,6 +21,14 @@ class SalesProduct {
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
+    this.priceTier4,
+    this.priceTier5,
+    this.priceTier6,
+    this.priceTier7,
+    this.priceTier8,
+    this.priceTier9,
+    this.priceTier10,
+    this.imageUrl,
   });
 
   final String id;
@@ -36,9 +44,17 @@ class SalesProduct {
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
+  final double? priceTier4;
+  final double? priceTier5;
+  final double? priceTier6;
+  final double? priceTier7;
+  final double? priceTier8;
+  final double? priceTier9;
+  final double? priceTier10;
+  final String? imageUrl;
 
   /// Devuelve el precio efectivo según el tier del cliente.
-  /// `tier`: 'retail' | 'tier_1' | 'tier_2' | 'tier_3' | null.
+  /// `tier`: 'retail' | 'tier_1'..'tier_10' | null.
   /// Si el tier no tiene precio configurado, cae al precio base.
   double priceFor(String? tier) {
     switch ((tier ?? 'retail').toLowerCase()) {
@@ -48,6 +64,20 @@ class SalesProduct {
         return priceTier2 ?? price;
       case 'tier_3':
         return priceTier3 ?? price;
+      case 'tier_4':
+        return priceTier4 ?? price;
+      case 'tier_5':
+        return priceTier5 ?? price;
+      case 'tier_6':
+        return priceTier6 ?? price;
+      case 'tier_7':
+        return priceTier7 ?? price;
+      case 'tier_8':
+        return priceTier8 ?? price;
+      case 'tier_9':
+        return priceTier9 ?? price;
+      case 'tier_10':
+        return priceTier10 ?? price;
       default:
         return price;
     }
@@ -80,6 +110,14 @@ class SalesProduct {
       priceTier1: optionalDouble(map['price_tier_1']),
       priceTier2: optionalDouble(map['price_tier_2']),
       priceTier3: optionalDouble(map['price_tier_3']),
+      priceTier4: optionalDouble(map['price_tier_4']),
+      priceTier5: optionalDouble(map['price_tier_5']),
+      priceTier6: optionalDouble(map['price_tier_6']),
+      priceTier7: optionalDouble(map['price_tier_7']),
+      priceTier8: optionalDouble(map['price_tier_8']),
+      priceTier9: optionalDouble(map['price_tier_9']),
+      priceTier10: optionalDouble(map['price_tier_10']),
+      imageUrl: map['image_url']?.toString(),
     );
   }
 }
@@ -256,7 +294,9 @@ class SalesRepository {
         .from('products')
         .select(
           'id, name, sku, barcode, category_id, price, tax_rate, stock, '
-          'is_active, price_tier_1, price_tier_2, price_tier_3',
+          'is_active, price_tier_1, price_tier_2, price_tier_3, '
+          'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
+          'price_tier_8, price_tier_9, price_tier_10, image_url',
         )
         .eq('branch_id', branchId)
         .eq('is_active', true)
@@ -412,11 +452,11 @@ class SalesRepository {
         ? const <String, dynamic>{}
         : Map<String, dynamic>.from(branchRows.first as Map);
 
-    // app_settings (singleton id=1) — RNC, logo, ocultar barcode.
+    // app_settings (multi-tenant: la RLS filtra a la fila de la empresa
+    // del usuario). RNC, logo, ocultar barcode.
     final settingsRows = await _client
         .from('app_settings')
         .select('company_tax_id, company_logo_url, receipt_hide_barcode')
-        .eq('id', 1)
         .limit(1);
     final settings = settingsRows.isEmpty
         ? const <String, dynamic>{}

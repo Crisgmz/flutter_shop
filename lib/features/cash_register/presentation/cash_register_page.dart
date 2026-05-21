@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
@@ -8,7 +9,10 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../shell/presentation/shell_providers.dart';
+import '../data/cash_closure_pdf_builder.dart';
 import '../data/cash_register_repository.dart';
+import 'cash_closure_detail_dialog.dart';
 import 'cash_register_providers.dart';
 
 class CashRegisterPage extends ConsumerStatefulWidget {
@@ -37,6 +41,9 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
         data: (data) {
           final openSession = data.openSession;
           final metrics = data.openMetrics;
+          final accessAsync = ref.watch(shellAccessProfileProvider);
+          final role = accessAsync.valueOrNull?.roleCode;
+          final canSeeAllCashiers = role == 'admin' || role == 'supervisor';
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -45,6 +52,10 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                 _noSessionCard()
               else
                 _openSessionCard(openSession, metrics),
+              if (canSeeAllCashiers) ...[
+                const SizedBox(height: AppTokens.s24),
+                const _AllCashiersPanel(),
+              ],
               const SizedBox(height: AppTokens.s24),
               DataTableShell(
                 title: 'Sesiones recientes',
@@ -101,9 +112,59 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                     ),
                                   )),
                                   DataCell(
-                                    session.isOpen
-                                        ? const SizedBox.shrink()
-                                        : RoleGate(
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          tooltip: 'Ver detalle',
+                                          onPressed: () =>
+                                              _onViewDetail(session),
+                                          icon: const Icon(
+                                            Icons.visibility_outlined,
+                                            size: 18,
+                                          ),
+                                          visualDensity:
+                                              VisualDensity.compact,
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(
+                                            minWidth: 32,
+                                            minHeight: 32,
+                                          ),
+                                        ),
+                                        if (!session.isOpen) ...[
+                                          const SizedBox(width: 4),
+                                          PopupMenuButton<double>(
+                                            tooltip:
+                                                'Reimprimir cierre',
+                                            onSelected: (widthMm) =>
+                                                _onReprint(
+                                              session,
+                                              widthMm,
+                                            ),
+                                            itemBuilder: (_) => const [
+                                              PopupMenuItem<double>(
+                                                value: 58,
+                                                child:
+                                                    Text('Imprimir 58mm'),
+                                              ),
+                                              PopupMenuItem<double>(
+                                                value: 80,
+                                                child:
+                                                    Text('Imprimir 80mm'),
+                                              ),
+                                            ],
+                                            child: const Padding(
+                                              padding: EdgeInsets.all(6),
+                                              child: Icon(
+                                                Icons.print_outlined,
+                                                size: 18,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                        if (!session.isOpen) ...[
+                                          const SizedBox(width: 4),
+                                          RoleGate(
                                             allowed: const {
                                               'admin',
                                               'supervisor'
@@ -130,6 +191,9 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                               ),
                                             ),
                                           ),
+                                        ],
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
@@ -294,9 +358,18 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
   }
 
   Future<void> _onOpenSession() async {
+    // Cargar las cajas a las que el usuario tiene acceso. Si hay cajas
+    // configuradas en la sucursal, exigimos que elija una.
+    final myCajas =
+        await ref.read(myCashRegistersProvider.future).catchError((_) {
+      return <CashRegisterEntity>[];
+    });
+
+    if (!mounted) return;
+
     final input = await showDialog<OpenCashInput>(
       context: context,
-      builder: (_) => const _OpenSessionDialog(),
+      builder: (_) => _OpenSessionDialog(availableCajas: myCajas),
     );
 
     if (input == null || !mounted) return;
@@ -304,7 +377,13 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     final repository = ref.read(cashRegisterRepositoryProvider);
 
     try {
-      await repository.openSession(input);
+      if (input.cashRegisterId != null && input.cashRegisterId!.isNotEmpty) {
+        // Flujo nuevo: vía RPC que valida acceso a la caja.
+        await repository.openSessionForRegister(input);
+      } else {
+        // Sin cajas configuradas → flujo legacy (sesión sin caja asignada).
+        await repository.openSession(input);
+      }
       if (!mounted) return;
 
       ref.invalidate(cashRegisterDataProvider);
@@ -342,6 +421,47 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('No se pudo cerrar caja: $error')));
+    }
+  }
+
+  Future<void> _onViewDetail(CashSessionEntity session) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => CashClosureDetailDialog(session: session),
+    );
+  }
+
+  /// Reimprime un cierre de caja sin abrir el dialog de detalle. Acceso
+  /// directo desde el botón de la fila — mismo PDF que el detalle.
+  Future<void> _onReprint(
+    CashSessionEntity session,
+    double widthMm,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final repo = ref.read(cashRegisterRepositoryProvider);
+      final movements = await repo.fetchMovementsForSession(session.id);
+      final metrics = await repo.fetchSessionMetrics(session.id);
+      final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+      final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
+
+      final bytes = await const CashClosurePdfBuilder().build(
+        session: session,
+        metrics: metrics,
+        movements: movements,
+        widthMm: widthMm,
+        branchName: branchName,
+        cashierName: userInfo?.displayName,
+      );
+
+      await Printing.layoutPdf(
+        onLayout: (_) async => bytes,
+        name: 'cierre-caja-${session.id.substring(0, 8)}',
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('No se pudo reimprimir: $error')),
+      );
     }
   }
 
@@ -557,7 +677,12 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
 }
 
 class _OpenSessionDialog extends StatefulWidget {
-  const _OpenSessionDialog();
+  const _OpenSessionDialog({required this.availableCajas});
+
+  /// Cajas a las que el usuario actual tiene acceso. Si está vacío, el
+  /// dialog cae al flujo legacy (sin selector de caja). Si tiene al menos
+  /// una, el usuario tiene que elegir cuál abre.
+  final List<CashRegisterEntity> availableCajas;
 
   @override
   State<_OpenSessionDialog> createState() => _OpenSessionDialogState();
@@ -567,6 +692,15 @@ class _OpenSessionDialogState extends State<_OpenSessionDialog> {
   final _formKey = GlobalKey<FormState>();
   final _openingController = TextEditingController(text: '0');
   final _notesController = TextEditingController();
+  String? _selectedCajaId;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.availableCajas.length == 1) {
+      _selectedCajaId = widget.availableCajas.first.id;
+    }
+  }
 
   @override
   void dispose() {
@@ -577,6 +711,7 @@ class _OpenSessionDialogState extends State<_OpenSessionDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final hasCajas = widget.availableCajas.isNotEmpty;
     return AlertDialog(
       title: const Text('Abrir caja'),
       content: SizedBox(
@@ -586,6 +721,22 @@ class _OpenSessionDialogState extends State<_OpenSessionDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (hasCajas) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedCajaId,
+                  decoration: const InputDecoration(labelText: 'Caja'),
+                  items: [
+                    for (final caja in widget.availableCajas)
+                      DropdownMenuItem(value: caja.id, child: Text(caja.name)),
+                  ],
+                  onChanged: (v) => setState(() => _selectedCajaId = v),
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Elegí una caja';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 10),
+              ],
               TextFormField(
                 controller: _openingController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -622,6 +773,7 @@ class _OpenSessionDialogState extends State<_OpenSessionDialog> {
       OpenCashInput(
         openingAmount: double.parse(_openingController.text),
         notes: _notesController.text,
+        cashRegisterId: _selectedCajaId,
       ),
     );
   }
@@ -693,6 +845,123 @@ class _CloseSessionDialogState extends State<_CloseSessionDialog> {
       CloseCashInput(
         closingAmount: double.parse(_closingController.text),
         notes: _notesController.text,
+      ),
+    );
+  }
+}
+
+/// Panel para admin/supervisor: muestra TODAS las cajas abiertas de la
+/// sucursal con nombre del cajero, hora de apertura, monto vendido y
+/// efectivo esperado. Útil para que el dueño vea cuánto lleva cada uno.
+class _AllCashiersPanel extends ConsumerWidget {
+  const _AllCashiersPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final overviewsAsync = ref.watch(allOpenCashSessionsProvider);
+    // scrollable: false porque manejamos nuestro propio SingleChildScrollView
+    // horizontal alrededor del DataTable (el shell aplicaba un scroll horizontal
+    // que dejaba al Column padre con ancho infinito → BoxConstraints(w=∞)).
+    return DataTableShell(
+      title: 'Todas las cajas abiertas',
+      scrollable: false,
+      child: overviewsAsync.when(
+        loading: () => const Padding(
+          padding: EdgeInsets.all(AppTokens.s16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, _) => Padding(
+          padding: const EdgeInsets.all(AppTokens.s16),
+          child: Text('No se pudieron cargar las cajas: $e'),
+        ),
+        data: (overviews) {
+          if (overviews.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.all(AppTokens.s20),
+              child: Text(
+                'No hay cajas abiertas en este momento.',
+                style: TextStyle(color: AppTokens.mutedForeground),
+              ),
+            );
+          }
+          final totalSold = overviews.fold<double>(
+            0,
+            (sum, o) => sum + o.metrics.totalPayments,
+          );
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Cajero')),
+                    DataColumn(label: Text('Apertura')),
+                    DataColumn(
+                      label: Text('Monto apertura'),
+                      numeric: true,
+                    ),
+                    DataColumn(label: Text('Vendido'), numeric: true),
+                    DataColumn(label: Text('Gastos'), numeric: true),
+                    DataColumn(
+                      label: Text('Efectivo esperado'),
+                      numeric: true,
+                    ),
+                  ],
+                  rows: [
+                    for (final o in overviews)
+                      DataRow(cells: [
+                        DataCell(Text(
+                          o.cashierName,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        )),
+                        DataCell(Text(formatDateTime(o.session.openedAt))),
+                        DataCell(Text(money(o.session.openingAmount))),
+                        DataCell(Text(
+                          money(o.metrics.totalPayments),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF16A34A),
+                          ),
+                        )),
+                        DataCell(Text(money(o.metrics.totalExpenses))),
+                        DataCell(Text(
+                          money(o.expectedCash),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        )),
+                      ]),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    AppTokens.s16, AppTokens.s8, AppTokens.s16, AppTokens.s12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text(
+                      'Total vendido por todas las cajas: ',
+                      style: TextStyle(
+                        color: AppTokens.mutedForeground,
+                        fontSize: 13,
+                      ),
+                    ),
+                    Text(
+                      money(totalSold),
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF2563EB),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

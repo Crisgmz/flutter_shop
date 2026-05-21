@@ -80,11 +80,63 @@ class CashRegisterData {
   final List<CashSessionEntity> recentSessions;
 }
 
+/// Vista enriquecida de una caja para el panel del dueño: incluye nombre del
+/// cajero y las métricas de la sesión (pagos, gastos, esperado).
+class CashSessionOverview {
+  CashSessionOverview({
+    required this.session,
+    required this.cashierName,
+    required this.cashierId,
+    required this.metrics,
+  });
+
+  final CashSessionEntity session;
+  final String cashierName;
+  final String cashierId;
+  final CashSessionMetrics metrics;
+
+  double get expectedCash =>
+      metrics.expectedCashFromOpening(session.openingAmount);
+}
+
+/// Caja física/lógica configurada en una sucursal. Cada caja puede tener
+/// varios usuarios asignados (cash_register_users) que pueden operarla.
+class CashRegisterEntity {
+  CashRegisterEntity({
+    required this.id,
+    required this.name,
+    required this.isActive,
+    required this.assignedUserIds,
+  });
+
+  final String id;
+  final String name;
+  final bool isActive;
+  final List<String> assignedUserIds;
+
+  factory CashRegisterEntity.fromMap(
+    Map<String, dynamic> map,
+    List<String> assignedUserIds,
+  ) {
+    return CashRegisterEntity(
+      id: (map['id'] ?? '').toString(),
+      name: (map['name'] ?? '').toString(),
+      isActive: map['is_active'] != false,
+      assignedUserIds: List<String>.unmodifiable(assignedUserIds),
+    );
+  }
+}
+
 class OpenCashInput {
-  OpenCashInput({required this.openingAmount, this.notes});
+  OpenCashInput({required this.openingAmount, this.notes, this.cashRegisterId});
 
   final double openingAmount;
   final String? notes;
+
+  /// Caja sobre la que se abre la sesión. Requerido cuando la sucursal
+  /// tiene cajas configuradas. Si es null, cae al flujo legacy (sesión
+  /// sin caja asignada).
+  final String? cashRegisterId;
 }
 
 /// Movimiento manual de efectivo dentro de la sesión activa.
@@ -180,6 +232,61 @@ class CashRegisterRepository {
 
   final SupabaseClient _client;
 
+  /// Vista para admin/supervisor: TODAS las cajas abiertas de la sucursal
+  /// (no solo la propia) con nombre del cajero y métricas. Útil para que el
+  /// dueño vea cuánto lleva vendido cada uno.
+  Future<List<CashSessionOverview>> fetchOpenSessionsOverview() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final sessionRows = await _client
+        .from('cash_sessions')
+        .select(
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, '
+          'closing_amount, difference_amount, notes, opened_by',
+        )
+        .eq('branch_id', branchId)
+        .eq('status', 'open')
+        .order('opened_at', ascending: false);
+
+    if (sessionRows.isEmpty) return const [];
+
+    // Nombres de cajeros en una sola query.
+    final cashierIds = <String>{
+      for (final r in sessionRows)
+        ((r as Map)['opened_by'] ?? '').toString(),
+    }..removeWhere((id) => id.isEmpty);
+    final profileRows = cashierIds.isEmpty
+        ? const <dynamic>[]
+        : await _client
+            .from('profiles')
+            .select('id, full_name')
+            .inFilter('id', cashierIds.toList());
+    final namesById = <String, String>{
+      for (final p in profileRows)
+        ((p as Map)['id'] ?? '').toString():
+            ((p)['full_name'] ?? '').toString(),
+    };
+
+    // Métricas por sesión (en serie — pocos cajeros normalmente).
+    final overviews = <CashSessionOverview>[];
+    for (final raw in sessionRows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final session = CashSessionEntity.fromMap(row);
+      final cashierId = (row['opened_by'] ?? '').toString();
+      final metrics = await _fetchSessionMetrics(session.id, branchId);
+      overviews.add(
+        CashSessionOverview(
+          session: session,
+          cashierId: cashierId,
+          cashierName: namesById[cashierId] ?? 'Cajero',
+          metrics: metrics,
+        ),
+      );
+    }
+    return overviews;
+  }
+
   Future<CashRegisterData> fetchData() async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
@@ -270,7 +377,11 @@ class CashRegisterRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Sesión abierta DEL USUARIO ACTUAL (multi-caja). Cada cajero abre y
+  /// cierra su propia caja.
   Future<CashSessionEntity?> _fetchOpenSession(String branchId) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return null;
     final rows = await _client
         .from('cash_sessions')
         .select(
@@ -278,6 +389,7 @@ class CashRegisterRepository {
         )
         .eq('branch_id', branchId)
         .eq('status', 'open')
+        .eq('opened_by', userId)
         .order('opened_at', ascending: false)
         .limit(1);
 
@@ -287,13 +399,17 @@ class CashRegisterRepository {
     );
   }
 
+  /// Últimas 15 sesiones DEL USUARIO ACTUAL en la sucursal.
   Future<List<CashSessionEntity>> _fetchRecentSessions(String branchId) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return const [];
     final rows = await _client
         .from('cash_sessions')
         .select(
           'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes',
         )
         .eq('branch_id', branchId)
+        .eq('opened_by', userId)
         .order('opened_at', ascending: false)
         .limit(15);
 
@@ -303,6 +419,21 @@ class CashRegisterRepository {
               CashSessionEntity.fromMap(Map<String, dynamic>.from(item as Map)),
         )
         .toList(growable: false);
+  }
+
+  /// Métricas (cobros, gastos, breakdown efectivo) para una sesión específica.
+  /// Útil para mostrar el detalle de cualquier sesión, abierta o cerrada.
+  Future<CashSessionMetrics> fetchSessionMetrics(String cashSessionId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      return CashSessionMetrics(
+        totalPayments: 0,
+        cashPayments: 0,
+        totalExpenses: 0,
+        cashExpenses: 0,
+      );
+    }
+    return _fetchSessionMetrics(cashSessionId, branchId);
   }
 
   Future<CashSessionMetrics> _fetchSessionMetrics(
@@ -450,6 +581,180 @@ class CashRegisterRepository {
     if (result == null) return null;
     final value = result.toString();
     return value.isEmpty ? null : value;
+  }
+
+  // ── cash_registers (catálogo de cajas configurables por sucursal) ─────
+
+  /// Trae todas las cajas activas de la sucursal con sus usuarios asignados.
+  Future<List<CashRegisterEntity>> fetchCashRegisters() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final registerRows = await _client
+        .from('cash_registers')
+        .select('id, name, is_active')
+        .eq('branch_id', branchId)
+        .eq('is_active', true)
+        .order('name');
+
+    if (registerRows.isEmpty) return const [];
+
+    final registerIds = [
+      for (final r in registerRows) ((r as Map)['id'] ?? '').toString(),
+    ];
+
+    final assignRows = await _client
+        .from('cash_register_users')
+        .select('cash_register_id, user_id, is_active')
+        .inFilter('cash_register_id', registerIds)
+        .eq('is_active', true);
+
+    final byRegister = <String, List<String>>{
+      for (final id in registerIds) id: <String>[],
+    };
+    for (final raw in assignRows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final crId = (row['cash_register_id'] ?? '').toString();
+      final uid = (row['user_id'] ?? '').toString();
+      if (crId.isEmpty || uid.isEmpty) continue;
+      byRegister[crId]?.add(uid);
+    }
+
+    return [
+      for (final raw in registerRows)
+        CashRegisterEntity.fromMap(
+          Map<String, dynamic>.from(raw as Map),
+          byRegister[((raw)['id'] ?? '').toString()] ?? const [],
+        ),
+    ];
+  }
+
+  /// Trae solo las cajas a las que el usuario actual está asignado y que
+  /// están activas. Útil para el picker de "abrir caja".
+  Future<List<CashRegisterEntity>> fetchMyCashRegisters() async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return const [];
+    final all = await fetchCashRegisters();
+    return all
+        .where((cr) => cr.assignedUserIds.contains(userId))
+        .toList(growable: false);
+  }
+
+  /// Crea una caja nueva sin usuarios asignados todavía.
+  Future<CashRegisterEntity> createCashRegister(String name) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada.');
+    }
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('El nombre de la caja es requerido.');
+    }
+    final row = await _client
+        .from('cash_registers')
+        .insert({
+          'branch_id': branchId,
+          'name': trimmed,
+          'is_active': true,
+        })
+        .select('id, name, is_active')
+        .single();
+    return CashRegisterEntity.fromMap(Map<String, dynamic>.from(row), const []);
+  }
+
+  Future<void> renameCashRegister({
+    required String cashRegisterId,
+    required String newName,
+  }) async {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('El nombre de la caja es requerido.');
+    }
+    await _client
+        .from('cash_registers')
+        .update({'name': trimmed})
+        .eq('id', cashRegisterId);
+  }
+
+  /// Soft-delete: la marca inactiva (queda fuera del picker, pero las
+  /// sesiones históricas siguen apuntando a ella).
+  Future<void> deactivateCashRegister(String cashRegisterId) async {
+    await _client
+        .from('cash_registers')
+        .update({'is_active': false})
+        .eq('id', cashRegisterId);
+  }
+
+  /// Reemplaza la lista de usuarios asignados a una caja. Hace diff entre
+  /// la lista actual y la nueva: inserta los que faltan, desactiva los que
+  /// sobran. No borra filas para preservar el historial.
+  Future<void> setCashRegisterUsers({
+    required String cashRegisterId,
+    required List<String> userIds,
+  }) async {
+    final newSet = userIds.toSet();
+
+    final existingRows = await _client
+        .from('cash_register_users')
+        .select('user_id, is_active')
+        .eq('cash_register_id', cashRegisterId);
+    final existingActive = <String>{
+      for (final r in existingRows)
+        if ((r as Map)['is_active'] == true)
+          ((r)['user_id'] ?? '').toString(),
+    };
+    final existingAll = <String>{
+      for (final r in existingRows) ((r as Map)['user_id'] ?? '').toString(),
+    };
+
+    final toActivate = newSet.difference(existingActive);
+    final toDeactivate = existingActive.difference(newSet);
+
+    for (final uid in toActivate) {
+      if (existingAll.contains(uid)) {
+        // Fila ya existía pero inactiva → reactivar.
+        await _client
+            .from('cash_register_users')
+            .update({'is_active': true})
+            .eq('cash_register_id', cashRegisterId)
+            .eq('user_id', uid);
+      } else {
+        await _client.from('cash_register_users').insert({
+          'cash_register_id': cashRegisterId,
+          'user_id': uid,
+          'is_active': true,
+        });
+      }
+    }
+
+    for (final uid in toDeactivate) {
+      await _client
+          .from('cash_register_users')
+          .update({'is_active': false})
+          .eq('cash_register_id', cashRegisterId)
+          .eq('user_id', uid);
+    }
+  }
+
+  /// Abre una sesión sobre una caja específica vía RPC con validación de
+  /// permiso. Reemplaza al INSERT directo cuando la sucursal tiene cajas
+  /// configuradas. Devuelve el UUID de la cash_session creada.
+  Future<String> openSessionForRegister(OpenCashInput input) async {
+    if (input.cashRegisterId == null || input.cashRegisterId!.isEmpty) {
+      throw Exception('Tenés que elegir una caja.');
+    }
+    final result = await _client.rpc(
+      'open_cash_session_for_register',
+      params: {
+        'p_cash_register_id': input.cashRegisterId,
+        'p_opening_amount': _round2(input.openingAmount),
+        'p_notes': _nullIfEmpty(input.notes),
+      },
+    );
+    if (result == null) {
+      throw Exception('No se pudo abrir la sesión.');
+    }
+    return result.toString();
   }
 }
 

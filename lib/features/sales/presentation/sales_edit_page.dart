@@ -57,6 +57,8 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
   final List<_EditCartItem> _items = [];
   final _notesCtrl = TextEditingController();
   String? _clientId;
+  String _paymentMethod = 'cash';
+  String _originalPaymentMethod = 'cash';
   bool _initialized = false;
   bool _submitting = false;
 
@@ -96,6 +98,8 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
     }
     _clientId = detail.sale.clientId;
     _notesCtrl.text = detail.sale.notes ?? '';
+    _paymentMethod = detail.paymentMethod ?? 'cash';
+    _originalPaymentMethod = _paymentMethod;
   }
 
   Future<void> _addProduct() async {
@@ -134,15 +138,24 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
 
     setState(() => _submitting = true);
     try {
-      final result =
-          await ref.read(salesHistoryRepositoryProvider).editSale(
-                saleId: widget.saleId,
-                items: _items.map((it) => it.toRpcItem()).toList(),
-                clientId: _clientId,
-                clearClient: _clientId == null,
-                notes: _notesCtrl.text,
-                clearNotes: _notesCtrl.text.trim().isEmpty,
-              );
+      final repo = ref.read(salesHistoryRepositoryProvider);
+      final result = await repo.editSale(
+        saleId: widget.saleId,
+        items: _items.map((it) => it.toRpcItem()).toList(),
+        clientId: _clientId,
+        clearClient: _clientId == null,
+        notes: _notesCtrl.text,
+        clearNotes: _notesCtrl.text.trim().isEmpty,
+      );
+
+      // Si el método de pago cambió, actualizar los payments en una segunda
+      // llamada (el RPC editSale no lo modifica).
+      if (_paymentMethod != _originalPaymentMethod) {
+        await repo.updateSalePaymentMethod(
+          saleId: widget.saleId,
+          paymentMethod: _paymentMethod,
+        );
+      }
       if (!mounted) return;
       ref.invalidate(salesHistoryPageProvider);
       ref.invalidate(salesHistoryDetailProvider(widget.saleId));
@@ -227,11 +240,14 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
                 items: _items,
                 clientId: _clientId,
                 notesCtrl: _notesCtrl,
+                paymentMethod: _paymentMethod,
                 clientsAsync: clientsAsync,
                 subtotal: _subtotal,
                 tax: _tax,
                 total: _total,
                 onClientChanged: (v) => setState(() => _clientId = v),
+                onPaymentMethodChanged: (v) =>
+                    setState(() => _paymentMethod = v),
                 onAddProduct: _addProduct,
                 onRemoveItem: (i) => setState(() => _items.removeAt(i)),
                 onItemChanged: () => setState(() {}),
@@ -280,11 +296,13 @@ class _EditForm extends StatelessWidget {
     required this.items,
     required this.clientId,
     required this.notesCtrl,
+    required this.paymentMethod,
     required this.clientsAsync,
     required this.subtotal,
     required this.tax,
     required this.total,
     required this.onClientChanged,
+    required this.onPaymentMethodChanged,
     required this.onAddProduct,
     required this.onRemoveItem,
     required this.onItemChanged,
@@ -294,11 +312,13 @@ class _EditForm extends StatelessWidget {
   final List<_EditCartItem> items;
   final String? clientId;
   final TextEditingController notesCtrl;
+  final String paymentMethod;
   final AsyncValue<List<SalesClient>> clientsAsync;
   final double subtotal;
   final double tax;
   final double total;
   final ValueChanged<String?> onClientChanged;
+  final ValueChanged<String> onPaymentMethodChanged;
   final VoidCallback onAddProduct;
   final ValueChanged<int> onRemoveItem;
   final VoidCallback onItemChanged;
@@ -314,6 +334,26 @@ class _EditForm extends StatelessWidget {
           clientId: clientId,
           clientsAsync: clientsAsync,
           onChanged: onClientChanged,
+        ),
+        const SizedBox(height: AppTokens.s16),
+        DropdownButtonFormField<String>(
+          initialValue: paymentMethod,
+          decoration: const InputDecoration(
+            labelText: 'Método de pago',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+          items: const [
+            DropdownMenuItem(value: 'cash', child: Text('Efectivo')),
+            DropdownMenuItem(value: 'transfer', child: Text('Transferencia')),
+            DropdownMenuItem(value: 'card', child: Text('Tarjeta')),
+            DropdownMenuItem(value: 'mobile', child: Text('Pago móvil')),
+            DropdownMenuItem(value: 'mixed', child: Text('Mixto')),
+            DropdownMenuItem(value: 'credit', child: Text('Crédito')),
+          ],
+          onChanged: (v) {
+            if (v != null) onPaymentMethodChanged(v);
+          },
         ),
         const SizedBox(height: AppTokens.s16),
         Row(

@@ -147,12 +147,16 @@ class ExpensesRepository {
     });
   }
 
+  /// Sesión de caja abierta DEL USUARIO ACTUAL (multi-caja).
   Future<String?> _currentOpenCashSessionId(String branchId) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return null;
     final rows = await _client
         .from('cash_sessions')
         .select('id')
         .eq('branch_id', branchId)
         .eq('status', 'open')
+        .eq('opened_by', userId)
         .order('opened_at', ascending: false)
         .limit(1);
 

@@ -17,10 +17,17 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../cash_register/data/cash_register_repository.dart';
+import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../inventory/data/file_io_helper.dart';
+import '../../inventory/data/inventory_repository.dart';
+import '../../inventory/presentation/inventory_providers.dart';
+import '../../users/data/users_repository.dart';
+import '../../users/presentation/users_providers.dart';
 import '../data/app_settings.dart';
 import 'app_settings_providers.dart';
 import 'settings_providers.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 
 class AppSettingsPage extends ConsumerStatefulWidget {
   const AppSettingsPage({super.key});
@@ -1106,6 +1113,8 @@ class _InventorySection extends StatelessWidget {
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
+        _CategoriesEditor(isReadOnly: isReadOnly),
+        _CashRegistersEditor(isReadOnly: isReadOnly),
       ],
     );
   }
@@ -1963,7 +1972,7 @@ class _PriceTypesEditor extends StatefulWidget {
 
 class _PriceTypesEditorState extends State<_PriceTypesEditor> {
   static const _column = 'sale_price_types';
-  static const _maxItems = 3;
+  static const _maxItems = 10;
   late List<_PriceTypeItem> _items;
   int _nextId = 0;
 
@@ -2141,6 +2150,762 @@ class _PriceTypeItem {
   final String value;
   _PriceTypeItem copyWith({String? value}) =>
       _PriceTypeItem(id: id, value: value ?? this.value);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Editor de categorías de productos (tabla product_categories)
+// ─────────────────────────────────────────────────────────────────────────
+
+class _CategoriesEditor extends ConsumerStatefulWidget {
+  const _CategoriesEditor({required this.isReadOnly});
+
+  final bool isReadOnly;
+
+  @override
+  ConsumerState<_CategoriesEditor> createState() => _CategoriesEditorState();
+}
+
+class _CategoriesEditorState extends ConsumerState<_CategoriesEditor> {
+  bool _adding = false;
+  final _newNameCtrl = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _newNameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onCreate() async {
+    final name = _newNameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _adding = false);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await ref.read(inventoryRepositoryProvider).createCategory(name);
+      _newNameCtrl.clear();
+      if (mounted) setState(() => _adding = false);
+      ref.invalidate(inventoryCategoriesProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo crear: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _onRename(InventoryCategory cat, String newName) async {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || trimmed == cat.name) return;
+    try {
+      await ref
+          .read(inventoryRepositoryProvider)
+          .updateCategoryName(categoryId: cat.id, newName: trimmed);
+      ref.invalidate(inventoryCategoriesProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo renombrar: $error')),
+      );
+    }
+  }
+
+  Future<void> _onDelete(InventoryCategory cat) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar categoría'),
+        content: Text(
+          '¿Eliminar "${cat.name}"?\n\n'
+          'Si tiene productos asignados se desactivará en su lugar '
+          '(deja de aparecer en filtros pero los productos no se rompen).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repo = ref.read(inventoryRepositoryProvider);
+    try {
+      await repo.deleteCategory(cat.id);
+      ref.invalidate(inventoryCategoriesProvider);
+    } on PostgrestException catch (e) {
+      if (e.code == '23503') {
+        try {
+          await repo.setCategoryActive(categoryId: cat.id, isActive: false);
+          ref.invalidate(inventoryCategoriesProvider);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'La categoría tenía productos. Se desactivó en su lugar.',
+              ),
+            ),
+          );
+        } catch (innerError) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No se pudo desactivar: $innerError')),
+          );
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo eliminar: ${e.message}')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo eliminar: $error')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final categoriesAsync = ref.watch(inventoryCategoriesProvider);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Categorías de productos',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Crea las categorías que usarás para clasificar tus productos. '
+            'Si una tiene productos vinculados, eliminarla la desactiva en '
+            'lugar de borrarla.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTokens.mutedForeground,
+                ),
+          ),
+          const SizedBox(height: AppTokens.s8),
+          categoriesAsync.when(
+            loading: () => const Padding(
+              padding: EdgeInsets.symmetric(vertical: AppTokens.s8),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+              child: Text('No se pudieron cargar categorías: $e'),
+            ),
+            data: (categories) {
+              if (categories.isEmpty && !_adding) {
+                return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: AppTokens.s8),
+                  child: Text(
+                    'No hay categorías. Añadí la primera con el botón de abajo.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTokens.mutedForeground,
+                        ),
+                  ),
+                );
+              }
+              return Column(
+                children: [
+                  for (final cat in categories)
+                    _CategoryRow(
+                      key: ValueKey('cat_${cat.id}'),
+                      category: cat,
+                      isReadOnly: widget.isReadOnly,
+                      onRename: (v) => _onRename(cat, v),
+                      onDelete: () => _onDelete(cat),
+                    ),
+                  if (_adding)
+                    Padding(
+                      padding:
+                          const EdgeInsets.symmetric(vertical: AppTokens.s4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _newNameCtrl,
+                              autofocus: true,
+                              enabled: !_busy,
+                              decoration: const InputDecoration(
+                                hintText: 'Ej: bebidas, repuestos…',
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                              ),
+                              onSubmitted: (_) => _onCreate(),
+                            ),
+                          ),
+                          const SizedBox(width: AppTokens.s8),
+                          FilledButton(
+                            onPressed: _busy ? null : _onCreate,
+                            child: const Text('Añadir'),
+                          ),
+                          const SizedBox(width: 4),
+                          TextButton(
+                            onPressed: _busy
+                                ? null
+                                : () {
+                                    _newNameCtrl.clear();
+                                    setState(() => _adding = false);
+                                  },
+                            child: const Text('Cancelar'),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: AppTokens.s4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: (widget.isReadOnly || _adding)
+                  ? null
+                  : () => setState(() => _adding = true),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Crear categoría'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryRow extends StatefulWidget {
+  const _CategoryRow({
+    super.key,
+    required this.category,
+    required this.isReadOnly,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final InventoryCategory category;
+  final bool isReadOnly;
+  final ValueChanged<String> onRename;
+  final VoidCallback onDelete;
+
+  @override
+  State<_CategoryRow> createState() => _CategoryRowState();
+}
+
+class _CategoryRowState extends State<_CategoryRow> {
+  late TextEditingController _ctrl;
+  late FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.category.name);
+    _focus = FocusNode();
+    _focus.addListener(_onFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CategoryRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.category.name != widget.category.name &&
+        !_focus.hasFocus) {
+      _ctrl.text = widget.category.name;
+    }
+  }
+
+  void _onFocus() {
+    if (!_focus.hasFocus) {
+      widget.onRename(_ctrl.text);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    _focus.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _ctrl,
+              focusNode: _focus,
+              enabled: !widget.isReadOnly,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: widget.onRename,
+            ),
+          ),
+          const SizedBox(width: AppTokens.s8),
+          IconButton(
+            tooltip: 'Eliminar',
+            onPressed: widget.isReadOnly ? null : widget.onDelete,
+            icon: const Icon(
+              Icons.delete_outline,
+              size: 20,
+              color: AppTokens.error,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Editor de cajas registradoras (tabla cash_registers + cash_register_users)
+// ─────────────────────────────────────────────────────────────────────────
+
+class _CashRegistersEditor extends ConsumerStatefulWidget {
+  const _CashRegistersEditor({required this.isReadOnly});
+
+  final bool isReadOnly;
+
+  @override
+  ConsumerState<_CashRegistersEditor> createState() =>
+      _CashRegistersEditorState();
+}
+
+class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
+  bool _adding = false;
+  final _newNameCtrl = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _newNameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onCreate() async {
+    final name = _newNameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _adding = false);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await ref.read(cashRegisterRepositoryProvider).createCashRegister(name);
+      _newNameCtrl.clear();
+      if (mounted) setState(() => _adding = false);
+      ref.invalidate(cashRegistersProvider);
+      ref.invalidate(myCashRegistersProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo crear la caja: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _onRename(CashRegisterEntity caja, String newName) async {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || trimmed == caja.name) return;
+    try {
+      await ref.read(cashRegisterRepositoryProvider).renameCashRegister(
+            cashRegisterId: caja.id,
+            newName: trimmed,
+          );
+      ref.invalidate(cashRegistersProvider);
+      ref.invalidate(myCashRegistersProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo renombrar: $error')),
+      );
+    }
+  }
+
+  Future<void> _onDelete(CashRegisterEntity caja) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar caja'),
+        content: Text(
+          '¿Eliminar "${caja.name}"?\n\n'
+          'Las sesiones históricas vinculadas se conservan. La caja deja '
+          'de aparecer en el picker de apertura.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await ref
+          .read(cashRegisterRepositoryProvider)
+          .deactivateCashRegister(caja.id);
+      ref.invalidate(cashRegistersProvider);
+      ref.invalidate(myCashRegistersProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo eliminar: $error')),
+      );
+    }
+  }
+
+  Future<void> _onAssignUsers(CashRegisterEntity caja) async {
+    final usersAsync = ref.read(usersListProvider);
+    final users = usersAsync.valueOrNull ?? const <UserEntity>[];
+
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _CashRegisterUsersDialog(
+        cajaName: caja.name,
+        allUsers: users,
+        initiallySelected: caja.assignedUserIds,
+      ),
+    );
+    if (selected == null) return;
+
+    try {
+      await ref.read(cashRegisterRepositoryProvider).setCashRegisterUsers(
+            cashRegisterId: caja.id,
+            userIds: selected,
+          );
+      ref.invalidate(cashRegistersProvider);
+      ref.invalidate(myCashRegistersProvider);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo guardar la asignación: $error')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cajasAsync = ref.watch(cashRegistersProvider);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Cajas registradoras',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Creá las cajas físicas/lógicas de la sucursal y asigná qué '
+            'usuarios pueden operar cada una. Al abrir una sesión, el '
+            'cajero solo verá las cajas que tenga asignadas.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTokens.mutedForeground,
+                ),
+          ),
+          const SizedBox(height: AppTokens.s8),
+          cajasAsync.when(
+            loading: () => const Padding(
+              padding: EdgeInsets.symmetric(vertical: AppTokens.s8),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+              child: Text('No se pudieron cargar cajas: $e'),
+            ),
+            data: (cajas) {
+              if (cajas.isEmpty && !_adding) {
+                return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: AppTokens.s8),
+                  child: Text(
+                    'No hay cajas. Añadí la primera con el botón de abajo.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTokens.mutedForeground,
+                        ),
+                  ),
+                );
+              }
+              return Column(
+                children: [
+                  for (final caja in cajas)
+                    _CashRegisterRow(
+                      key: ValueKey('caja_${caja.id}'),
+                      caja: caja,
+                      isReadOnly: widget.isReadOnly,
+                      onRename: (v) => _onRename(caja, v),
+                      onDelete: () => _onDelete(caja),
+                      onAssign: () => _onAssignUsers(caja),
+                    ),
+                  if (_adding)
+                    Padding(
+                      padding:
+                          const EdgeInsets.symmetric(vertical: AppTokens.s4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _newNameCtrl,
+                              autofocus: true,
+                              enabled: !_busy,
+                              decoration: const InputDecoration(
+                                hintText: 'Ej: Caja Principal, Mostrador 2…',
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                              ),
+                              onSubmitted: (_) => _onCreate(),
+                            ),
+                          ),
+                          const SizedBox(width: AppTokens.s8),
+                          FilledButton(
+                            onPressed: _busy ? null : _onCreate,
+                            child: const Text('Añadir'),
+                          ),
+                          const SizedBox(width: 4),
+                          TextButton(
+                            onPressed: _busy
+                                ? null
+                                : () {
+                                    _newNameCtrl.clear();
+                                    setState(() => _adding = false);
+                                  },
+                            child: const Text('Cancelar'),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: AppTokens.s4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: (widget.isReadOnly || _adding)
+                  ? null
+                  : () => setState(() => _adding = true),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Crear caja'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CashRegisterRow extends StatefulWidget {
+  const _CashRegisterRow({
+    super.key,
+    required this.caja,
+    required this.isReadOnly,
+    required this.onRename,
+    required this.onDelete,
+    required this.onAssign,
+  });
+
+  final CashRegisterEntity caja;
+  final bool isReadOnly;
+  final ValueChanged<String> onRename;
+  final VoidCallback onDelete;
+  final VoidCallback onAssign;
+
+  @override
+  State<_CashRegisterRow> createState() => _CashRegisterRowState();
+}
+
+class _CashRegisterRowState extends State<_CashRegisterRow> {
+  late TextEditingController _ctrl;
+  late FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.caja.name);
+    _focus = FocusNode();
+    _focus.addListener(_onFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CashRegisterRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.caja.name != widget.caja.name && !_focus.hasFocus) {
+      _ctrl.text = widget.caja.name;
+    }
+  }
+
+  void _onFocus() {
+    if (!_focus.hasFocus) {
+      widget.onRename(_ctrl.text);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    _focus.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final usersCount = widget.caja.assignedUserIds.length;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _ctrl,
+              focusNode: _focus,
+              enabled: !widget.isReadOnly,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: widget.onRename,
+            ),
+          ),
+          const SizedBox(width: AppTokens.s8),
+          OutlinedButton.icon(
+            onPressed: widget.isReadOnly ? null : widget.onAssign,
+            icon: const Icon(Icons.people_outline, size: 16),
+            label: Text(
+              usersCount == 0
+                  ? 'Sin usuarios'
+                  : usersCount == 1
+                      ? '1 usuario'
+                      : '$usersCount usuarios',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Eliminar caja',
+            onPressed: widget.isReadOnly ? null : widget.onDelete,
+            icon: const Icon(
+              Icons.delete_outline,
+              size: 20,
+              color: AppTokens.error,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CashRegisterUsersDialog extends StatefulWidget {
+  const _CashRegisterUsersDialog({
+    required this.cajaName,
+    required this.allUsers,
+    required this.initiallySelected,
+  });
+
+  final String cajaName;
+  final List<UserEntity> allUsers;
+  final List<String> initiallySelected;
+
+  @override
+  State<_CashRegisterUsersDialog> createState() =>
+      _CashRegisterUsersDialogState();
+}
+
+class _CashRegisterUsersDialogState extends State<_CashRegisterUsersDialog> {
+  late Set<String> _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.initiallySelected.toSet();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activeUsers = widget.allUsers.where((u) => u.isActive).toList()
+      ..sort((a, b) => a.fullName.compareTo(b.fullName));
+
+    return AlertDialog(
+      title: Text('Usuarios de "${widget.cajaName}"'),
+      content: SizedBox(
+        width: 380,
+        height: 420,
+        child: activeUsers.isEmpty
+            ? const Center(
+                child: Text(
+                  'No hay usuarios activos en esta sucursal.\n'
+                  'Andá a Usuarios para invitar gente primero.',
+                  textAlign: TextAlign.center,
+                ),
+              )
+            : ListView.builder(
+                itemCount: activeUsers.length,
+                itemBuilder: (_, index) {
+                  final user = activeUsers[index];
+                  final isOn = _selected.contains(user.id);
+                  return CheckboxListTile(
+                    value: isOn,
+                    title: Text(user.fullName),
+                    subtitle: Text(
+                      user.email ?? user.role,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    onChanged: (v) {
+                      setState(() {
+                        if (v == true) {
+                          _selected.add(user.id);
+                        } else {
+                          _selected.remove(user.id);
+                        }
+                      });
+                    },
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _selected.toList()),
+          child: const Text('Guardar'),
+        ),
+      ],
+    );
+  }
 }
 
 class _PriceTypeRow extends StatefulWidget {
