@@ -7,8 +7,10 @@ WORKDIR /app
 COPY pubspec.yaml pubspec.lock ./
 RUN flutter pub get
 
-# Build args — override in Coolify "Build Variables" for production
-ARG SUPABASE_URL=http://supabasekong-x8y0lsyo0tdmk3rwvhbicwh5.2.24.119.32.sslip.io
+# Build args — override in Coolify "Build Variables" for production.
+# El nginx del frontend hace reverse proxy hacia Kong (ver nginx.conf), así
+# que SUPABASE_URL apunta al MISMO dominio del frontend, no a Kong directo.
+ARG SUPABASE_URL=https://busiposweb.com
 ARG SUPABASE_PUBLISHABLE_KEY=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc3OTQ2MTI4MCwiZXhwIjo0OTM1MTM0ODgwLCJyb2xlIjoiYW5vbiJ9.CdZEf7Ux9iGEvc2TXl-hMTOyqpZ3AFTCiN7yD1saswI
 
 # Copy source and compile
