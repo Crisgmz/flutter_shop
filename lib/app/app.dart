@@ -29,7 +29,7 @@ class ShopPlusApp extends ConsumerWidget {
     }
 
     return MaterialApp.router(
-      title: 'Shop+ RD',
+      title: 'Busi Pos Web',
       theme: AppTheme.light,
       debugShowCheckedModeBanner: false,
       routerConfig: router,

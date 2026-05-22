@@ -39,7 +39,7 @@ const List<String> _productHeaders = [
 ];
 
 const List<String> _instructions = [
-  'Plantilla de inventario — Shop+ RD',
+  'Plantilla de inventario — Busi Pos Web',
   '',
   '1. La hoja "Productos" es la única que el sistema lee al importar.',
   '2. La columna "nombre", "precio" y "costo" son obligatorias.',

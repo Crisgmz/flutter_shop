@@ -24,7 +24,7 @@ class CashClosurePdfBuilder {
   }) async {
     final doc = pw.Document(
       title: 'Cierre de caja ${session.id.substring(0, 8)}',
-      author: branchName ?? 'Shop+',
+      author: branchName ?? 'Busi Pos Web',
     );
 
     final format = PdfPageFormat(

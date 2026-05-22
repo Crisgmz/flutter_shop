@@ -1,4 +1,4 @@
-# DATABASE.md — Shop+ RD
+# DATABASE.md — Busi Pos Web
 
 Referencia central de base de datos para `flutter_shop+`.
 
