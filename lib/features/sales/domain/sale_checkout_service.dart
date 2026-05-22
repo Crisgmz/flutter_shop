@@ -59,7 +59,12 @@ class SaleCheckoutService {
 
     final lines = normalizedItems.values
         .map((line) {
-          if (line.quantity > line.availableStock) {
+          // Solo enforzamos la validación de "cantidad > stock" cuando el
+          // setting global está prendido. Si el dueño permite venta sin
+          // stock, dejamos pasar y que el RPC decida (con el flag por
+          // producto si aplica).
+          if (input.disallowNoStock &&
+              line.quantity > line.availableStock) {
             throw SaleCheckoutValidationException(
               'Stock insuficiente para ${line.description}. Disponible: ${line.availableStock.toStringAsFixed(line.availableStock % 1 == 0 ? 0 : 3)}.',
             );

@@ -590,7 +590,7 @@ as $$
     select coalesce(target_branch_id, public.current_branch_id()) as branch_id
   ),
   user_override as (
-    select up.allowed
+    select up.granted
     from public.user_permissions up
     join public.permissions p on p.id = up.permission_id
     join requested_branch rb on true

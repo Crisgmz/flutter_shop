@@ -11,6 +11,7 @@ class CashSessionEntity {
     required this.differenceAmount,
     required this.notes,
     required this.closedAt,
+    this.cashRegisterId,
   });
 
   final String id;
@@ -22,6 +23,10 @@ class CashSessionEntity {
   final double? closingAmount;
   final double? differenceAmount;
   final String? notes;
+
+  /// Caja sobre la que se abrió la sesión. Null para sesiones legacy
+  /// abiertas antes del migration de cash_registers.
+  final String? cashRegisterId;
 
   bool get isOpen => status == 'open';
 
@@ -44,6 +49,7 @@ class CashSessionEntity {
           ? null
           : _toDouble(map['difference_amount']),
       notes: map['notes']?.toString(),
+      cashRegisterId: _nullIfEmpty(map['cash_register_id']?.toString()),
     );
   }
 }
@@ -385,7 +391,7 @@ class CashRegisterRepository {
     final rows = await _client
         .from('cash_sessions')
         .select(
-          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes',
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes, cash_register_id',
         )
         .eq('branch_id', branchId)
         .eq('status', 'open')
