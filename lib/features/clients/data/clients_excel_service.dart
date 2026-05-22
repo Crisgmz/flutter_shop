@@ -39,7 +39,7 @@ const List<String> _clientHeaders = [
 ];
 
 const List<String> _instructions = [
-  'Plantilla de Clientes — Shop+ RD',
+  'Plantilla de Clientes — Busi Pos Web',
   '',
   '1. La hoja "Clientes" es la única que el sistema lee al importar.',
   '2. La columna "nombre" es obligatoria.',

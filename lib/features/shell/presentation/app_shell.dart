@@ -116,7 +116,7 @@ class AppShell extends ConsumerWidget {
           Expanded(
             child: Scaffold(
               appBar: _TopBar(
-                title: currentNavItem?.label ?? 'Shop+',
+                title: currentNavItem?.label ?? 'Busi Pos Web',
                 currentPath: currentPath,
                 branchName: branchName,
                 branchOptions: branches,
@@ -381,7 +381,7 @@ class _UserProfileMenu extends StatelessWidget {
 }
 
 
-class _DesktopSidebar extends StatelessWidget {
+class _DesktopSidebar extends StatefulWidget {
   const _DesktopSidebar({
     required this.currentPath,
     required this.navSections,
@@ -395,72 +395,43 @@ class _DesktopSidebar extends StatelessWidget {
   final Future<void> Function() onSignOut;
 
   @override
+  State<_DesktopSidebar> createState() => _DesktopSidebarState();
+}
+
+class _DesktopSidebarState extends State<_DesktopSidebar> {
+  static const double _collapsedWidth = 72;
+  bool _collapsed = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      width: AppTokens.sidebarWidth,
+    final width = _collapsed ? _collapsedWidth : AppTokens.sidebarWidth;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      width: width,
       decoration: const BoxDecoration(gradient: AppTokens.sidebarGradient),
       child: SafeArea(
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppTokens.s22,
-                AppTokens.s16,
-                AppTokens.s18,
-                AppTokens.s16,
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.storefront_outlined,
-                    color: Colors.white,
-                    size: AppTokens.iconSizeL,
-                  ),
-                  const SizedBox(width: AppTokens.s10),
-                  const Text(
-                    'Shop+',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AppTokens.s10,
-                      vertical: AppTokens.s6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTokens.sidebarOverlay,
-                      borderRadius: BorderRadius.circular(AppTokens.s14),
-                    ),
-                    child: const Text(
-                      'Shell v1',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _buildHeader(),
             const Divider(color: AppTokens.sidebarDivider, height: 1),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.all(AppTokens.s12),
+                padding: EdgeInsets.symmetric(
+                  horizontal: _collapsed ? AppTokens.s6 : AppTokens.s12,
+                  vertical: AppTokens.s12,
+                ),
                 children: [
-                  for (final section in navSections) ...[
-                    _SidebarSectionLabel(label: section.label),
-                    const SizedBox(height: AppTokens.s6),
+                  for (final section in widget.navSections) ...[
+                    if (!_collapsed) _SidebarSectionLabel(label: section.label),
+                    if (!_collapsed) const SizedBox(height: AppTokens.s6),
                     for (final item in section.items)
                       _SidebarItem(
                         icon: item.icon,
                         label: item.label,
-                        selected: item.path == currentPath,
-                        onTap: () => onNavigate(item.path),
+                        selected: item.path == widget.currentPath,
+                        collapsed: _collapsed,
+                        onTap: () => widget.onNavigate(item.path),
                       ),
                     const SizedBox(height: AppTokens.s12),
                   ],
@@ -469,21 +440,72 @@ class _DesktopSidebar extends StatelessWidget {
             ),
             const Divider(color: AppTokens.sidebarDivider, height: 1),
             Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppTokens.s12,
-                AppTokens.s10,
-                AppTokens.s12,
-                AppTokens.s12,
+              padding: EdgeInsets.symmetric(
+                horizontal: _collapsed ? AppTokens.s6 : AppTokens.s12,
+                vertical: AppTokens.s10,
               ),
               child: _SidebarItem(
                 icon: Icons.logout,
                 label: 'Salir',
                 selected: false,
-                onTap: () => onSignOut(),
+                collapsed: _collapsed,
+                onTap: () => widget.onSignOut(),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    final toggleButton = IconButton(
+      icon: Icon(
+        _collapsed ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
+        color: Colors.white,
+      ),
+      tooltip: _collapsed ? 'Expandir' : 'Colapsar',
+      onPressed: () => setState(() => _collapsed = !_collapsed),
+    );
+
+    if (_collapsed) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s6,
+          vertical: AppTokens.s12,
+        ),
+        child: Center(child: toggleButton),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppTokens.s22,
+        AppTokens.s12,
+        AppTokens.s8,
+        AppTokens.s12,
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.storefront_outlined,
+            color: Colors.white,
+            size: AppTokens.iconSizeL,
+          ),
+          const SizedBox(width: AppTokens.s10),
+          const Expanded(
+            child: Text(
+              'Busi Pos Web',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          toggleButton,
+        ],
       ),
     );
   }
@@ -524,7 +546,7 @@ class _MobileMenuDrawer extends StatelessWidget {
                     const SizedBox(width: AppTokens.s8),
                     const Expanded(
                       child: Text(
-                        'Shop+ RD',
+                        'Busi Pos Web',
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w700,
@@ -760,47 +782,66 @@ class _SidebarItem extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    this.collapsed = false,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final bool collapsed;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppTokens.s4),
-      child: Material(
-        color: selected ? AppTokens.sidebarItemSelected : Colors.transparent,
+    final content = Material(
+      color: selected ? AppTokens.sidebarItemSelected : Colors.transparent,
+      borderRadius: BorderRadius.circular(AppTokens.radiusL),
+      child: InkWell(
         borderRadius: BorderRadius.circular(AppTokens.radiusL),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppTokens.radiusL),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppTokens.s14,
-              vertical: AppTokens.s12,
-            ),
-            child: Row(
-              children: [
-                Icon(icon, color: Colors.white, size: AppTokens.iconSizeM),
-                const SizedBox(width: AppTokens.s12),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        onTap: onTap,
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: collapsed ? AppTokens.s8 : AppTokens.s14,
+            vertical: AppTokens.s12,
           ),
+          child: collapsed
+              ? Center(
+                  child: Icon(
+                    icon,
+                    color: Colors.white,
+                    size: AppTokens.iconSizeM,
+                  ),
+                )
+              : Row(
+                  children: [
+                    Icon(icon, color: Colors.white, size: AppTokens.iconSizeM),
+                    const SizedBox(width: AppTokens.s12),
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight:
+                              selected ? FontWeight.w700 : FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
         ),
       ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppTokens.s4),
+      child: collapsed
+          ? Tooltip(
+              message: label,
+              waitDuration: const Duration(milliseconds: 300),
+              child: content,
+            )
+          : content,
     );
   }
 }

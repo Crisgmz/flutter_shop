@@ -61,7 +61,7 @@ class SignupSuccessPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Ahora iniciá sesión para empezar a usar Shop+.',
+                      'Ahora iniciá sesión para empezar a usar Busi Pos Web.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: const Color(0xFF64748B),

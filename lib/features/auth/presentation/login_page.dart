@@ -86,7 +86,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                           ),
                           const SizedBox(width: 10),
                           Text(
-                            'Shop+ RD',
+                            'Busi Pos Web',
                             style: Theme.of(context).textTheme.headlineSmall
                                 ?.copyWith(fontWeight: FontWeight.w700),
                           ),

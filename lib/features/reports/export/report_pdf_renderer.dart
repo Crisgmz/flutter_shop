@@ -23,7 +23,7 @@ class ReportPdfRenderer {
   Future<Uint8List> render(ReportExportData data) async {
     final pdf = pw.Document(
       title: data.title,
-      author: data.companyName ?? 'Shop+ RD',
+      author: data.companyName ?? 'Busi Pos Web',
       subject: data.subtitle ?? data.title,
     );
 
@@ -132,7 +132,7 @@ class ReportPdfRenderer {
       child: pw.Row(
         children: [
           pw.Text(
-            'Generado ${_fmtDateTime(now)} · Shop+ RD',
+            'Generado ${_fmtDateTime(now)} · Busi Pos Web',
             style: pw.TextStyle(fontSize: 8, color: muted),
           ),
           pw.Spacer(),
