@@ -1,13 +1,11 @@
 class Env {
-  // Default deploy: el frontend (https://busiposweb.com) hace de proxy hacia
-  // Kong vía nginx, así Supabase queda en el mismo origen del frontend.
-  // Esto evita mixed content y CORS — todas las llamadas a /auth/v1, /rest/v1,
-  // /storage/v1 las reescribe nginx hacia Kong por HTTP interno.
+  // Default deploy: subdominio dedicado para Supabase con Let's Encrypt
+  // emitido en Coolify. Frontend y backend en orígenes separados.
   //
   // Para apuntar a otra instancia, pasar --dart-define al `flutter run`:
   //   --dart-define=SUPABASE_URL=https://otro.supabase.co
   //   --dart-define=SUPABASE_ANON_KEY=...
-  static const _devSupabaseUrl = 'https://busiposweb.com';
+  static const _devSupabaseUrl = 'https://supabase.busiposweb.com';
   static const _devSupabasePublishableKey =
       'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc3OTQ2MTI4MCwiZXhwIjo0OTM1MTM0ODgwLCJyb2xlIjoiYW5vbiJ9.CdZEf7Ux9iGEvc2TXl-hMTOyqpZ3AFTCiN7yD1saswI';
 
