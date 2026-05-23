@@ -42,5 +42,35 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+
+  <!--
+    Auto-update del service worker.
+    Cuando Coolify rebuildea, el nuevo flutter_service_worker.js trae un hash
+    distinto. Este script:
+      1. Le pide al browser que chequee el SW al cargar la pestaña.
+      2. Si hay versión nueva, recarga la página automáticamente UNA vez la
+         versión nueva esté activa (sin que el usuario tenga que hacer Ctrl+F5).
+    No interrumpe la sesión: el state que persiste en localStorage / cookies
+    (auth tokens, branch_id) sobrevive el reload.
+  -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        // Evita loop infinito en algunos browsers
+        if (window.__reloadingForSW) return;
+        window.__reloadingForSW = true;
+        window.location.reload();
+      });
+      navigator.serviceWorker.ready.then(function (reg) {
+        // Chequea por update cuando la página gana foco (pestaña activa).
+        window.addEventListener('focus', function () {
+          reg.update().catch(function () {});
+        });
+        // Chequeo inicial al cargar.
+        reg.update().catch(function () {});
+      });
+    })();
+  </script>
 </body>
 </html>
