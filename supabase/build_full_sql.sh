@@ -57,6 +57,9 @@ FILES=(
   "$NEXT/20260521_33_cash_registers.sql"
   "$NEXT/20260522_34_app_settings_legacy_fix.sql"
   "$NEXT/20260522_35_checkout_respects_global_stock_setting.sql"
+  "$NEXT/20260522_36_user_isolation_per_company.sql"
+  "$NEXT/20260522_37_branch_isolation_per_company.sql"
+  "$NEXT/20260522_38_multitenant_isolation_audit.sql"
 
   "$NEXT/create_employee_rpc.sql"
 )
