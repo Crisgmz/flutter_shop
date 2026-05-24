@@ -229,6 +229,17 @@ class BranchesRepository {
     late String branchId;
 
     if (input.id == null) {
+      // Multi-tenant: el INSERT pasa por la RLS branches_write que exige
+      // company_id = current_company_id(). El RPC nos lo dice.
+      final companyIdResult = await _client.rpc('current_company_id');
+      final companyId = companyIdResult?.toString();
+      if (companyId == null || companyId.isEmpty) {
+        throw Exception(
+          'No hay empresa asignada al usuario actual. Completa el onboarding.',
+        );
+      }
+      payload['company_id'] = companyId;
+
       final inserted = await _client
           .from('branches')
           .insert(payload)
@@ -237,6 +248,8 @@ class BranchesRepository {
       final item = Map<String, dynamic>.from(inserted as Map);
       branchId = (item['id'] ?? '').toString();
     } else {
+      // En UPDATE no tocamos company_id (cambiar de empresa una sucursal
+      // existente no tiene sentido y la RLS lo bloquearía igual).
       await _client.from('branches').update(payload).eq('id', input.id!);
       branchId = input.id!;
     }
