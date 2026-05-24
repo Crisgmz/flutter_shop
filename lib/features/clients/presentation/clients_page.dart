@@ -803,7 +803,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Confirmar importación'),
         content: SizedBox(
           width: 480,
@@ -847,13 +847,13 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
             child: const Text('Cancelar'),
           ),
           FilledButton(
             onPressed: parsed.inputs.isEmpty
                 ? null
-                : () => Navigator.pop(context, true),
+                : () => Navigator.of(dialogContext).pop(true),
             child: Text('Importar ${parsed.inputs.length}'),
           ),
         ],
