@@ -926,6 +926,10 @@ class _UserPermissionsPanelState
       title: user == null
           ? 'Permisos efectivos'
           : 'Permisos efectivos — ${user.fullName}',
+      // El contenido (buscador + cards de módulos) usa CrossAxisAlignment.stretch
+      // adentro, que no se lleva con un SingleChildScrollView horizontal. No es
+      // una tabla de columnas anchas, así que desactivamos el scroll lateral.
+      scrollable: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
