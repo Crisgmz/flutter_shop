@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/realtime/realtime_invalidator.dart';
 import '../core/theme/app_theme.dart';
 import '../features/settings/presentation/app_settings_providers.dart';
+import '../features/shell/presentation/shell_providers.dart';
 import '../shared/formatters/live_settings.dart';
 import 'router.dart';
 
@@ -27,6 +29,37 @@ class ShopPlusApp extends ConsumerWidget {
         timeFormat: currentSettings.appTimeFormat,
       );
     }
+
+    // Realtime: cuando la sucursal default cambia (al loguearse, al hacer
+    // switch en el header), re-suscribir los canales Postgres Changes con
+    // filtro por branch_id. Los providers tocados en _tableToProviders se
+    // invalidan solos al recibir INSERT/UPDATE/DELETE.
+    String? resolveBranchId(List<ShellBranchOption>? branches) {
+      if (branches == null || branches.isEmpty) return null;
+      return branches
+              .where((b) => b.isDefault)
+              .map((b) => b.branchId)
+              .firstOrNull ??
+          branches.first.branchId;
+    }
+
+    // Attach inicial con el valor actual (si ya está hidratado).
+    final initialBranches =
+        ref.read(shellBranchOptionsProvider).valueOrNull;
+    final initialBranchId = resolveBranchId(initialBranches);
+    if (initialBranchId != null) {
+      ref.read(realtimeInvalidatorProvider).attach(initialBranchId);
+    }
+
+    // Re-attach en cada cambio posterior.
+    ref.listen<AsyncValue<List<ShellBranchOption>>>(
+      shellBranchOptionsProvider,
+      (previous, next) {
+        final branchId = resolveBranchId(next.valueOrNull);
+        if (branchId == null) return;
+        ref.read(realtimeInvalidatorProvider).attach(branchId);
+      },
+    );
 
     return MaterialApp.router(
       title: 'Busi Pos Web',
