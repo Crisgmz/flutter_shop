@@ -61,6 +61,7 @@ FILES=(
   "$NEXT/20260522_37_branch_isolation_per_company.sql"
   "$NEXT/20260522_38_multitenant_isolation_audit.sql"
   "$NEXT/20260522_39_users_branches_profile_fk.sql"
+  "$NEXT/20260522_40_record_dgii_report_company.sql"
 
   "$NEXT/create_employee_rpc.sql"
 )
