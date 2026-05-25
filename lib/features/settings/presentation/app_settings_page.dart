@@ -2835,7 +2835,7 @@ class _CashRegisterUsersDialogState extends State<_CashRegisterUsersDialog> {
             ? const Center(
                 child: Text(
                   'No hay usuarios activos en esta sucursal.\n'
-                  'Andá a Usuarios para invitar gente primero.',
+                  'Ve a Usuarios para invitar gente primero.',
                   textAlign: TextAlign.center,
                 ),
               )

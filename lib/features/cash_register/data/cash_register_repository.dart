@@ -823,7 +823,7 @@ class CashRegisterRepository {
   /// configuradas. Devuelve el UUID de la cash_session creada.
   Future<String> openSessionForRegister(OpenCashInput input) async {
     if (input.cashRegisterId == null || input.cashRegisterId!.isEmpty) {
-      throw Exception('Tenés que elegir una caja.');
+      throw Exception('Tienes que elegir una caja.');
     }
     final result = await _client.rpc(
       'open_cash_session_for_register',

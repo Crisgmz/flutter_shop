@@ -76,7 +76,7 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
             return _EmptyState(canManage: canSeeAll);
           }
           // Mapa: cash_register_id → sessionId abierto del usuario actual.
-          // Si la caja está acá, el tap entra directo al POS (sin reabrir).
+          // Si la caja está aquí, el tap entra directo al POS (sin reabrir).
           final mySessionsByRegister = <String, MyOpenCashSession>{
             for (final s in mySessionsAsync.valueOrNull ?? const [])
               if (s.cashRegisterId != null) s.cashRegisterId!: s,

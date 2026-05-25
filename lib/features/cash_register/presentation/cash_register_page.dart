@@ -731,7 +731,7 @@ class _OpenSessionDialogState extends State<_OpenSessionDialog> {
                   ],
                   onChanged: (v) => setState(() => _selectedCajaId = v),
                   validator: (v) {
-                    if (v == null || v.isEmpty) return 'Elegí una caja';
+                    if (v == null || v.isEmpty) return 'Elige una caja';
                     return null;
                   },
                 ),
