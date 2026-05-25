@@ -1366,45 +1366,51 @@ class _ProductCard extends StatelessWidget {
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    color: const Color(0xFFF1F5F9),
-                    child: product.imageUrl != null &&
-                            product.imageUrl!.trim().isNotEmpty
-                        ? Image.network(
-                            product.imageUrl!,
-                            width: 48,
-                            height: 48,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) => Center(
-                              child: Text(
-                                initial,
-                                style: const TextStyle(
-                                  color: Color(0xFF2563EB),
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 20,
+                // Imagen ocupa la mayor parte de la tarjeta: usa
+                // AspectRatio para mantenerse cuadrada y Expanded para
+                // adaptarse al alto disponible según las columnas.
+                Expanded(
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: 1,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          color: const Color(0xFFF1F5F9),
+                          child: product.imageUrl != null &&
+                                  product.imageUrl!.trim().isNotEmpty
+                              ? Image.network(
+                                  product.imageUrl!,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => Center(
+                                    child: Text(
+                                      initial,
+                                      style: const TextStyle(
+                                        color: Color(0xFF2563EB),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 32,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : Center(
+                                  child: Text(
+                                    initial,
+                                    style: const TextStyle(
+                                      color: Color(0xFF2563EB),
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 32,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                          )
-                        : Center(
-                            child: Text(
-                              initial,
-                              style: const TextStyle(
-                                color: Color(0xFF2563EB),
-                                fontWeight: FontWeight.w800,
-                                fontSize: 20,
-                              ),
-                            ),
-                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 Text(
                   product.name,
                   textAlign: TextAlign.center,
@@ -1417,7 +1423,7 @@ class _ProductCard extends StatelessWidget {
                     height: 1.2,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   money(product.price),
                   textAlign: TextAlign.center,

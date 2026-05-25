@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
+import '../../../core/web/cache_buster.dart';
 import '../../../shared/extensions/iterable_extensions.dart';
 import '../../../shared/responsive/responsive.dart';
 import '../../../shared/widgets/app_page_layout.dart';
@@ -367,6 +368,15 @@ class _UserProfileMenu extends StatelessWidget {
         ),
         const SizedBox(width: 4),
         IconButton(
+          onPressed: () => _confirmRefresh(context),
+          icon: const Icon(
+            Icons.refresh_rounded,
+            size: 20,
+            color: AppTokens.sidebarMuted,
+          ),
+          tooltip: 'Actualizar app (borrar caché)',
+        ),
+        IconButton(
           onPressed: onSignOut,
           icon: const Icon(
             Icons.logout_rounded,
@@ -377,6 +387,34 @@ class _UserProfileMenu extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _confirmRefresh(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Actualizar aplicación'),
+        content: const Text(
+          'Esto limpia el caché del navegador y recarga la página '
+          'para asegurar que tienes la versión más reciente. Tu sesión '
+          'se mantiene abierta.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('Actualizar ahora'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await clearWebCachesAndReload();
+    }
   }
 }
 
