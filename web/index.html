@@ -54,26 +54,35 @@
 
     El SW de Flutter en versiones recientes se auto-desregistra después de
     activarse, así que NO podemos depender de 'controllerchange' para
-    detectar updates en pestañas ya cargadas. Estrategia más confiable:
+    detectar updates en pestañas ya cargadas.
 
-      1. Al cargar, guardamos la versión actual (de /version.json).
-      2. Cada 60s y al ganar foco, re-fetcheamos /version.json (no-store).
-      3. Si la versión cambió, mostramos un banner discreto pidiendo al
-         usuario que recargue. Lo recargamos automático solo si la pestaña
-         está en background — así no interrumpimos una venta a medias.
+    Estrategia: hacer HEAD a /flutter_bootstrap.js cada 60s y comparar
+    el header ETag (o Last-Modified como fallback). flutter_bootstrap.js
+    se regenera con un hash distinto en cada `flutter build web`, así
+    que su ETag SIEMPRE cambia entre deploys, aunque no bumpeemos la
+    version en pubspec.yaml.
 
-    /version.json está cacheado con no-cache en nginx, así que el fetch
-    siempre va al server.
+    Si detecta cambio:
+      - Pestaña en background → reload silencioso.
+      - Pestaña visible → banner azul abajo con 'Actualizar ahora' /
+        'Después', para no interrumpir una venta a medias.
+
+    flutter_bootstrap.js está marcado no-cache en nginx, así que el
+    HEAD siempre va al server.
   -->
   <script>
     (function () {
-      var initialVersion = null;
+      var initialEtag = null;
       var bannerShown = false;
-      var versionUrl = 'version.json';
+      var pollUrl = 'flutter_bootstrap.js';
 
-      function readVersion(obj) {
-        if (!obj) return null;
-        return (obj.version || '') + '|' + (obj.build_number || '');
+      function readIdentity(res) {
+        if (!res) return null;
+        var etag = res.headers.get('etag');
+        if (etag) return etag;
+        var lastMod = res.headers.get('last-modified');
+        if (lastMod) return lastMod;
+        return null;
       }
 
       function showUpdateBanner() {
@@ -111,16 +120,19 @@
       }
 
       function checkVersion() {
-        return fetch(versionUrl + '?t=' + Date.now(), { cache: 'no-store' })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (data) {
-            var v = readVersion(data);
-            if (!v) return;
-            if (initialVersion === null) {
-              initialVersion = v;
+        return fetch(pollUrl + '?t=' + Date.now(), {
+          method: 'HEAD',
+          cache: 'no-store',
+        })
+          .then(function (r) {
+            if (!r.ok) return;
+            var id = readIdentity(r);
+            if (!id) return;
+            if (initialEtag === null) {
+              initialEtag = id;
               return;
             }
-            if (v !== initialVersion) {
+            if (id !== initialEtag) {
               if (document.hidden) {
                 window.location.reload();
               } else {
