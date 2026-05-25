@@ -64,6 +64,7 @@ FILES=(
   "$NEXT/20260522_40_record_dgii_report_company.sql"
   "$NEXT/20260522_41_enable_realtime_core_tables.sql"
   "$NEXT/20260522_42_multiple_open_cash_sessions.sql"
+  "$NEXT/20260525_43_drop_old_checkout_signature.sql"
 
   "$NEXT/create_employee_rpc.sql"
 )
