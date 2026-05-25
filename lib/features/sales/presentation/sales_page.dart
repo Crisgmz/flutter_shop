@@ -6,11 +6,9 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
-import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/ncf_stock_banner.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
-import '../../cash_register/data/cash_register_repository.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/sales_repository.dart';
@@ -1868,127 +1866,9 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(width: 6),
-          // Cerrar caja (cuadra el día).
-          InkWell(
-            onTap: () => _confirmCloseCaja(context, ref),
-            borderRadius: BorderRadius.circular(999),
-            child: const Padding(
-              padding: EdgeInsets.all(4),
-              child: Tooltip(
-                message: 'Cerrar caja',
-                child: Icon(Icons.logout_rounded,
-                    size: 16, color: Color(0xFF1D4ED8)),
-              ),
-            ),
-          ),
         ],
       ),
     );
   }
 
-  Future<void> _confirmCloseCaja(BuildContext context, WidgetRef ref) async {
-    final input = await showDialog<CloseCashInput>(
-      context: context,
-      builder: (_) => const _CloseCajaDialog(),
-    );
-    if (input == null) return;
-    if (!context.mounted) return;
-
-    try {
-      await ref.read(cashRegisterRepositoryProvider).closeSession(input);
-      // La sesión activa ya no existe — limpiar para que el picker se
-      // muestre cuando vuelva a /ventas.
-      ref.read(activeCashSessionIdProvider.notifier).state = null;
-      ref.invalidate(cashRegisterDataProvider);
-      ref.invalidate(myOpenCashSessionsProvider);
-      ref.invalidate(allOpenCashSessionsProvider);
-      if (!context.mounted) return;
-      AppSnackBar.success(context, 'Caja cerrada correctamente');
-    } catch (error) {
-      if (!context.mounted) return;
-      AppSnackBar.error(context, 'No se pudo cerrar la caja', error);
-    }
-  }
-}
-
-class _CloseCajaDialog extends StatefulWidget {
-  const _CloseCajaDialog();
-
-  @override
-  State<_CloseCajaDialog> createState() => _CloseCajaDialogState();
-}
-
-class _CloseCajaDialogState extends State<_CloseCajaDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _closingController = TextEditingController(text: '0');
-  final _notesController = TextEditingController();
-
-  @override
-  void dispose() {
-    _closingController.dispose();
-    _notesController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Cerrar caja'),
-      content: SizedBox(
-        width: ResponsiveLayout.isMobile(context) ? double.maxFinite : 380,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: _closingController,
-                autofocus: true,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Monto contado al cierre',
-                  prefixText: r'RD$ ',
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  final parsed = double.tryParse(value ?? '');
-                  if (parsed == null || parsed < 0) return 'Monto inválido';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _notesController,
-                decoration: const InputDecoration(
-                  labelText: 'Nota (opcional)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancelar'),
-        ),
-        FilledButton.icon(
-          onPressed: () {
-            if (!_formKey.currentState!.validate()) return;
-            Navigator.of(context).pop(
-              CloseCashInput(
-                closingAmount: double.parse(_closingController.text),
-                notes: _notesController.text,
-              ),
-            );
-          },
-          icon: const Icon(Icons.lock_outline, size: 18),
-          label: const Text('Cerrar'),
-        ),
-      ],
-    );
-  }
 }
