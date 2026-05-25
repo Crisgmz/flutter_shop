@@ -34,8 +34,8 @@ import '../../features/sales/presentation/sales_providers.dart';
 
 /// Lista de providers que se invalidan ante un evento de cada tabla.
 ///
-/// Mantener esto en un map único es a propósito: cuando agregás una tabla
-/// nueva al realtime (en la migration SQL), solo hay un lugar acá donde
+/// Mantener esto en un map único es a propósito: cuando agregas una tabla
+/// nueva al realtime (en la migration SQL), solo hay un lugar aquí donde
 /// declarar qué providers se enteran.
 typedef _ProviderList = List<ProviderOrFamily>;
 
@@ -46,18 +46,38 @@ class RealtimeInvalidator {
   final Map<String, RealtimeChannel> _channels = {};
   String? _attachedBranchId;
 
+  /// Serializa attach/stop concurrentes. Sin este lock, dos llamadas
+  /// rápidas a attach() (típico al loguearse + hidratar branches) podían
+  /// solaparse y dejar canales huérfanos.
+  Future<void>? _inFlight;
+
   /// Suscribe los canales filtrados por `branchId`. Si ya hay
   /// suscripciones activas para otro branch, las cierra y reabre.
   Future<void> attach(String? branchId) async {
+    // Espera a que termine la operación previa antes de arrancar la nueva.
+    final pending = _inFlight;
+    if (pending != null) {
+      await pending;
+    }
+    final op = _doAttach(branchId);
+    _inFlight = op;
+    try {
+      await op;
+    } finally {
+      if (identical(_inFlight, op)) _inFlight = null;
+    }
+  }
+
+  Future<void> _doAttach(String? branchId) async {
     if (branchId == null || branchId.isEmpty) {
-      await stop();
+      await _doStop();
       return;
     }
     if (_attachedBranchId == branchId && _channels.isNotEmpty) {
       return; // Ya suscriptos al branch correcto.
     }
 
-    await stop();
+    await _doStop();
     _attachedBranchId = branchId;
 
     final client = _ref.read(supabaseClientProvider);
@@ -94,9 +114,26 @@ class RealtimeInvalidator {
   /// Equivalente a [attach] tras un cambio de sucursal.
   Future<void> reattach(String? newBranchId) => attach(newBranchId);
 
-  /// Cierra todas las suscripciones.
+  /// Cierra todas las suscripciones (serializado con attach).
   Future<void> stop() async {
-    if (_channels.isEmpty) return;
+    final pending = _inFlight;
+    if (pending != null) {
+      await pending;
+    }
+    final op = _doStop();
+    _inFlight = op;
+    try {
+      await op;
+    } finally {
+      if (identical(_inFlight, op)) _inFlight = null;
+    }
+  }
+
+  Future<void> _doStop() async {
+    if (_channels.isEmpty) {
+      _attachedBranchId = null;
+      return;
+    }
     final client = _ref.read(supabaseClientProvider);
     for (final channel in _channels.values) {
       try {

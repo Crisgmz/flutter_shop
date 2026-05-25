@@ -121,7 +121,7 @@ class _EmptyState extends StatelessWidget {
           Text(
             canManage
                 ? 'Todavía no hay cajas configuradas en esta sucursal.'
-                : 'No tenés cajas asignadas. Pedile al administrador que te asigne una.',
+                : 'No tienes cajas asignadas. Pídele al administrador que te asigne una.',
             textAlign: TextAlign.center,
             style: const TextStyle(
               fontSize: 15,

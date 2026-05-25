@@ -150,12 +150,26 @@ class BranchesRepository {
 
   final SupabaseClient _client;
 
+  /// Empresa actual del usuario logueado. Se usa como filtro defensivo
+  /// (RLS ya filtra, esto es defense-in-depth).
+  Future<String?> _currentCompanyId() async {
+    final result = await _client.rpc('current_company_id');
+    if (result == null) return null;
+    final value = result.toString();
+    return value.isEmpty ? null : value;
+  }
+
   Future<List<BranchEntity>> fetchBranches() async {
-    final branchRows = await _client
+    final companyId = await _currentCompanyId();
+    var query = _client
         .from('branches')
         .select(
           'id, code, name, address, phone, is_main, is_active, created_at',
-        )
+        );
+    if (companyId != null) {
+      query = query.eq('company_id', companyId);
+    }
+    final branchRows = await query
         .order('is_main', ascending: false)
         .order('name');
 
@@ -202,11 +216,15 @@ class BranchesRepository {
   }
 
   Future<List<BranchUserOption>> fetchActiveUsers() async {
-    final rows = await _client
+    final companyId = await _currentCompanyId();
+    var query = _client
         .from('profiles')
         .select('id, full_name, email, role, is_active')
-        .eq('is_active', true)
-        .order('full_name');
+        .eq('is_active', true);
+    if (companyId != null) {
+      query = query.eq('company_id', companyId);
+    }
+    final rows = await query.order('full_name');
 
     return rows
         .map(
@@ -230,10 +248,9 @@ class BranchesRepository {
 
     if (input.id == null) {
       // Multi-tenant: el INSERT pasa por la RLS branches_write que exige
-      // company_id = current_company_id(). El RPC nos lo dice.
-      final companyIdResult = await _client.rpc('current_company_id');
-      final companyId = companyIdResult?.toString();
-      if (companyId == null || companyId.isEmpty) {
+      // company_id = current_company_id().
+      final companyId = await _currentCompanyId();
+      if (companyId == null) {
         throw Exception(
           'No hay empresa asignada al usuario actual. Completa el onboarding.',
         );
@@ -272,10 +289,15 @@ class BranchesRepository {
   }
 
   Future<void> setMainBranch(String branchId) async {
-    await _client
+    final companyId = await _currentCompanyId();
+    var clearQuery = _client
         .from('branches')
         .update({'is_main': false})
         .eq('is_main', true);
+    if (companyId != null) {
+      clearQuery = clearQuery.eq('company_id', companyId);
+    }
+    await clearQuery;
     await _client.from('branches').update({'is_main': true}).eq('id', branchId);
   }
 

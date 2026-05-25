@@ -1,4 +1,4 @@
-import '../lib/features/sales/domain/sale_checkout_service.dart';
+import 'package:flutter_app/features/sales/domain/sale_checkout_service.dart';
 
 void main() {
   const service = SaleCheckoutService();
@@ -55,5 +55,6 @@ void main() {
     throw StateError('no rechazó stock insuficiente');
   }
 
+  // ignore: avoid_print
   print('sale_checkout_service_smoke: OK');
 }

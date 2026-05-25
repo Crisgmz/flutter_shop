@@ -165,7 +165,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                             ? null
                             : () => context.go('/registro'),
                         child: const Text(
-                          '¿No tenés cuenta? Crear mi negocio',
+                          '¿No tienes cuenta? Crear mi negocio',
                         ),
                       ),
                     ],

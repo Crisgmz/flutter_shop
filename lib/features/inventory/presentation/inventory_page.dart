@@ -133,7 +133,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: filtered.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: AppTokens.s12),
+                  separatorBuilder: (_, _) => const SizedBox(height: AppTokens.s12),
                   itemBuilder: (context, index) => _InventoryProductCard(
                     product: filtered[index],
                     onEdit: () => _onEditProduct(filtered[index]),
@@ -279,7 +279,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
   Widget _buildCategoryDropdown(AsyncValue<List<InventoryCategory>> categoriesAsync, String? selectedId) {
     return categoriesAsync.when(
       data: (categories) => DropdownButtonFormField<String>(
-        value: selectedId ?? '',
+        initialValue: selectedId ?? '',
         decoration: const InputDecoration(labelText: 'Categoría'),
         items: [
           const DropdownMenuItem(value: '', child: Text('Todas las categorías')),
@@ -301,7 +301,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         onChanged: (v) => ref.read(inventorySelectedCategoryProvider.notifier).state = (v == null || v.isEmpty) ? null : v,
       ),
       loading: () => const LinearProgressIndicator(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 

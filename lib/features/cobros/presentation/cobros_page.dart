@@ -525,32 +525,37 @@ class _ExtendDueDialogState extends State<_ExtendDueDialog> {
               ),
             ),
             const SizedBox(height: AppTokens.s16),
-            RadioListTile<bool>(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              value: true,
+            RadioGroup<bool>(
               groupValue: _useDays,
-              onChanged: (v) => setState(() => _useDays = v ?? true),
-              title: const Text('Sumar días'),
-            ),
-            if (_useDays)
-              TextField(
-                controller: _daysCtrl,
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: const InputDecoration(
-                  labelText: 'Días a añadir',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
+              onChanged: (v) => setState(() => _useDays = v ?? _useDays),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const RadioListTile<bool>(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: true,
+                    title: Text('Sumar días'),
+                  ),
+                  if (_useDays)
+                    TextField(
+                      controller: _daysCtrl,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'Días a añadir',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  const RadioListTile<bool>(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: false,
+                    title: Text('Elegir fecha exacta'),
+                  ),
+                ],
               ),
-            RadioListTile<bool>(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              value: false,
-              groupValue: _useDays,
-              onChanged: (v) => setState(() => _useDays = v ?? false),
-              title: const Text('Elegir fecha exacta'),
             ),
             if (!_useDays)
               OutlinedButton.icon(

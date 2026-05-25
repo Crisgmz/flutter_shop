@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
+import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../cash_register/data/cash_register_repository.dart';
@@ -82,15 +83,7 @@ class _AppSettingsPageState extends ConsumerState<AppSettingsPage> {
         _saveStatus = 'Error al guardar';
         _hasError = true;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: AppTokens.destructive,
-          content: Text(
-            'No se pudo guardar: $error',
-            style: const TextStyle(color: AppTokens.destructiveForeground),
-          ),
-        ),
-      );
+      AppSnackBar.error(context, 'No se pudo guardar', error);
     }
   }
 
@@ -948,9 +941,7 @@ class _CompanyLogoPickerState extends ConsumerState<_CompanyLogoPicker> {
       widget.onSave('company_logo_url', url);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo subir el logo: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo subir el logo', error);
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -2190,9 +2181,7 @@ class _CategoriesEditorState extends ConsumerState<_CategoriesEditor> {
       ref.invalidate(inventoryCategoriesProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo crear: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo crear', error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -2208,9 +2197,7 @@ class _CategoriesEditorState extends ConsumerState<_CategoriesEditor> {
       ref.invalidate(inventoryCategoriesProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo renombrar: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo renombrar', error);
     }
   }
 
@@ -2249,30 +2236,21 @@ class _CategoriesEditorState extends ConsumerState<_CategoriesEditor> {
           await repo.setCategoryActive(categoryId: cat.id, isActive: false);
           ref.invalidate(inventoryCategoriesProvider);
           if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'La categoría tenía productos. Se desactivó en su lugar.',
-              ),
-            ),
+          AppSnackBar.info(
+            context,
+            'La categoría tenía productos. Se desactivó en su lugar.',
           );
         } catch (innerError) {
           if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('No se pudo desactivar: $innerError')),
-          );
+          AppSnackBar.error(context, 'No se pudo desactivar', innerError);
         }
       } else {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo eliminar: ${e.message}')),
-        );
+        AppSnackBar.error(context, 'No se pudo eliminar', e);
       }
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo eliminar: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo eliminar', error);
     }
   }
 
@@ -2516,9 +2494,7 @@ class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
       ref.invalidate(myCashRegistersProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo crear la caja: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo crear la caja', error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -2536,9 +2512,7 @@ class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
       ref.invalidate(myCashRegistersProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo renombrar: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo renombrar', error);
     }
   }
 
@@ -2575,9 +2549,7 @@ class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
       ref.invalidate(myCashRegistersProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo eliminar: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo eliminar', error);
     }
   }
 
@@ -2604,9 +2576,7 @@ class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
       ref.invalidate(myCashRegistersProvider);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo guardar la asignación: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo guardar la asignación', error);
     }
   }
 
@@ -2625,7 +2595,7 @@ class _CashRegistersEditorState extends ConsumerState<_CashRegistersEditor> {
           ),
           const SizedBox(height: 2),
           Text(
-            'Creá las cajas físicas/lógicas de la sucursal y asigná qué '
+            'Crea las cajas físicas/lógicas de la sucursal y asigna qué '
             'usuarios pueden operar cada una. Al abrir una sesión, el '
             'cajero solo verá las cajas que tenga asignadas.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(

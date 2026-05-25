@@ -39,17 +39,17 @@ class KPICard extends StatelessWidget {
       color: backgroundColor ?? AppTokens.card,
       borderRadius: BorderRadius.circular(AppTokens.radius),
       elevation: isColored ? 4 : 0,
-      shadowColor: (backgroundColor ?? AppTokens.primary).withOpacity(0.2),
+      shadowColor: (backgroundColor ?? AppTokens.primary).withValues(alpha: 0.2),
       child: InkWell(
         onTap: onTap == null ? null : () => Future.microtask(onTap!),
         borderRadius: BorderRadius.circular(AppTokens.radius),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppTokens.radius),
-            border: isColored ? null : Border.all(color: AppTokens.border.withOpacity(0.8)),
+            border: isColored ? null : Border.all(color: AppTokens.border.withValues(alpha: 0.8)),
             boxShadow: isColored ? null : [
               BoxShadow(
-                color: Colors.black.withOpacity(0.03),
+                color: Colors.black.withValues(alpha: 0.03),
                 blurRadius: 12,
                 offset: const Offset(0, 4),
               ),
@@ -100,7 +100,7 @@ class KPICard extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: isColored ? Colors.black.withOpacity(0.1) : Colors.transparent,
+                    color: isColored ? Colors.black.withValues(alpha: 0.1) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
@@ -109,7 +109,7 @@ class KPICard extends StatelessWidget {
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
                       color: isColored
-                          ? Colors.white.withOpacity(0.9)
+                          ? Colors.white.withValues(alpha: 0.9)
                           : (isPositive ? AppTokens.success : AppTokens.destructive),
                     ),
                   ),
@@ -275,10 +275,10 @@ class DataTableShell extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTokens.card,
         borderRadius: BorderRadius.circular(AppTokens.radius),
-        border: Border.all(color: AppTokens.border.withOpacity(0.8)),
+        border: Border.all(color: AppTokens.border.withValues(alpha: 0.8)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),

@@ -1,14 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:flutter_app/app/app.dart';
 
 void main() {
   setUpAll(() async {
-    SharedPreferences.setMockInitialValues({});
-
     try {
       await Supabase.initialize(
         url: 'https://example.supabase.co',
