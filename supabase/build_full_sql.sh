@@ -63,6 +63,7 @@ FILES=(
   "$NEXT/20260522_39_users_branches_profile_fk.sql"
   "$NEXT/20260522_40_record_dgii_report_company.sql"
   "$NEXT/20260522_41_enable_realtime_core_tables.sql"
+  "$NEXT/20260522_42_multiple_open_cash_sessions.sql"
 
   "$NEXT/create_employee_rpc.sql"
 )

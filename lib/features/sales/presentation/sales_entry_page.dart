@@ -24,72 +24,14 @@ class SalesEntryPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final dataAsync = ref.watch(cashRegisterDataProvider);
-
-    return dataAsync.when(
-      data: (data) {
-        // Si el usuario ya tiene una sesión abierta, vamos directo al POS.
-        // El picker solo aparece cuando hace falta elegir caja para abrir.
-        if (data.openSession != null) {
-          return const SalesPage();
-        }
-        return const _SalesCashRegisterPicker();
-      },
-      loading: () => const _LoadingScaffold(),
-      error: (error, _) => _ErrorScaffold(
-        message: 'No se pudo cargar el estado de la caja: $error',
-        onRetry: () => ref.invalidate(cashRegisterDataProvider),
-      ),
-    );
-  }
-}
-
-class _LoadingScaffold extends StatelessWidget {
-  const _LoadingScaffold();
-
-  @override
-  Widget build(BuildContext context) {
-    return const ModulePage(
-      title: 'Ventas',
-      child: SizedBox(
-        height: 320,
-        child: Center(child: CircularProgressIndicator()),
-      ),
-    );
-  }
-}
-
-class _ErrorScaffold extends StatelessWidget {
-  const _ErrorScaffold({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return ModulePage(
-      title: 'Ventas',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 48),
-        child: Column(
-          children: [
-            const Icon(Icons.error_outline, size: 48, color: Color(0xFFEF4444)),
-            const SizedBox(height: AppTokens.s12),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFF64748B)),
-            ),
-            const SizedBox(height: AppTokens.s16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('Reintentar'),
-            ),
-          ],
-        ),
-      ),
-    );
+    // Si ya hay una caja activa explícitamente seleccionada por el
+    // usuario, vamos directo al POS. El picker se muestra para elegir
+    // entre las cajas disponibles (abiertas o por abrir).
+    final activeSessionId = ref.watch(activeCashSessionIdProvider);
+    if (activeSessionId != null) {
+      return const SalesPage();
+    }
+    return const _SalesCashRegisterPicker();
   }
 }
 
@@ -105,9 +47,10 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
     final cajasAsync = canSeeAll
         ? ref.watch(cashRegistersProvider)
         : ref.watch(myCashRegistersProvider);
-    final openSessionsAsync = canSeeAll
-        ? ref.watch(allOpenCashSessionsProvider)
-        : const AsyncValue<List<CashSessionOverview>>.data([]);
+
+    // Sesiones abiertas del usuario actual (puede tener varias, una por
+    // cada caja que abrió pero todavía no cerró).
+    final mySessionsAsync = ref.watch(myOpenCashSessionsProvider);
 
     return ModulePage(
       title: 'Ventas',
@@ -119,6 +62,7 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
           onPressed: () {
             ref.invalidate(cashRegistersProvider);
             ref.invalidate(myCashRegistersProvider);
+            ref.invalidate(myOpenCashSessionsProvider);
             ref.invalidate(allOpenCashSessionsProvider);
             ref.invalidate(cashRegisterDataProvider);
           },
@@ -131,16 +75,15 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
           if (cajas.isEmpty) {
             return _EmptyState(canManage: canSeeAll);
           }
-          final openByRegister = <String, CashSessionOverview>{
-            for (final s in openSessionsAsync.valueOrNull ?? const [])
-              // CashSessionEntity no trae cash_register_id directamente; el
-              // overview tampoco. Indexamos por id del cajero como respaldo,
-              // pero el resaltado de "ocupada" se calcula abajo cuando llega.
-              s.session.id: s,
+          // Mapa: cash_register_id → sessionId abierto del usuario actual.
+          // Si la caja está acá, el tap entra directo al POS (sin reabrir).
+          final mySessionsByRegister = <String, MyOpenCashSession>{
+            for (final s in mySessionsAsync.valueOrNull ?? const [])
+              if (s.cashRegisterId != null) s.cashRegisterId!: s,
           };
           return _CashRegisterGrid(
             cajas: cajas,
-            openSessions: openByRegister,
+            mySessionsByRegister: mySessionsByRegister,
           );
         },
         loading: () => const Padding(
@@ -202,15 +145,15 @@ class _EmptyState extends StatelessWidget {
 class _CashRegisterGrid extends ConsumerWidget {
   const _CashRegisterGrid({
     required this.cajas,
-    required this.openSessions,
+    required this.mySessionsByRegister,
   });
 
   final List<CashRegisterEntity> cajas;
 
-  /// Mapeo por session.id (solo informativo — no lo usamos para el
-  /// resaltado por caja todavía, eso requeriría exponer cash_register_id en
-  /// el overview).
-  final Map<String, CashSessionOverview> openSessions;
+  /// Mapa cash_register_id → sesión abierta del usuario actual en esa
+  /// caja. Si la caja está en este mapa, el tap entra directo al POS
+  /// sin pedir dialog de apertura.
+  final Map<String, MyOpenCashSession> mySessionsByRegister;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -234,9 +177,11 @@ class _CashRegisterGrid extends ConsumerWidget {
           itemCount: cajas.length,
           itemBuilder: (context, i) {
             final caja = cajas[i];
+            final existingSession = mySessionsByRegister[caja.id];
             return _CashRegisterCard(
               caja: caja,
-              onTap: () => _onPickCaja(context, ref, caja),
+              hasOpenSession: existingSession != null,
+              onTap: () => _onPickCaja(context, ref, caja, existingSession),
             );
           },
         );
@@ -248,7 +193,17 @@ class _CashRegisterGrid extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     CashRegisterEntity caja,
+    MyOpenCashSession? existingSession,
   ) async {
+    // Caso 1: el usuario YA tiene una sesión abierta en esta caja.
+    // No abrimos nueva — solo seteamos como activa y vamos al POS.
+    if (existingSession != null) {
+      ref.read(activeCashSessionIdProvider.notifier).state =
+          existingSession.sessionId;
+      return;
+    }
+
+    // Caso 2: caja sin sesión abierta. Pedimos monto de apertura.
     final input = await showDialog<OpenCashInput>(
       context: context,
       builder: (_) => _OpenSessionForCajaDialog(caja: caja),
@@ -258,8 +213,10 @@ class _CashRegisterGrid extends ConsumerWidget {
 
     final repository = ref.read(cashRegisterRepositoryProvider);
     try {
-      await repository.openSessionForRegister(input);
+      final sessionId = await repository.openSessionForRegister(input);
+      ref.read(activeCashSessionIdProvider.notifier).state = sessionId;
       ref.invalidate(cashRegisterDataProvider);
+      ref.invalidate(myOpenCashSessionsProvider);
       ref.invalidate(allOpenCashSessionsProvider);
       if (!context.mounted) return;
       AppSnackBar.success(context, 'Caja "${caja.name}" abierta');
@@ -271,13 +228,24 @@ class _CashRegisterGrid extends ConsumerWidget {
 }
 
 class _CashRegisterCard extends StatelessWidget {
-  const _CashRegisterCard({required this.caja, required this.onTap});
+  const _CashRegisterCard({
+    required this.caja,
+    required this.onTap,
+    required this.hasOpenSession,
+  });
 
   final CashRegisterEntity caja;
   final VoidCallback onTap;
+  final bool hasOpenSession;
 
   @override
   Widget build(BuildContext context) {
+    final borderColor = hasOpenSession
+        ? const Color(0xFF22C55E)
+        : const Color(0xFFE2E8F0);
+    final iconBgColor =
+        hasOpenSession ? const Color(0xFF22C55E) : AppTokens.primary;
+
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(AppTokens.radius),
@@ -287,7 +255,7 @@ class _CashRegisterCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(AppTokens.s16),
           decoration: BoxDecoration(
-            border: Border.all(color: const Color(0xFFE2E8F0)),
+            border: Border.all(color: borderColor, width: hasOpenSession ? 2 : 1),
             borderRadius: BorderRadius.circular(AppTokens.radius),
           ),
           child: Row(
@@ -296,11 +264,11 @@ class _CashRegisterCard extends StatelessWidget {
                 width: 56,
                 height: 56,
                 decoration: BoxDecoration(
-                  color: AppTokens.primary,
+                  color: iconBgColor,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
-                  Icons.point_of_sale,
+                child: Icon(
+                  hasOpenSession ? Icons.lock_open : Icons.point_of_sale,
                   color: Colors.white,
                   size: 28,
                 ),
@@ -324,16 +292,30 @@ class _CashRegisterCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        const Icon(Icons.group_outlined,
-                            size: 14, color: Color(0xFF64748B)),
+                        Icon(
+                          hasOpenSession
+                              ? Icons.fiber_manual_record
+                              : Icons.group_outlined,
+                          size: 14,
+                          color: hasOpenSession
+                              ? const Color(0xFF22C55E)
+                              : const Color(0xFF64748B),
+                        ),
                         const SizedBox(width: 4),
                         Text(
-                          caja.assignedUserIds.isEmpty
-                              ? 'Sin cajeros asignados'
-                              : '${caja.assignedUserIds.length} cajero(s)',
-                          style: const TextStyle(
+                          hasOpenSession
+                              ? 'Abierta — entrar'
+                              : (caja.assignedUserIds.isEmpty
+                                  ? 'Sin cajeros asignados'
+                                  : '${caja.assignedUserIds.length} cajero(s)'),
+                          style: TextStyle(
                             fontSize: 12,
-                            color: Color(0xFF64748B),
+                            color: hasOpenSession
+                                ? const Color(0xFF16A34A)
+                                : const Color(0xFF64748B),
+                            fontWeight: hasOpenSession
+                                ? FontWeight.w600
+                                : FontWeight.w500,
                           ),
                         ),
                       ],

@@ -881,6 +881,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
             settings?.customerRequiredForSale ?? false,
         creditAllowSales: settings?.creditAllowSales ?? true,
         creditDueDays: creditDueDays,
+        cashSessionId: ref.read(activeCashSessionIdProvider),
       ));
 
       _clearCart();
@@ -1834,13 +1835,34 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
             ),
           ),
           const SizedBox(width: 8),
+          // Cambiar de caja (volver al picker sin cerrar).
+          InkWell(
+            onTap: () {
+              ref.read(activeCashSessionIdProvider.notifier).state = null;
+              ref.invalidate(myOpenCashSessionsProvider);
+            },
+            borderRadius: BorderRadius.circular(999),
+            child: const Padding(
+              padding: EdgeInsets.all(2),
+              child: Tooltip(
+                message: 'Cambiar de caja',
+                child: Icon(Icons.swap_horiz_rounded,
+                    size: 16, color: Color(0xFF1D4ED8)),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          // Cerrar caja (cuadra el día).
           InkWell(
             onTap: () => _confirmCloseCaja(context, ref),
             borderRadius: BorderRadius.circular(999),
             child: const Padding(
               padding: EdgeInsets.all(2),
-              child: Icon(Icons.logout_rounded,
-                  size: 16, color: Color(0xFF1D4ED8)),
+              child: Tooltip(
+                message: 'Cerrar caja',
+                child: Icon(Icons.logout_rounded,
+                    size: 16, color: Color(0xFF1D4ED8)),
+              ),
             ),
           ),
         ],
@@ -1858,7 +1880,11 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
 
     try {
       await ref.read(cashRegisterRepositoryProvider).closeSession(input);
+      // La sesión activa ya no existe — limpiar para que el picker se
+      // muestre cuando vuelva a /ventas.
+      ref.read(activeCashSessionIdProvider.notifier).state = null;
       ref.invalidate(cashRegisterDataProvider);
+      ref.invalidate(myOpenCashSessionsProvider);
       ref.invalidate(allOpenCashSessionsProvider);
       if (!context.mounted) return;
       AppSnackBar.success(context, 'Caja cerrada correctamente');

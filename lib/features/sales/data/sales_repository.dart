@@ -201,6 +201,7 @@ class SaleCheckoutInput {
     this.customerRequiredForSale = false,
     this.creditAllowSales = true,
     this.creditDueDays,
+    this.cashSessionId,
   });
 
   final List<SaleCartItem> items;
@@ -222,6 +223,11 @@ class SaleCheckoutInput {
   /// Override del plazo de crédito en días para esta venta. Si `null`, el
   /// backend usa `app_settings.credit_default_days`. Solo aplica si `asCredit`.
   final int? creditDueDays;
+
+  /// Sesión de caja explícita sobre la que registrar la venta. Cuando el
+  /// usuario tiene varias cajas abiertas (migration 42), el cliente
+  /// manda la sesión activa. Si es null, el RPC usa la más reciente.
+  final String? cashSessionId;
 }
 
 class SaleCheckoutResult {
@@ -380,6 +386,7 @@ class SalesRepository {
         'p_client_id': normalizedCheckout.clientId,
         'p_notes': normalizedCheckout.notes,
         'p_credit_due_days': input.creditDueDays,
+        'p_cash_session_id': _nullIfEmpty(input.cashSessionId),
       },
     );
 

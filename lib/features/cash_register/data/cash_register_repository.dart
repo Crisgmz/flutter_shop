@@ -133,6 +133,36 @@ class CashRegisterEntity {
   }
 }
 
+/// Una sesión abierta del usuario actual con su info de caja asociada.
+/// Útil para el picker cuando hay múltiples sesiones abiertas.
+class MyOpenCashSession {
+  MyOpenCashSession({
+    required this.sessionId,
+    required this.cashRegisterId,
+    required this.registerName,
+    required this.openedAt,
+    required this.openingAmount,
+  });
+
+  final String sessionId;
+  final String? cashRegisterId;
+  final String registerName;
+  final DateTime openedAt;
+  final double openingAmount;
+
+  factory MyOpenCashSession.fromMap(Map<String, dynamic> map) {
+    return MyOpenCashSession(
+      sessionId: (map['id'] ?? '').toString(),
+      cashRegisterId: _nullIfEmpty(map['cash_register_id']?.toString()),
+      registerName: (map['register_name'] ?? 'Caja sin asignar').toString(),
+      openedAt:
+          DateTime.tryParse((map['opened_at'] ?? '').toString()) ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+      openingAmount: _toDouble(map['opening_amount']),
+    );
+  }
+}
+
 class OpenCashInput {
   OpenCashInput({required this.openingAmount, this.notes, this.cashRegisterId});
 
@@ -643,6 +673,52 @@ class CashRegisterRepository {
     final all = await fetchCashRegisters();
     return all
         .where((cr) => cr.assignedUserIds.contains(userId))
+        .toList(growable: false);
+  }
+
+  /// Trae las sesiones abiertas del usuario actual en la sucursal,
+  /// joineando con cash_registers para obtener el nombre.
+  /// Útil cuando un usuario tiene varias cajas abiertas (migration 42).
+  Future<List<MyOpenCashSession>> fetchMyOpenSessions() async {
+    final branchId = await _currentBranchId();
+    final userId = _client.auth.currentUser?.id;
+    if (branchId == null || userId == null) return const [];
+
+    final sessionRows = await _client
+        .from('cash_sessions')
+        .select('id, cash_register_id, opened_at, opening_amount')
+        .eq('branch_id', branchId)
+        .eq('opened_by', userId)
+        .eq('status', 'open')
+        .order('opened_at', ascending: false);
+
+    if (sessionRows.isEmpty) return const [];
+
+    final registerIds = <String>{
+      for (final r in sessionRows)
+        ((r as Map)['cash_register_id'] ?? '').toString(),
+    }..removeWhere((id) => id.isEmpty);
+
+    final registerNames = <String, String>{};
+    if (registerIds.isNotEmpty) {
+      final registerRows = await _client
+          .from('cash_registers')
+          .select('id, name')
+          .inFilter('id', registerIds.toList());
+      for (final r in registerRows) {
+        final row = Map<String, dynamic>.from(r as Map);
+        registerNames[(row['id'] ?? '').toString()] =
+            (row['name'] ?? '').toString();
+      }
+    }
+
+    return sessionRows
+        .map((raw) {
+          final row = Map<String, dynamic>.from(raw as Map);
+          final registerId = (row['cash_register_id'] ?? '').toString();
+          row['register_name'] = registerNames[registerId] ?? 'Caja sin asignar';
+          return MyOpenCashSession.fromMap(row);
+        })
         .toList(growable: false);
   }
 
