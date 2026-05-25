@@ -158,4 +158,20 @@ class PermissionsRepository {
         .eq('branch_id', branchId)
         .eq('permission_id', permissionId);
   }
+
+  /// Borra TODOS los overrides del usuario en la sucursal indicada, de
+  /// forma que sus permisos vuelvan a derivarse 100% del rol base.
+  /// Devuelve la cantidad de filas afectadas.
+  Future<int> clearAllOverridesForUserBranch({
+    required String userId,
+    required String branchId,
+  }) async {
+    final deleted = await _client
+        .from('user_permissions')
+        .delete()
+        .eq('user_id', userId)
+        .eq('branch_id', branchId)
+        .select('permission_id');
+    return deleted.length;
+  }
 }

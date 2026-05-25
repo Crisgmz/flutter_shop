@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/extensions/iterable_extensions.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
@@ -884,6 +885,15 @@ class _UserPermissionsPanelState
   String _searchQuery = '';
   final Set<String> _expandedModules = {};
 
+  /// Códigos de permiso cuya escritura está en vuelo. El switch
+  /// correspondiente muestra un spinner pequeño hasta que el RPC
+  /// confirma el cambio (o falla).
+  final Set<String> _savingCodes = {};
+
+  /// Si está reseteando todos los overrides del usuario+sucursal,
+  /// bloqueamos el panel completo.
+  bool _resettingAll = false;
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -898,6 +908,8 @@ class _UserPermissionsPanelState
       _searchQuery = '';
       _searchController.clear();
       _expandedModules.clear();
+      _savingCodes.clear();
+      _resettingAll = false;
     }
   }
 
@@ -977,8 +989,29 @@ class _UserPermissionsPanelState
                           ),
                         )
                         .toList(growable: false),
-                    onChanged: (value) =>
-                        setState(() => _selectedBranchId = value),
+                    onChanged: _resettingAll
+                        ? null
+                        : (value) =>
+                            setState(() => _selectedBranchId = value),
+                  ),
+                  const Spacer(),
+                  if (permissionsAsync?.valueOrNull != null)
+                    _OverrideCountChip(
+                      perms: permissionsAsync!.valueOrNull!,
+                    ),
+                  const SizedBox(width: AppTokens.s8),
+                  OutlinedButton.icon(
+                    onPressed: _resettingAll
+                        ? null
+                        : () => _confirmResetAll(user),
+                    icon: _resettingAll
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.restart_alt_rounded, size: 18),
+                    label: const Text('Restablecer al rol'),
                   ),
                 ],
               ),
@@ -1224,14 +1257,27 @@ class _UserPermissionsPanelState
           if (p.hasOverride)
             IconButton(
               tooltip: 'Quitar override (volver al rol)',
-              onPressed: () => _removeOverride(p, user),
+              onPressed: _savingCodes.contains(p.permissionCode) || _resettingAll
+                  ? null
+                  : () => _removeOverride(p, user),
               icon: const Icon(Icons.undo, size: 16),
               visualDensity: VisualDensity.compact,
               color: AppTokens.mutedForeground,
             ),
+          if (_savingCodes.contains(p.permissionCode))
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
           Switch(
             value: effective,
-            onChanged: (v) => _setOverride(p, user, granted: v),
+            onChanged: _savingCodes.contains(p.permissionCode) || _resettingAll
+                ? null
+                : (v) => _setOverride(p, user, granted: v),
             activeThumbColor: AppTokens.success,
           ),
         ],
@@ -1244,6 +1290,7 @@ class _UserPermissionsPanelState
     UserEntity user, {
     required bool granted,
   }) async {
+    setState(() => _savingCodes.add(p.permissionCode));
     try {
       final repo = ref.read(permissionsRepositoryProvider);
       await repo.setUserPermissionOverride(
@@ -1257,15 +1304,25 @@ class _UserPermissionsPanelState
           (userId: user.id, branchId: _selectedBranchId!),
         ),
       );
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        granted
+            ? '"${p.permissionName}" permitido'
+            : '"${p.permissionName}" denegado',
+      );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo guardar permiso: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo guardar el permiso', error);
+    } finally {
+      if (mounted) {
+        setState(() => _savingCodes.remove(p.permissionCode));
+      }
     }
   }
 
   Future<void> _removeOverride(EffectivePermission p, UserEntity user) async {
+    setState(() => _savingCodes.add(p.permissionCode));
     try {
       final repo = ref.read(permissionsRepositoryProvider);
       await repo.removeUserPermissionOverride(
@@ -1278,12 +1335,118 @@ class _UserPermissionsPanelState
           (userId: user.id, branchId: _selectedBranchId!),
         ),
       );
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        '"${p.permissionName}" vuelve al permiso del rol',
+      );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo quitar override: $error')),
+      AppSnackBar.error(context, 'No se pudo quitar el override', error);
+    } finally {
+      if (mounted) {
+        setState(() => _savingCodes.remove(p.permissionCode));
+      }
+    }
+  }
+
+  Future<void> _confirmResetAll(UserEntity user) async {
+    final branchId = _selectedBranchId;
+    if (branchId == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restablecer permisos'),
+        content: Text(
+          'Esto elimina todas las excepciones personalizadas de '
+          '${user.fullName} en esta sucursal. Sus permisos volverán '
+          'a derivarse 100% del rol "${_roles[user.role] ?? user.role}".\n\n'
+          '¿Continuar?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.restart_alt_rounded, size: 18),
+            label: const Text('Restablecer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _resettingAll = true);
+    try {
+      final repo = ref.read(permissionsRepositoryProvider);
+      final count = await repo.clearAllOverridesForUserBranch(
+        userId: user.id,
+        branchId: branchId,
+      );
+      ref.invalidate(
+        effectivePermissionsProvider(
+          (userId: user.id, branchId: branchId),
+        ),
+      );
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        count == 0
+            ? 'No había excepciones que restablecer.'
+            : 'Se restablecieron $count permiso(s) al rol base.',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'No se pudo restablecer', error);
+    } finally {
+      if (mounted) setState(() => _resettingAll = false);
+    }
+  }
+}
+
+class _OverrideCountChip extends StatelessWidget {
+  const _OverrideCountChip({required this.perms});
+
+  final List<EffectivePermission> perms;
+
+  @override
+  Widget build(BuildContext context) {
+    final overrideCount = perms.where((p) => p.hasOverride).length;
+    if (overrideCount == 0) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppTokens.muted,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: const Text(
+          'Sin excepciones',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppTokens.mutedForeground,
+          ),
+        ),
       );
     }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTokens.info.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppTokens.info.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        '$overrideCount excepción${overrideCount == 1 ? '' : 'es'} sobre el rol',
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: AppTokens.info,
+        ),
+      ),
+    );
   }
 }
 
