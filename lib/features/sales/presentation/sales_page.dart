@@ -334,26 +334,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                 ),
                 const SizedBox(height: 12),
                 clientsAsync.when(
-                  data: (clients) => Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8FAFC),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFFE2E8F0)),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String?>(
-                        isExpanded: true,
-                        value: _clientId,
-                        hint: const Text('Seleccionar Cliente', style: TextStyle(fontSize: 13)),
-                        items: [
-                          const DropdownMenuItem(value: null, child: Text('Cliente General (Contado)')),
-                          ...clients.map((c) => DropdownMenuItem(value: c.id, child: Text(c.fullName))),
-                        ],
-                        onChanged: _onClientChanged,
-                      ),
-                    ),
+                  data: (clients) => _ClientSearchField(
+                    currentId: _clientId,
+                    clients: clients,
+                    onChanged: _onClientChanged,
                   ),
                   loading: () => const LinearProgressIndicator(),
                   error: (_, _) => const Text('Error al cargar clientes'),
@@ -1871,4 +1855,200 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
     );
   }
 
+}
+
+/// Buscador de cliente que combina input por nombre + dropdown completo.
+/// Cuando el campo está vacío o muestra el cliente actual, al hacer focus
+/// se abre la lista completa (incluyendo "Cliente General"). Al escribir,
+/// filtra in-memory por subcadena en el nombre.
+class _ClientSearchField extends StatefulWidget {
+  const _ClientSearchField({
+    required this.currentId,
+    required this.clients,
+    required this.onChanged,
+  });
+
+  final String? currentId;
+  final List<SalesClient> clients;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  State<_ClientSearchField> createState() => _ClientSearchFieldState();
+}
+
+class _ClientSearchFieldState extends State<_ClientSearchField> {
+  static const _generalLabel = 'Cliente General (Contado)';
+
+  final _textController = TextEditingController();
+  final _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _textController.text = _labelForId(widget.currentId);
+  }
+
+  @override
+  void didUpdateWidget(_ClientSearchField old) {
+    super.didUpdateWidget(old);
+    // Si el clientId cambió por código externo (ej. limpiar carrito,
+    // cargar venta para devolución), sincronizar el texto — pero solo
+    // si el campo no está enfocado para no pisar lo que el usuario
+    // está escribiendo.
+    if (old.currentId != widget.currentId && !_focusNode.hasFocus) {
+      _textController.text = _labelForId(widget.currentId);
+    }
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  String _labelForId(String? id) {
+    if (id == null) return _generalLabel;
+    for (final c in widget.clients) {
+      if (c.id == id) return c.fullName;
+    }
+    return _generalLabel;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RawAutocomplete<_ClientOption>(
+      textEditingController: _textController,
+      focusNode: _focusNode,
+      displayStringForOption: (o) => o.label,
+      optionsBuilder: (textValue) {
+        final all = <_ClientOption>[
+          const _ClientOption(id: null, label: _generalLabel),
+          for (final c in widget.clients)
+            _ClientOption(id: c.id, label: c.fullName),
+        ];
+        final q = textValue.text.trim().toLowerCase();
+        // Si el campo está vacío o todavía muestra el label actual,
+        // mostramos todos los clientes (modo "dropdown").
+        if (q.isEmpty ||
+            q == _labelForId(widget.currentId).toLowerCase()) {
+          return all;
+        }
+        return all
+            .where((o) => o.label.toLowerCase().contains(q))
+            .toList(growable: false);
+      },
+      onSelected: (option) {
+        widget.onChanged(option.id);
+        _textController.text = option.label;
+        _focusNode.unfocus();
+      },
+      fieldViewBuilder: (context, controller, focusNode, onSubmitted) {
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: TextField(
+            controller: controller,
+            focusNode: focusNode,
+            style: const TextStyle(fontSize: 13),
+            onTap: () => controller.selection = TextSelection(
+              baseOffset: 0,
+              extentOffset: controller.text.length,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Buscar cliente por nombre',
+              hintStyle: const TextStyle(
+                fontSize: 13,
+                color: Color(0xFF94A3B8),
+              ),
+              prefixIcon: const Icon(
+                Icons.person_search_rounded,
+                size: 18,
+                color: Color(0xFF64748B),
+              ),
+              suffixIcon: widget.currentId != null
+                  ? IconButton(
+                      icon: const Icon(Icons.close, size: 16),
+                      tooltip: 'Volver a Cliente General',
+                      splashRadius: 14,
+                      onPressed: () {
+                        widget.onChanged(null);
+                        _textController.text = _generalLabel;
+                        _focusNode.unfocus();
+                      },
+                    )
+                  : const Icon(
+                      Icons.arrow_drop_down,
+                      color: Color(0xFF64748B),
+                    ),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280, maxWidth: 420),
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: options.length,
+                itemBuilder: (ctx, i) {
+                  final o = options.elementAt(i);
+                  final selected = o.id == widget.currentId;
+                  return ListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    selected: selected,
+                    selectedTileColor: const Color(0xFFEFF6FF),
+                    leading: Icon(
+                      o.id == null
+                          ? Icons.person_outline
+                          : Icons.person_rounded,
+                      size: 18,
+                      color: selected
+                          ? const Color(0xFF1D4ED8)
+                          : const Color(0xFF64748B),
+                    ),
+                    title: Text(
+                      o.label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                            selected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    ),
+                    trailing: selected
+                        ? const Icon(
+                            Icons.check_rounded,
+                            size: 16,
+                            color: Color(0xFF1D4ED8),
+                          )
+                        : null,
+                    onTap: () => onSelected(o),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ClientOption {
+  const _ClientOption({required this.id, required this.label});
+  final String? id;
+  final String label;
 }
