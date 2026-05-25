@@ -35,11 +35,22 @@ class SalesEntryPage extends ConsumerWidget {
   }
 }
 
-class _SalesCashRegisterPicker extends ConsumerWidget {
+class _SalesCashRegisterPicker extends ConsumerStatefulWidget {
   const _SalesCashRegisterPicker();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SalesCashRegisterPicker> createState() =>
+      _SalesCashRegisterPickerState();
+}
+
+class _SalesCashRegisterPickerState
+    extends ConsumerState<_SalesCashRegisterPicker> {
+  /// Se dispara una sola vez por vida del picker para evitar abrir el
+  /// dialog en bucle cuando el cajero cancela y el widget hace rebuild.
+  bool _autoTriggered = false;
+
+  @override
+  Widget build(BuildContext context) {
     final role = ref.watch(roleAccessProvider);
     final canSeeAll = role.isAdmin || role.isSupervisor;
     // Admin/supervisor ven el catálogo completo de la sucursal. El cajero
@@ -51,6 +62,32 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
     // Sesiones abiertas del usuario actual (puede tener varias, una por
     // cada caja que abrió pero todavía no cerró).
     final mySessionsAsync = ref.watch(myOpenCashSessionsProvider);
+
+    // Auto-entry: si el cajero tiene una sola caja asignada, entra
+    // directo (a la sesión abierta si existe, o al dialog de apertura
+    // si no). Admin/supervisor siempre ven el picker.
+    final cajas = cajasAsync.valueOrNull;
+    final mySessions = mySessionsAsync.valueOrNull;
+    if (!canSeeAll &&
+        !_autoTriggered &&
+        cajas != null &&
+        cajas.length == 1 &&
+        mySessions != null) {
+      _autoTriggered = true;
+      final caja = cajas.first;
+      MyOpenCashSession? existing;
+      for (final s in mySessions) {
+        if (s.cashRegisterId == caja.id) {
+          existing = s;
+          break;
+        }
+      }
+      final existingCapture = existing;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        enterOrOpenCaja(context, ref, caja, existingCapture);
+      });
+    }
 
     return ModulePage(
       title: 'Ventas',
@@ -84,6 +121,8 @@ class _SalesCashRegisterPicker extends ConsumerWidget {
           return _CashRegisterGrid(
             cajas: cajas,
             mySessionsByRegister: mySessionsByRegister,
+            onPick: (caja, existingSession) =>
+                enterOrOpenCaja(context, ref, caja, existingSession),
           );
         },
         loading: () => const Padding(
@@ -131,7 +170,7 @@ class _EmptyState extends StatelessWidget {
           if (canManage) ...[
             const SizedBox(height: AppTokens.s16),
             const Text(
-              'Configurá las cajas y sus cajeros en /configuración.',
+              'Configura las cajas y sus cajeros en /configuración.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
             ),
@@ -142,10 +181,52 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _CashRegisterGrid extends ConsumerWidget {
+/// Flujo compartido para entrar a una caja: si ya hay sesión abierta del
+/// usuario en esa caja, la marca como activa; si no, abre el dialog para
+/// ingresar el monto de apertura. Usado tanto por el tap manual del grid
+/// como por el auto-entry cuando el cajero tiene una sola caja asignada.
+Future<void> enterOrOpenCaja(
+  BuildContext context,
+  WidgetRef ref,
+  CashRegisterEntity caja,
+  MyOpenCashSession? existingSession,
+) async {
+  // Caso 1: el usuario YA tiene una sesión abierta en esta caja.
+  // No abrimos nueva — solo seteamos como activa y vamos al POS.
+  if (existingSession != null) {
+    ref.read(activeCashSessionIdProvider.notifier).state =
+        existingSession.sessionId;
+    return;
+  }
+
+  // Caso 2: caja sin sesión abierta. Pedimos monto de apertura.
+  final input = await showDialog<OpenCashInput>(
+    context: context,
+    builder: (_) => _OpenSessionForCajaDialog(caja: caja),
+  );
+  if (input == null) return;
+  if (!context.mounted) return;
+
+  final repository = ref.read(cashRegisterRepositoryProvider);
+  try {
+    final sessionId = await repository.openSessionForRegister(input);
+    ref.read(activeCashSessionIdProvider.notifier).state = sessionId;
+    ref.invalidate(cashRegisterDataProvider);
+    ref.invalidate(myOpenCashSessionsProvider);
+    ref.invalidate(allOpenCashSessionsProvider);
+    if (!context.mounted) return;
+    AppSnackBar.success(context, 'Caja "${caja.name}" abierta');
+  } catch (error) {
+    if (!context.mounted) return;
+    AppSnackBar.error(context, 'No se pudo abrir la caja', error);
+  }
+}
+
+class _CashRegisterGrid extends StatelessWidget {
   const _CashRegisterGrid({
     required this.cajas,
     required this.mySessionsByRegister,
+    required this.onPick,
   });
 
   final List<CashRegisterEntity> cajas;
@@ -155,8 +236,14 @@ class _CashRegisterGrid extends ConsumerWidget {
   /// sin pedir dialog de apertura.
   final Map<String, MyOpenCashSession> mySessionsByRegister;
 
+  /// Callback que dispara [enterOrOpenCaja] con el context/ref del padre.
+  final Future<void> Function(
+    CashRegisterEntity caja,
+    MyOpenCashSession? existingSession,
+  ) onPick;
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -181,49 +268,12 @@ class _CashRegisterGrid extends ConsumerWidget {
             return _CashRegisterCard(
               caja: caja,
               hasOpenSession: existingSession != null,
-              onTap: () => _onPickCaja(context, ref, caja, existingSession),
+              onTap: () => onPick(caja, existingSession),
             );
           },
         );
       },
     );
-  }
-
-  Future<void> _onPickCaja(
-    BuildContext context,
-    WidgetRef ref,
-    CashRegisterEntity caja,
-    MyOpenCashSession? existingSession,
-  ) async {
-    // Caso 1: el usuario YA tiene una sesión abierta en esta caja.
-    // No abrimos nueva — solo seteamos como activa y vamos al POS.
-    if (existingSession != null) {
-      ref.read(activeCashSessionIdProvider.notifier).state =
-          existingSession.sessionId;
-      return;
-    }
-
-    // Caso 2: caja sin sesión abierta. Pedimos monto de apertura.
-    final input = await showDialog<OpenCashInput>(
-      context: context,
-      builder: (_) => _OpenSessionForCajaDialog(caja: caja),
-    );
-    if (input == null) return;
-    if (!context.mounted) return;
-
-    final repository = ref.read(cashRegisterRepositoryProvider);
-    try {
-      final sessionId = await repository.openSessionForRegister(input);
-      ref.read(activeCashSessionIdProvider.notifier).state = sessionId;
-      ref.invalidate(cashRegisterDataProvider);
-      ref.invalidate(myOpenCashSessionsProvider);
-      ref.invalidate(allOpenCashSessionsProvider);
-      if (!context.mounted) return;
-      AppSnackBar.success(context, 'Caja "${caja.name}" abierta');
-    } catch (error) {
-      if (!context.mounted) return;
-      AppSnackBar.error(context, 'No se pudo abrir la caja', error);
-    }
   }
 }
 

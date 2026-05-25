@@ -1840,7 +1840,7 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
               color: Color(0xFF1D4ED8),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           // Cambiar de caja (volver al picker sin cerrar).
           InkWell(
             onTap: () {
@@ -1849,21 +1849,32 @@ class _ActiveCashRegisterChip extends ConsumerWidget {
             },
             borderRadius: BorderRadius.circular(999),
             child: const Padding(
-              padding: EdgeInsets.all(2),
-              child: Tooltip(
-                message: 'Cambiar de caja',
-                child: Icon(Icons.swap_horiz_rounded,
-                    size: 16, color: Color(0xFF1D4ED8)),
+              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.arrow_back_rounded,
+                      size: 16, color: Color(0xFF1D4ED8)),
+                  SizedBox(width: 4),
+                  Text(
+                    'Cambiar',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                      color: Color(0xFF1D4ED8),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 6),
           // Cerrar caja (cuadra el día).
           InkWell(
             onTap: () => _confirmCloseCaja(context, ref),
             borderRadius: BorderRadius.circular(999),
             child: const Padding(
-              padding: EdgeInsets.all(2),
+              padding: EdgeInsets.all(4),
               child: Tooltip(
                 message: 'Cerrar caja',
                 child: Icon(Icons.logout_rounded,
