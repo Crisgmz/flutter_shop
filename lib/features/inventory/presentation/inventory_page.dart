@@ -639,9 +639,10 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
   }
 
   Future<void> _onImportInventory() async {
-    final categories = await _readCategoriesOrShowError();
-    if (categories == null || !mounted) return;
-
+    // Web: el FilePicker (input type=file) requiere user gesture activo.
+    // Si hacemos awaits antes (ej. cargar categorías), Chrome/Edge lo
+    // consideran consumido y el diálogo nunca aparece. Por eso abrimos
+    // el picker PRIMERO y cargamos categorías después.
     final Uint8List? bytes;
     try {
       bytes = await FileIoHelper.pickXlsxBytes();
@@ -653,6 +654,9 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       return;
     }
     if (bytes == null || !mounted) return;
+
+    final categories = await _readCategoriesOrShowError();
+    if (categories == null || !mounted) return;
 
     final InventoryImportParseResult parsed;
     try {

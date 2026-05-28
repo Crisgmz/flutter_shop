@@ -433,30 +433,37 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
 
   /// Reimprime un cierre de caja sin abrir el dialog de detalle. Acceso
   /// directo desde el botón de la fila — mismo PDF que el detalle.
+  ///
+  /// Importante para Flutter Web: `Printing.layoutPdf` se llama
+  /// inmediatamente en el callback del click (sin awaits previos) para
+  /// preservar el "user gesture" que Chrome/Edge exigen para abrir la
+  /// ventana de impresión. Los fetches y la generación del PDF ocurren
+  /// dentro de `onLayout`, que se ejecuta una vez la ventana ya está
+  /// abierta.
   Future<void> _onReprint(
     CashSessionEntity session,
     double widthMm,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
+    final repo = ref.read(cashRegisterRepositoryProvider);
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
+
     try {
-      final repo = ref.read(cashRegisterRepositoryProvider);
-      final movements = await repo.fetchMovementsForSession(session.id);
-      final metrics = await repo.fetchSessionMetrics(session.id);
-      final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
-      final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
-
-      final bytes = await const CashClosurePdfBuilder().build(
-        session: session,
-        metrics: metrics,
-        movements: movements,
-        widthMm: widthMm,
-        branchName: branchName,
-        cashierName: userInfo?.displayName,
-      );
-
       await Printing.layoutPdf(
-        onLayout: (_) async => bytes,
         name: 'cierre-caja-${session.id.substring(0, 8)}',
+        onLayout: (_) async {
+          final movements = await repo.fetchMovementsForSession(session.id);
+          final metrics = await repo.fetchSessionMetrics(session.id);
+          return const CashClosurePdfBuilder().build(
+            session: session,
+            metrics: metrics,
+            movements: movements,
+            widthMm: widthMm,
+            branchName: branchName,
+            cashierName: userInfo?.displayName,
+          );
+        },
       );
     } catch (error) {
       messenger.showSnackBar(

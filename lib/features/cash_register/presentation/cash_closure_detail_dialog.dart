@@ -36,22 +36,24 @@ class _CashClosureDetailDialogState
     return _DetailBundle(movements: movements, metrics: metrics);
   }
 
+  /// Web: el `await build()` previo rompía el user gesture y la ventana
+  /// de impresión quedaba bloqueada. Generamos el PDF dentro de
+  /// `onLayout` para que `Printing.layoutPdf` se llame inmediatamente
+  /// al click.
   Future<void> _print(double widthMm, _DetailBundle bundle) async {
     final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
     final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
 
-    final bytes = await const CashClosurePdfBuilder().build(
-      session: widget.session,
-      metrics: bundle.metrics,
-      movements: bundle.movements,
-      widthMm: widthMm,
-      branchName: branchName,
-      cashierName: userInfo?.displayName,
-    );
-
     await Printing.layoutPdf(
-      onLayout: (_) async => bytes,
       name: 'cierre-caja-${widget.session.id.substring(0, 8)}',
+      onLayout: (_) => const CashClosurePdfBuilder().build(
+        session: widget.session,
+        metrics: bundle.metrics,
+        movements: bundle.movements,
+        widthMm: widthMm,
+        branchName: branchName,
+        cashierName: userInfo?.displayName,
+      ),
     );
   }
 
