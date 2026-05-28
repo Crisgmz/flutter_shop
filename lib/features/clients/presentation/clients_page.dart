@@ -46,7 +46,6 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
   @override
   Widget build(BuildContext context) {
     final clientsAsync = ref.watch(clientsListProvider);
-    final query = ref.watch(clientsSearchProvider).trim().toLowerCase();
     final showInactive = ref.watch(clientsShowInactiveProvider);
 
     return ModulePage(
@@ -73,28 +72,10 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
           _buildFilterBar(showInactive),
           const SizedBox(height: AppTokens.s24),
           clientsAsync.when(
-            data: (clients) {
-              final filtered = clients
-                  .where((client) {
-                    if (!showInactive && !client.isActive) return false;
-                    if (query.isEmpty) return true;
-                    final searchable = [
-                      client.fullName,
-                      client.firstName ?? '',
-                      client.lastName ?? '',
-                      client.companyName ?? '',
-                      client.documentNumber ?? '',
-                      client.email ?? '',
-                      client.phone ?? '',
-                    ].join(' ').toLowerCase();
-                    return searchable.contains(query);
-                  })
-                  .toList(growable: false);
-
-              final totalBalance = filtered.fold<double>(
-                0,
-                (sum, item) => sum + item.balanceDue,
-              );
+            data: (_) {
+              // filtered y totalBalance viven en providers memoizados.
+              final filtered = ref.watch(clientsFilteredProvider);
+              final totalBalance = ref.watch(clientsFilteredBalanceProvider);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -104,10 +85,25 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                     totalBalance: totalBalance,
                   ),
                   const SizedBox(height: AppTokens.s24),
-                  DataTableShell(
-                    title: 'Clientes (${filtered.length})',
-                    child: filtered.isEmpty
-                        ? const Padding(
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AppTokens.card,
+                      borderRadius: BorderRadius.circular(AppTokens.radius),
+                      border: Border.all(color: AppTokens.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(AppTokens.s20),
+                          child: Text(
+                            'Clientes (${filtered.length})',
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (filtered.isEmpty)
+                          const Padding(
                             padding: EdgeInsets.all(AppTokens.s20),
                             child: Text(
                               'No hay clientes que coincidan con el filtro.',
@@ -116,124 +112,35 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                               ),
                             ),
                           )
-                        : SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: DataTable(
-                              columns: const [
-                                DataColumn(label: Text('Nombre')),
-                                DataColumn(label: Text('Tipo')),
-                                DataColumn(label: Text('Documento')),
-                                DataColumn(label: Text('Teléfono')),
-                                DataColumn(label: Text('Email')),
-                                DataColumn(
-                                  label: Text('Límite crédito'),
-                                  numeric: true,
-                                ),
-                                DataColumn(
-                                  label: Text('Balance'),
-                                  numeric: true,
-                                ),
-                                DataColumn(label: Text('Estado')),
-                                DataColumn(label: Text('Acciones')),
-                              ],
-                              rows: filtered
-                                  .map(
-                                    (client) => DataRow(
-                                      cells: [
-                                        DataCell(Text(
-                                          client.fullName,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        )),
-                                        DataCell(
-                                          Text(_entityTypeLabel(client.entityType)),
-                                        ),
-                                        DataCell(Text(
-                                          _documentDisplay(client),
-                                          style: const TextStyle(
-                                            fontFamily: 'monospace',
-                                            fontSize: 12,
-                                          ),
-                                        )),
-                                        DataCell(
-                                          Text(client.phone ?? '-'),
-                                        ),
-                                        DataCell(
-                                          Text(client.email ?? '-'),
-                                        ),
-                                        DataCell(
-                                          Text(money(client.creditLimit)),
-                                        ),
-                                        DataCell(Text(
-                                          money(client.balanceDue),
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                            color: client.balanceDue > 0
-                                                ? AppTokens.warning
-                                                : null,
-                                          ),
-                                        )),
-                                        DataCell(StatusBadge(
-                                          label: client.isActive
-                                              ? 'Activo'
-                                              : 'Inactivo',
-                                          status: client.isActive
-                                              ? 'active'
-                                              : 'inactive',
-                                        )),
-                                        DataCell(Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              tooltip: 'Editar',
-                                              onPressed: () =>
-                                                  _onEditClient(client),
-                                              icon: const Icon(
-                                                Icons.edit_outlined,
-                                                size: AppTokens.iconSizeS,
-                                              ),
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                            ),
-                                            IconButton(
-                                              tooltip: 'Historial de pagos',
-                                              onPressed: () =>
-                                                  _onShowPaymentHistory(client),
-                                              icon: const Icon(
-                                                Icons.payments_outlined,
-                                                size: AppTokens.iconSizeS,
-                                              ),
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                            ),
-                                            IconButton(
-                                              tooltip: client.isActive
-                                                  ? 'Desactivar'
-                                                  : 'Activar',
-                                              onPressed: () =>
-                                                  _onToggleActive(client),
-                                              icon: Icon(
-                                                client.isActive
-                                                    ? Icons.block_outlined
-                                                    : Icons
-                                                        .check_circle_outline,
-                                                size: AppTokens.iconSizeS,
-                                                color: client.isActive
-                                                    ? AppTokens.destructive
-                                                    : AppTokens.success,
-                                              ),
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                            ),
-                                          ],
-                                        )),
-                                      ],
-                                    ),
-                                  )
-                                  .toList(growable: false),
+                        else ...[
+                          const _ClientRowHeader(),
+                          SizedBox(
+                            // Altura del viewport para que ListView.builder
+                            // virtualice: sólo renderiza los items visibles.
+                            height: (MediaQuery.of(context).size.height * 0.6)
+                                .clamp(360.0, double.infinity),
+                            child: ListView.builder(
+                              itemCount: filtered.length,
+                              itemExtent: 56,
+                              itemBuilder: (context, index) {
+                                final client = filtered[index];
+                                return _ClientRow(
+                                  key: ValueKey(client.id),
+                                  client: client,
+                                  documentDisplay: _documentDisplay(client),
+                                  entityLabel:
+                                      _entityTypeLabel(client.entityType),
+                                  onEdit: () => _onEditClient(client),
+                                  onHistory: () =>
+                                      _onShowPaymentHistory(client),
+                                  onToggle: () => _onToggleActive(client),
+                                );
+                              },
                             ),
                           ),
+                        ],
+                      ],
+                    ),
                   ),
                 ],
               );
@@ -1373,6 +1280,213 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
 }
 
 // ─── KPIs ────────────────────────────────────────────────────────────────────
+
+/// Header de la tabla virtualizada de clientes — fijo arriba del
+/// ListView.builder, no se duplica por fila.
+class _ClientRowHeader extends StatelessWidget {
+  const _ClientRowHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTokens.background,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          Expanded(flex: 3, child: _ColumnLabel('Nombre')),
+          Expanded(flex: 2, child: _ColumnLabel('Tipo')),
+          Expanded(flex: 2, child: _ColumnLabel('Documento')),
+          Expanded(flex: 2, child: _ColumnLabel('Teléfono')),
+          Expanded(flex: 3, child: _ColumnLabel('Email')),
+          Expanded(
+              flex: 2,
+              child: _ColumnLabel('Crédito', align: TextAlign.right)),
+          Expanded(
+              flex: 2,
+              child: _ColumnLabel('Balance', align: TextAlign.right)),
+          Expanded(flex: 2, child: _ColumnLabel('Estado')),
+          SizedBox(width: 140, child: _ColumnLabel('Acciones')),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColumnLabel extends StatelessWidget {
+  const _ColumnLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: AppTokens.mutedForeground,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+}
+
+/// Fila virtualizada de la tabla de clientes. Se usa con
+/// `ListView.builder(itemExtent: 56)`.
+class _ClientRow extends StatelessWidget {
+  const _ClientRow({
+    super.key,
+    required this.client,
+    required this.documentDisplay,
+    required this.entityLabel,
+    required this.onEdit,
+    required this.onHistory,
+    required this.onToggle,
+  });
+
+  final ClientEntity client;
+  final String documentDisplay;
+  final String entityLabel;
+  final VoidCallback onEdit;
+  final VoidCallback onHistory;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTokens.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 3,
+            child: Text(
+              client.fullName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              entityLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              documentDisplay,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              client.phone ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(
+              client.email ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(client.creditLimit),
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(client.balanceDue),
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: client.balanceDue > 0 ? AppTokens.warning : null,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: StatusBadge(
+              label: client.isActive ? 'Activo' : 'Inactivo',
+              status: client.isActive ? 'active' : 'inactive',
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Editar',
+                  onPressed: onEdit,
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    size: AppTokens.iconSizeS,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip: 'Historial de pagos',
+                  onPressed: onHistory,
+                  icon: const Icon(
+                    Icons.payments_outlined,
+                    size: AppTokens.iconSizeS,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip:
+                      client.isActive ? 'Desactivar' : 'Activar',
+                  onPressed: onToggle,
+                  icon: Icon(
+                    client.isActive
+                        ? Icons.block_outlined
+                        : Icons.check_circle_outline,
+                    size: AppTokens.iconSizeS,
+                    color: client.isActive
+                        ? AppTokens.destructive
+                        : AppTokens.success,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _KpisGrid extends StatelessWidget {
   const _KpisGrid({required this.totalClients, required this.totalBalance});

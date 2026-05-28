@@ -439,97 +439,211 @@ class _RecentQuotesCard extends ConsumerWidget {
   }
 }
 
+/// Header de la tabla virtualizada de cotizaciones (fijo arriba del
+/// ListView.builder, no se duplica por fila).
+class _QuoteRowHeader extends StatelessWidget {
+  const _QuoteRowHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTokens.background,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          Expanded(flex: 2, child: _QuoteColumnLabel('Código')),
+          Expanded(flex: 3, child: _QuoteColumnLabel('Cliente')),
+          Expanded(flex: 2, child: _QuoteColumnLabel('Estado')),
+          Expanded(flex: 2, child: _QuoteColumnLabel('Vigencia')),
+          Expanded(
+              flex: 2,
+              child: _QuoteColumnLabel('Monto', align: TextAlign.right)),
+          SizedBox(width: 180, child: _QuoteColumnLabel('Acciones')),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuoteColumnLabel extends StatelessWidget {
+  const _QuoteColumnLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: AppTokens.mutedForeground,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+}
+
+/// Fila virtualizada de la tabla de cotizaciones. Con
+/// `ListView.builder(itemExtent: 56)`.
+class _QuoteRow extends StatelessWidget {
+  const _QuoteRow({
+    super.key,
+    required this.quote,
+    required this.onOpen,
+    required this.onPrint,
+    required this.onConvert,
+    required this.onDelete,
+  });
+
+  final QuoteListItem quote;
+  final VoidCallback onOpen;
+  final VoidCallback onPrint;
+  final VoidCallback onConvert;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onOpen,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: AppTokens.border)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 2,
+              child: Text(
+                quote.code,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 3,
+              child: Text(
+                quote.clientName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: _StatusChip(status: quote.effectiveStatus),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                formatDate(quote.validUntil),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                money(quote.total),
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppTokens.brandBlueDark,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 180,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    onPressed: onOpen,
+                    icon: const Icon(Icons.visibility_outlined, size: 20),
+                    tooltip: 'Ver / editar',
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  IconButton(
+                    onPressed: onPrint,
+                    icon: const Icon(Icons.print_outlined, size: 20),
+                    tooltip: 'Imprimir cotización',
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  if (quote.canConvert)
+                    IconButton(
+                      onPressed: onConvert,
+                      icon: const Icon(
+                        Icons.shopping_cart_checkout_rounded,
+                        color: AppTokens.success,
+                        size: 20,
+                      ),
+                      tooltip: 'Convertir a venta',
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  if (quote.canDelete)
+                    IconButton(
+                      onPressed: onDelete,
+                      icon: const Icon(
+                        Icons.delete_outline_rounded,
+                        color: AppTokens.error,
+                        size: 20,
+                      ),
+                      tooltip: 'Eliminar',
+                      visualDensity: VisualDensity.compact,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _QuotesDataTable extends ConsumerWidget {
   const _QuotesDataTable({required this.quotes});
   final List<QuoteListItem> quotes;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: constraints.maxWidth.isFinite ? constraints.maxWidth : 0),
-            child: DataTable(
-              horizontalMargin: 12,
-              columnSpacing: constraints.maxWidth > 800 ? 40 : 24,
-              columns: const [
-                DataColumn(label: Text('Código')),
-                DataColumn(label: Text('Cliente')),
-                DataColumn(label: Text('Estado')),
-                DataColumn(label: Text('Vigencia')),
-                DataColumn(label: Text('Monto')),
-                DataColumn(label: Text('Acciones')),
-              ],
-              rows: quotes
-                  .map(
-                    (quote) => DataRow(
-                      onSelectChanged: (_) => context.push('/cotizaciones/${quote.id}'),
-                      cells: [
-                        DataCell(
-                          Text(
-                            quote.code,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          onTap: () => context.push('/cotizaciones/${quote.id}'),
-                        ),
-                        DataCell(Text(quote.clientName)),
-                        DataCell(_StatusChip(status: quote.effectiveStatus)),
-                        DataCell(Text(formatDate(quote.validUntil))),
-                        DataCell(
-                          Text(
-                            money(quote.total),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: AppTokens.brandBlueDark,
-                            ),
-                          ),
-                        ),
-                        DataCell(
-                          Row(
-                            children: [
-                              IconButton(
-                                onPressed: () => context.push('/cotizaciones/${quote.id}'),
-                                icon: const Icon(Icons.visibility_outlined, size: 20),
-                                tooltip: 'Ver / editar',
-                              ),
-                              IconButton(
-                                onPressed: () => _printQuote(context, ref, quote),
-                                icon: const Icon(Icons.print_outlined, size: 20),
-                                tooltip: 'Imprimir cotización',
-                              ),
-                              if (quote.canConvert)
-                                IconButton(
-                                  onPressed: () => _convertToSale(context, ref, quote),
-                                  icon: const Icon(
-                                    Icons.shopping_cart_checkout_rounded,
-                                    color: AppTokens.success,
-                                    size: 20,
-                                  ),
-                                  tooltip: 'Convertir a venta',
-                                ),
-                              if (quote.canDelete)
-                                IconButton(
-                                  onPressed: () => _deleteQuote(context, ref, quote),
-                                  icon: const Icon(
-                                    Icons.delete_outline_rounded,
-                                    color: AppTokens.error,
-                                    size: 20,
-                                  ),
-                                  tooltip: 'Eliminar',
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                  .toList(),
-            ),
+    // Tabla virtualizada: solo renderiza las filas visibles, evita el
+    // costo de materializar 500+ DataRow.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _QuoteRowHeader(),
+        SizedBox(
+          height: (MediaQuery.of(context).size.height * 0.55)
+              .clamp(360.0, double.infinity),
+          child: ListView.builder(
+            itemCount: quotes.length,
+            itemExtent: 56,
+            itemBuilder: (context, index) {
+              final quote = quotes[index];
+              return _QuoteRow(
+                key: ValueKey(quote.id),
+                quote: quote,
+                onOpen: () => context.push('/cotizaciones/${quote.id}'),
+                onPrint: () => _printQuote(context, ref, quote),
+                onConvert: () => _convertToSale(context, ref, quote),
+                onDelete: () => _deleteQuote(context, ref, quote),
+              );
+            },
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 

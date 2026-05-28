@@ -36,7 +36,6 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
   @override
   Widget build(BuildContext context) {
     final purchasesAsync = ref.watch(purchasesListProvider);
-    final query = ref.watch(purchasesSearchProvider).trim().toLowerCase();
 
     return ModulePage(
       title: 'Compras',
@@ -74,80 +73,62 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
           ),
           const SizedBox(height: AppTokens.s24),
           purchasesAsync.when(
-            data: (purchases) {
-              final filtered = purchases
-                  .where((purchase) {
-                    if (query.isEmpty) return true;
-                    final searchable = [
-                      purchase.purchaseNumber ?? '',
-                      purchase.invoiceNumber ?? '',
-                      purchase.supplierName,
-                      purchase.status,
-                    ].join(' ').toLowerCase();
-                    return searchable.contains(query);
-                  })
-                  .toList(growable: false);
-
-              final monthTotal = filtered.fold<double>(
-                0,
-                (sum, item) => sum + item.totalAmount,
-              );
+            data: (_) {
+              final filtered = ref.watch(purchasesFilteredProvider);
+              final monthTotal = ref.watch(purchasesFilteredTotalProvider);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _KpisGrid(count: filtered.length, total: monthTotal),
                   const SizedBox(height: AppTokens.s24),
-                  DataTableShell(
-                    title: 'Compras (${filtered.length})',
-                    child: filtered.isEmpty
-                        ? const Padding(
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AppTokens.card,
+                      borderRadius: BorderRadius.circular(AppTokens.radius),
+                      border: Border.all(color: AppTokens.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(AppTokens.s20),
+                          child: Text(
+                            'Compras (${filtered.length})',
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (filtered.isEmpty)
+                          const Padding(
                             padding: EdgeInsets.all(AppTokens.s20),
                             child: Text(
                               'No hay compras registradas.',
-                              style: TextStyle(color: AppTokens.mutedForeground),
+                              style: TextStyle(
+                                  color: AppTokens.mutedForeground),
                             ),
                           )
-                        : DataTable(
-                            columns: const [
-                              DataColumn(label: Text('Fecha')),
-                              DataColumn(label: Text('Compra')),
-                              DataColumn(label: Text('Factura')),
-                              DataColumn(label: Text('Proveedor')),
-                              DataColumn(label: Text('Estado')),
-                              DataColumn(label: Text('Pago')),
-                              DataColumn(label: Text('Recepción')),
-                              DataColumn(label: Text('Total'), numeric: true),
-                            ],
-                            rows: filtered
-                                .map(
-                                  (purchase) => DataRow(
-                                    cells: [
-                                      DataCell(Text(formatDate(purchase.purchaseDate))),
-                                      DataCell(Text(purchase.purchaseNumber ?? '-')),
-                                      DataCell(Text(purchase.invoiceNumber ?? '-')),
-                                      DataCell(Text(
-                                        purchase.supplierName,
-                                        style: const TextStyle(fontWeight: FontWeight.w600),
-                                      )),
-                                      DataCell(StatusBadge(
-                                        label: _pretty(purchase.status),
-                                        status: purchase.status,
-                                      )),
-                                      DataCell(StatusBadge(
-                                        label: _prettyPayment(purchase.paymentStatus),
-                                        status: _paymentStatusKey(purchase.paymentStatus),
-                                      )),
-                                      DataCell(_ReceiptProgress(purchase: purchase)),
-                                      DataCell(Text(
-                                        money(purchase.totalAmount),
-                                        style: const TextStyle(fontWeight: FontWeight.w700),
-                                      )),
-                                    ],
-                                  ),
-                                )
-                                .toList(growable: false),
+                        else ...[
+                          const _PurchaseRowHeader(),
+                          SizedBox(
+                            height: (MediaQuery.of(context).size.height *
+                                    0.6)
+                                .clamp(360.0, double.infinity),
+                            child: ListView.builder(
+                              itemCount: filtered.length,
+                              itemExtent: 56,
+                              itemBuilder: (context, index) {
+                                final p = filtered[index];
+                                return _PurchaseRow(
+                                  key: ValueKey(p.id),
+                                  purchase: p,
+                                );
+                              },
+                            ),
                           ),
+                        ],
+                      ],
+                    ),
                   ),
                 ],
               );
@@ -1035,6 +1016,145 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
         paymentStatus: _paymentStatus,
         purchaseCategory: _categoryController.text,
         expectedAt: _expectedAt,
+      ),
+    );
+  }
+}
+
+/// Header de la tabla virtualizada de compras (fijo arriba del ListView).
+class _PurchaseRowHeader extends StatelessWidget {
+  const _PurchaseRowHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTokens.background,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          Expanded(flex: 2, child: _ColumnLabel('Fecha')),
+          Expanded(flex: 2, child: _ColumnLabel('Compra')),
+          Expanded(flex: 2, child: _ColumnLabel('Factura')),
+          Expanded(flex: 3, child: _ColumnLabel('Proveedor')),
+          Expanded(flex: 2, child: _ColumnLabel('Estado')),
+          Expanded(flex: 2, child: _ColumnLabel('Pago')),
+          Expanded(flex: 2, child: _ColumnLabel('Recepción')),
+          Expanded(
+              flex: 2,
+              child: _ColumnLabel('Total', align: TextAlign.right)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColumnLabel extends StatelessWidget {
+  const _ColumnLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: AppTokens.mutedForeground,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+}
+
+/// Fila virtualizada de la tabla de compras. Con
+/// `ListView.builder(itemExtent: 56)`.
+class _PurchaseRow extends StatelessWidget {
+  const _PurchaseRow({super.key, required this.purchase});
+
+  final PurchaseSummary purchase;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTokens.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 2,
+            child: Text(
+              formatDate(purchase.purchaseDate),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              purchase.purchaseNumber ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              purchase.invoiceNumber ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(
+              purchase.supplierName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: StatusBadge(
+              label: _pretty(purchase.status),
+              status: purchase.status,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: StatusBadge(
+              label: _prettyPayment(purchase.paymentStatus),
+              status: _paymentStatusKey(purchase.paymentStatus),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: _ReceiptProgress(purchase: purchase),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(purchase.totalAmount),
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

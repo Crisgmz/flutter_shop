@@ -35,7 +35,6 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
   Widget build(BuildContext context) {
     final receivablesAsync = ref.watch(cobrosReceivablesProvider);
     final paymentsAsync = ref.watch(cobrosPaymentsProvider);
-    final query = ref.watch(cobrosSearchProvider).trim().toLowerCase();
     final filterMode = ref.watch(cobrosFilterProvider);
     final warnDays =
         ref.watch(appSettingsProvider).valueOrNull?.creditWarnDays ?? 7;
@@ -64,38 +63,10 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
           ),
           const SizedBox(height: AppTokens.s16),
           receivablesAsync.when(
-            data: (receivables) {
-              // Conteos por categoría (sobre TODAS las cuentas, no las filtradas
-              // por texto) — alimentan los badges del segmented button.
-              final allNearDue =
-                  receivables.where((e) => e.isNearDue(warnDays)).length;
-              final allOverdue =
-                  receivables.where((e) => e.isOverdue).length;
-
-              // Filtro por texto + por modo.
-              final filtered = receivables.where((item) {
-                if (query.isNotEmpty) {
-                  final searchable = [
-                    item.saleNumber,
-                    item.clientName,
-                    item.ncf ?? '',
-                  ].join(' ').toLowerCase();
-                  if (!searchable.contains(query)) return false;
-                }
-                switch (filterMode) {
-                  case ReceivablesFilter.nearDue:
-                    return item.isNearDue(warnDays);
-                  case ReceivablesFilter.overdue:
-                    return item.isOverdue;
-                  case ReceivablesFilter.all:
-                    return true;
-                }
-              }).toList(growable: false);
-
-              final totalDue = filtered.fold<double>(
-                0,
-                (sum, item) => sum + item.balanceDue,
-              );
+            data: (_) {
+              final summary = ref.watch(cobrosCategorySummaryProvider);
+              final filtered = ref.watch(cobrosFilteredProvider);
+              final totalDue = ref.watch(cobrosFilteredTotalDueProvider);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -104,110 +75,65 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
                   const SizedBox(height: AppTokens.s16),
                   _ReceivablesFilterBar(
                     active: filterMode,
-                    countAll: receivables.length,
-                    countNearDue: allNearDue,
-                    countOverdue: allOverdue,
+                    countAll: summary.countAll,
+                    countNearDue: summary.countNearDue,
+                    countOverdue: summary.countOverdue,
                     onChanged: (mode) =>
                         ref.read(cobrosFilterProvider.notifier).state = mode,
                   ),
                   const SizedBox(height: AppTokens.s16),
-                  DataTableShell(
-                    scrollable: false,
-                    title: 'Cuentas por cobrar',
-                    child: filtered.isEmpty
-                        ? const Padding(
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AppTokens.card,
+                      borderRadius: BorderRadius.circular(AppTokens.radius),
+                      border: Border.all(color: AppTokens.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.all(AppTokens.s20),
+                          child: Text(
+                            'Cuentas por cobrar',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (filtered.isEmpty)
+                          const Padding(
                             padding: EdgeInsets.all(AppTokens.s20),
                             child: Text(
                               'No hay cuentas por cobrar.',
-                              style: TextStyle(color: AppTokens.mutedForeground),
+                              style: TextStyle(
+                                  color: AppTokens.mutedForeground),
                             ),
                           )
-                        : FlexTable(
-                            columns: const [
-                              FlexTableColumn(label: 'Fecha'),
-                              FlexTableColumn(label: 'Venta', flex: 2),
-                              FlexTableColumn(label: 'Cliente', flex: 2),
-                              FlexTableColumn(label: 'Vence'),
-                              FlexTableColumn(label: 'Total', numeric: true),
-                              FlexTableColumn(label: 'Balance', numeric: true),
-                              FlexTableColumn(label: 'Acción', flex: 2),
-                            ],
-                            rows: filtered
-                                .map((item) => [
-                                      Text(formatDate(item.saleDate)),
-                                      Text(item.saleNumber),
-                                      Text(
-                                        item.clientName,
-                                        style: const TextStyle(fontWeight: FontWeight.w600),
-                                      ),
-                                      _DueDateCell(
-                                        sale: item,
-                                        warnDays: warnDays,
-                                      ),
-                                      Text(money(item.totalAmount)),
-                                      Text(
-                                        money(item.balanceDue),
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                          color: AppTokens.destructive,
-                                        ),
-                                      ),
-                                      Wrap(
-                                        spacing: 4,
-                                        children: [
-                                          IconButton(
-                                            tooltip: 'Ver factura',
-                                            onPressed: () =>
-                                                _onViewInvoice(item),
-                                            icon: const Icon(
-                                                Icons.visibility_outlined,
-                                                size: 18),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Extender plazo',
-                                            onPressed: () =>
-                                                _onExtendDueDate(item),
-                                            icon: const Icon(
-                                                Icons.event_repeat_outlined,
-                                                size: 18),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Reimprimir',
-                                            onPressed: () =>
-                                                _onReprintInvoice(item),
-                                            icon: const Icon(
-                                                Icons.print_outlined,
-                                                size: 18),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                          FilledButton.icon(
-                                            onPressed: () =>
-                                                _onRegisterPayment(item),
-                                            icon: const Icon(
-                                                Icons.attach_money,
-                                                size: 16),
-                                            label: const Text('Abonar'),
-                                            style: FilledButton.styleFrom(
-                                              minimumSize:
-                                                  const Size(0, 34),
-                                              padding: const EdgeInsets
-                                                  .symmetric(
-                                                  horizontal: 10),
-                                              tapTargetSize:
-                                                  MaterialTapTargetSize
-                                                      .shrinkWrap,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ])
-                                .toList(growable: false),
+                        else ...[
+                          const _ReceivableRowHeader(),
+                          SizedBox(
+                            height: (MediaQuery.of(context).size.height *
+                                    0.55)
+                                .clamp(360.0, double.infinity),
+                            child: ListView.builder(
+                              itemCount: filtered.length,
+                              itemExtent: 56,
+                              itemBuilder: (context, index) {
+                                final item = filtered[index];
+                                return _ReceivableRow(
+                                  key: ValueKey(item.id),
+                                  sale: item,
+                                  warnDays: warnDays,
+                                  onView: () => _onViewInvoice(item),
+                                  onExtend: () => _onExtendDueDate(item),
+                                  onReprint: () => _onReprintInvoice(item),
+                                  onPay: () => _onRegisterPayment(item),
+                                );
+                              },
+                            ),
                           ),
+                        ],
+                      ],
+                    ),
                   ),
                 ],
               );
@@ -423,8 +349,188 @@ class _ReceivablesFilterBar extends StatelessWidget {
   }
 }
 
-class _DueDateCell extends StatelessWidget {
-  const _DueDateCell({required this.sale, required this.warnDays});
+/// Header de la tabla virtualizada de cobros (fijo arriba del ListView).
+class _ReceivableRowHeader extends StatelessWidget {
+  const _ReceivableRowHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTokens.background,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          Expanded(flex: 2, child: _ColumnLabel('Fecha')),
+          Expanded(flex: 2, child: _ColumnLabel('Venta')),
+          Expanded(flex: 3, child: _ColumnLabel('Cliente')),
+          Expanded(flex: 2, child: _ColumnLabel('Vence')),
+          Expanded(
+              flex: 2,
+              child: _ColumnLabel('Total', align: TextAlign.right)),
+          Expanded(
+              flex: 2,
+              child: _ColumnLabel('Balance', align: TextAlign.right)),
+          SizedBox(width: 200, child: _ColumnLabel('Acciones')),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColumnLabel extends StatelessWidget {
+  const _ColumnLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: AppTokens.mutedForeground,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+}
+
+/// Fila virtualizada de la tabla de cuentas por cobrar. Con
+/// `ListView.builder(itemExtent: 56)`.
+class _ReceivableRow extends StatelessWidget {
+  const _ReceivableRow({
+    super.key,
+    required this.sale,
+    required this.warnDays,
+    required this.onView,
+    required this.onExtend,
+    required this.onReprint,
+    required this.onPay,
+  });
+
+  final ReceivableSale sale;
+  final int warnDays;
+  final VoidCallback onView;
+  final VoidCallback onExtend;
+  final VoidCallback onReprint;
+  final VoidCallback onPay;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTokens.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 2,
+            child: Text(
+              formatDate(sale.saleDate),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              sale.saleNumber,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(
+              sale.clientName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: _DueDateLabel(sale: sale, warnDays: warnDays),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(sale.totalAmount),
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(sale.balanceDue),
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTokens.destructive,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 200,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Ver factura',
+                  onPressed: onView,
+                  icon:
+                      const Icon(Icons.visibility_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip: 'Extender plazo',
+                  onPressed: onExtend,
+                  icon: const Icon(Icons.event_repeat_outlined,
+                      size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip: 'Reimprimir',
+                  onPressed: onReprint,
+                  icon: const Icon(Icons.print_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+                FilledButton.icon(
+                  onPressed: onPay,
+                  icon: const Icon(Icons.attach_money, size: 16),
+                  label: const Text('Abonar'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 30),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8),
+                    tapTargetSize:
+                        MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Texto compacto de fecha + estado (vencida/próxima a vencer).
+class _DueDateLabel extends StatelessWidget {
+  const _DueDateLabel({required this.sale, required this.warnDays});
 
   final ReceivableSale sale;
   final int warnDays;
@@ -435,19 +541,18 @@ class _DueDateCell extends StatelessWidget {
     if (due == null) {
       return const Text(
         'Sin plazo',
-        style: TextStyle(color: AppTokens.mutedForeground, fontSize: 12),
+        style: TextStyle(
+            color: AppTokens.mutedForeground, fontSize: 12),
       );
     }
     final days = sale.daysUntilDue!;
     final isOverdue = days < 0;
     final isNear = !isOverdue && days <= warnDays;
-
     final color = isOverdue
         ? AppTokens.destructive
         : isNear
             ? AppTokens.warning
             : AppTokens.mutedForeground;
-
     final subtitle = isOverdue
         ? 'Vencido hace ${-days}d'
         : days == 0
@@ -455,12 +560,14 @@ class _DueDateCell extends StatelessWidget {
             : 'En ${days}d';
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
         Text(
           formatDate(due),
-          style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600),
+          style: TextStyle(
+              fontSize: 12, color: color, fontWeight: FontWeight.w600),
         ),
         Text(
           subtitle,
