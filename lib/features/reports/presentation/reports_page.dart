@@ -697,10 +697,19 @@ class _ReportCard extends StatelessWidget {
   }
 }
 
+/// Tabla simple usada por casi todos los reportes (26 usos).
+///
+/// Virtualizada: si hay muchas filas (> [maxVisibleRows]) usa
+/// `ListView.builder + itemExtent` para que el render sea O(filas
+/// visibles) en vez de O(filas totales). Si la tabla es chica
+/// muestra todo sin altura fija para que se adapte al contenido.
 class _SimpleTable extends StatelessWidget {
   const _SimpleTable({required this.columns, required this.rows});
   final List<String> columns;
   final List<List<String>> rows;
+
+  static const _rowHeight = 44.0;
+  static const _maxVisibleRows = 12;
 
   @override
   Widget build(BuildContext context) {
@@ -717,15 +726,119 @@ class _SimpleTable extends StatelessWidget {
         ),
       );
     }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columns: [
-          for (final c in columns) DataColumn(label: Text(c)),
+
+    final flexes = _flexesFor(columns);
+    final header = _ReportTableHeader(labels: columns, flexes: flexes);
+
+    if (rows.length <= _maxVisibleRows) {
+      // Tabla corta: render directo, altura natural.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          header,
+          for (int i = 0; i < rows.length; i++)
+            SizedBox(
+              height: _rowHeight,
+              child: _ReportTableRow(
+                cells: rows[i],
+                flexes: flexes,
+              ),
+            ),
         ],
-        rows: [
-          for (final r in rows)
-            DataRow(cells: [for (final cell in r) DataCell(Text(cell))]),
+      );
+    }
+
+    // Tabla larga: viewport fijo + ListView.builder virtualizado.
+    final viewportHeight = _maxVisibleRows * _rowHeight;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        header,
+        SizedBox(
+          height: viewportHeight,
+          child: ListView.builder(
+            itemCount: rows.length,
+            itemExtent: _rowHeight,
+            itemBuilder: (context, index) => _ReportTableRow(
+              cells: rows[index],
+              flexes: flexes,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  static List<int> _flexesFor(List<String> columns) {
+    // Por default flex 1 en todas; las que parecen numéricas (con $, %,
+    // o solo dígitos en el header) reciben flex 1 también — el layout se
+    // adapta al ancho del padre.
+    return List<int>.filled(columns.length, 1);
+  }
+}
+
+class _ReportTableHeader extends StatelessWidget {
+  const _ReportTableHeader({required this.labels, required this.flexes});
+
+  final List<String> labels;
+  final List<int> flexes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFFF8FAFC),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: Row(
+        children: [
+          for (int i = 0; i < labels.length; i++)
+            Expanded(
+              flex: flexes[i],
+              child: Text(
+                labels[i],
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF475569),
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReportTableRow extends StatelessWidget {
+  const _ReportTableRow({required this.cells, required this.flexes});
+
+  final List<String> cells;
+  final List<int> flexes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(
+          top: BorderSide(color: Color(0xFFE2E8F0)),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+      child: Row(
+        children: [
+          for (int i = 0; i < cells.length; i++)
+            Expanded(
+              flex: i < flexes.length ? flexes[i] : 1,
+              child: Text(
+                cells[i],
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
         ],
       ),
     );
@@ -4078,45 +4191,147 @@ class _ZClosureTable extends ConsumerWidget {
 
   final List<FiscalZClosureRow> rows;
 
+  static const _rowHeight = 52.0;
+  static const _maxVisibleRows = 10;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columns: const [
-          DataColumn(label: Text('#')),
-          DataColumn(label: Text('Emitido')),
-          DataColumn(label: Text('Tipo')),
-          DataColumn(label: Text('Total ventas'), numeric: true),
-          DataColumn(label: Text('Acciones')),
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    final header = Container(
+      color: const Color(0xFFF8FAFC),
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          SizedBox(width: 80, child: _ZColLabel('#')),
+          Expanded(flex: 3, child: _ZColLabel('Emitido')),
+          Expanded(flex: 2, child: _ZColLabel('Tipo')),
+          Expanded(
+              flex: 2,
+              child: _ZColLabel('Total ventas', align: TextAlign.right)),
+          SizedBox(width: 110, child: _ZColLabel('Acciones')),
         ],
-        rows: [
-          for (final r in rows)
-            DataRow(cells: [
-              DataCell(Text(r.closureNumber.toString().padLeft(5, '0'))),
-              DataCell(Text(formatDateTime(r.emittedAt))),
-              DataCell(Text(r.isComplementary ? 'Complementario' : 'Primario')),
-              DataCell(Text(_CierreZReport._zClosureTotal(r))),
-              DataCell(OutlinedButton.icon(
+      ),
+    );
+
+    Widget rowAt(int index) {
+      final r = rows[index];
+      return Container(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 80,
+              child: Text(
+                r.closureNumber.toString().padLeft(5, '0'),
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            Expanded(
+              flex: 3,
+              child: Text(
+                formatDateTime(r.emittedAt),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                r.isComplementary ? 'Complementario' : 'Primario',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                _CierreZReport._zClosureTotal(r),
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+            ),
+            SizedBox(
+              width: 110,
+              child: OutlinedButton.icon(
                 onPressed: () => _exportZClosurePdf(context, ref, r),
                 icon: const Icon(Icons.picture_as_pdf_outlined, size: 16),
-                label: const Text('PDF', style: TextStyle(fontSize: 12)),
+                label:
+                    const Text('PDF', style: TextStyle(fontSize: 12)),
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size(0, 30),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                 ),
-              )),
-            ]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (rows.length <= _maxVisibleRows) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          header,
+          for (int i = 0; i < rows.length; i++)
+            SizedBox(height: _rowHeight, child: rowAt(i)),
         ],
+      );
+    }
+
+    final viewportHeight = _maxVisibleRows * _rowHeight;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        header,
+        SizedBox(
+          height: viewportHeight,
+          child: ListView.builder(
+            itemCount: rows.length,
+            itemExtent: _rowHeight,
+            itemBuilder: (context, index) => rowAt(index),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ZColLabel extends StatelessWidget {
+  const _ZColLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: Color(0xFF475569),
+        letterSpacing: 0.3,
       ),
     );
   }
+}
 
-  Future<void> _exportZClosurePdf(
-    BuildContext context,
-    WidgetRef ref,
-    FiscalZClosureRow row,
-  ) async {
+Future<void> _exportZClosurePdf(
+  BuildContext context,
+  WidgetRef ref,
+  FiscalZClosureRow row,
+) async {
     final settings = ref.read(appSettingsProvider).valueOrNull;
     final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
     try {
@@ -4146,7 +4361,6 @@ class _ZClosureTable extends ConsumerWidget {
         SnackBar(content: Text('Error al exportar cierre Z: $e')),
       );
     }
-  }
 }
 
 /// Transforma el payload del snapshot Z al modelo de export compartido.
