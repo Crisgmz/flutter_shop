@@ -19,18 +19,71 @@ final inventoryCategoriesProvider = FutureProvider<List<InventoryCategory>>((
   return repository.fetchCategories();
 });
 
-final inventoryProductsProvider = StreamProvider<List<InventoryProduct>>((ref) {
+/// Lista completa de productos. Antes era un StreamProvider que recibía
+/// la lista entera cada vez que cambiaba 1 producto; ahora es Future +
+/// el RealtimeInvalidator lo invalida cuando hay cambios en `products`,
+/// disparando un refetch limpio.
+final inventoryProductsProvider =
+    FutureProvider<List<InventoryProduct>>((ref) async {
   final repository = ref.watch(inventoryRepositoryProvider);
-  final categoriesAsync = ref.watch(inventoryCategoriesProvider);
+  return repository.fetchProducts();
+});
 
-  return categoriesAsync.when(
-    data: (categories) {
-      final categoryNames = {
-        for (final c in categories) c.id: c.name,
-      };
-      return repository.productsStream(categoryNames);
-    },
-    error: (err, stack) => Stream.error(err, stack),
-    loading: () => const Stream<List<InventoryProduct>>.empty(),
+/// Productos filtrados por búsqueda + categoría + low-stock. Memoizado
+/// — antes el filter + fold corrían en cada `build()`.
+final inventoryFilteredProductsProvider =
+    Provider<List<InventoryProduct>>((ref) {
+  final productsAsync = ref.watch(inventoryProductsProvider);
+  final products = productsAsync.valueOrNull;
+  if (products == null) return const <InventoryProduct>[];
+
+  final query = ref.watch(inventorySearchProvider).trim().toLowerCase();
+  final categoryId = ref.watch(inventorySelectedCategoryProvider);
+  final lowStockOnly = ref.watch(inventoryLowStockOnlyProvider);
+
+  return products.where((p) {
+    if (lowStockOnly && !p.isLowStock) return false;
+    if (categoryId != null && p.categoryId != categoryId) return false;
+    if (query.isEmpty) return true;
+    final name = p.name.toLowerCase();
+    if (name.contains(query)) return true;
+    final sku = p.sku?.toLowerCase();
+    if (sku != null && sku.contains(query)) return true;
+    final barcode = p.barcode?.toLowerCase();
+    if (barcode != null && barcode.contains(query)) return true;
+    final cat = p.categoryName?.toLowerCase();
+    if (cat != null && cat.contains(query)) return true;
+    return false;
+  }).toList(growable: false);
+});
+
+/// KPIs del listado filtrado (costo total, precio total, stock total).
+/// Memoizado para no recorrer la lista 3 veces en cada rebuild.
+class InventoryKpis {
+  const InventoryKpis({
+    required this.totalCost,
+    required this.totalPrice,
+    required this.totalStock,
+  });
+
+  final double totalCost;
+  final double totalPrice;
+  final double totalStock;
+}
+
+final inventoryFilteredKpisProvider = Provider<InventoryKpis>((ref) {
+  final filtered = ref.watch(inventoryFilteredProductsProvider);
+  var cost = 0.0;
+  var price = 0.0;
+  var stock = 0.0;
+  for (final p in filtered) {
+    cost += p.cost * p.stock;
+    price += p.price * p.stock;
+    stock += p.stock;
+  }
+  return InventoryKpis(
+    totalCost: cost,
+    totalPrice: price,
+    totalStock: stock,
   );
 });

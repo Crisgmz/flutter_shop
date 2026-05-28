@@ -42,7 +42,6 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     final categoriesAsync = ref.watch(inventoryCategoriesProvider);
     final lowStockOnly = ref.watch(inventoryLowStockOnlyProvider);
     final selectedCategoryId = ref.watch(inventorySelectedCategoryProvider);
-    final query = ref.watch(inventorySearchProvider).trim().toLowerCase();
     final isMobile = ResponsiveLayout.isMobile(context);
 
     return ModulePage(
@@ -100,27 +99,25 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
           ),
           const SizedBox(height: AppTokens.s24),
           
-          // Products List/Table
+          // Products List/Table — filtrado y KPIs viven en providers
+          // memoizados (inventoryFilteredProductsProvider /
+          // inventoryFilteredKpisProvider) para no recalcular en cada
+          // keystroke ni en cada rebuild.
           productsAsync.when(
-            data: (products) {
-              final filtered = products.where((product) {
-                if (lowStockOnly && !product.isLowStock) return false;
-                if (selectedCategoryId != null && product.categoryId != selectedCategoryId) {
-                  return false;
-                }
-                if (query.isEmpty) return true;
-                final searchable = [
-                  product.name,
-                  product.sku ?? '',
-                  product.barcode ?? '',
-                  product.categoryName ?? '',
-                ].join(' ').toLowerCase();
-                return searchable.contains(query);
-              }).toList();
+            data: (_) {
+              final filtered = ref.watch(inventoryFilteredProductsProvider);
+              final kpis = ref.watch(inventoryFilteredKpisProvider);
+              final totalCostVal = kpis.totalCost;
+              final totalPriceVal = kpis.totalPrice;
+              final totalStockVal = kpis.totalStock;
 
-              final totalCostVal = filtered.fold<double>(0, (sum, p) => sum + (p.cost * p.stock));
-              final totalPriceVal = filtered.fold<double>(0, (sum, p) => sum + (p.price * p.stock));
-              final totalStockVal = filtered.fold<double>(0, (sum, p) => sum + p.stock);
+              // Altura del viewport interno para que ListView.builder
+              // VIRTUALICE: solo renderiza los items visibles en pantalla
+              // + un pequeño buffer. Sin esta altura definida, el listView
+              // se mediría entero y volveríamos al problema de renderizar
+              // los 5000 productos a la vez.
+              final viewportHeight =
+                  MediaQuery.of(context).size.height * 0.6;
 
               final Widget mainContent;
               if (filtered.isEmpty) {
@@ -129,18 +126,25 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                   message: 'No se encontraron productos con los filtros aplicados.',
                 );
               } else if (isMobile) {
-                mainContent = ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: filtered.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: AppTokens.s12),
-                  itemBuilder: (context, index) => _InventoryProductCard(
-                    product: filtered[index],
-                    onEdit: () => _onEditProduct(filtered[index]),
-                    onToggle: () => _onToggleActive(filtered[index]),
+                mainContent = SizedBox(
+                  height: viewportHeight,
+                  child: ListView.separated(
+                    itemCount: filtered.length,
+                    // itemExtent permite saltar a cualquier índice sin
+                    // medir los anteriores → scroll instantáneo en listas
+                    // grandes.
+                    separatorBuilder: (_, _) =>
+                        const SizedBox(height: AppTokens.s12),
+                    itemBuilder: (context, index) => _InventoryProductCard(
+                      key: ValueKey(filtered[index].id),
+                      product: filtered[index],
+                      onEdit: () => _onEditProduct(filtered[index]),
+                      onToggle: () => _onToggleActive(filtered[index]),
+                    ),
                   ),
                 );
               } else {
+                final access = ref.watch(roleAccessProvider);
                 mainContent = Container(
                   decoration: BoxDecoration(
                     color: AppTokens.card,
@@ -154,86 +158,28 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                         padding: const EdgeInsets.all(AppTokens.s20),
                         child: Text(
                           'Productos (${filtered.length})',
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                       ),
-                      DataTableShell(
-                        child: DataTable(
-                          headingRowColor: WidgetStateProperty.all(AppTokens.background),
-                          columns: const [
-                            DataColumn(label: Text('Producto')),
-                            DataColumn(label: Text('SKU')),
-                            DataColumn(label: Text('Referencia')),
-                            DataColumn(label: Text('Categoría')),
-                            DataColumn(label: Text('Costo'), numeric: true),
-                            DataColumn(label: Text('Precio'), numeric: true),
-                            DataColumn(label: Text('Stock'), numeric: true),
-                            DataColumn(label: Text('Estado')),
-                            DataColumn(label: Text('Acciones')),
-                          ],
-                          rows: filtered.map((product) => DataRow(
-                            cells: [
-                              DataCell(Text(
-                                product.name,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: product.isLowStock ? AppTokens.error : null,
-                                ),
-                              )),
-                              DataCell(Text(product.sku ?? '-')),
-                              DataCell(Text(product.internalCode ?? '-')),
-                              DataCell(Text(product.categoryName ?? '-')),
-                              DataCell(Text(
-                                money(product.cost),
-                                style: const TextStyle(
-                                  color: AppTokens.mutedForeground,
-                                ),
-                              )),
-                              DataCell(Text(money(product.price))),
-                              DataCell(Text(
-                                qty(product.stock),
-                                style: TextStyle(
-                                  color: product.isLowStock ? AppTokens.error : null,
-                                  fontWeight: product.isLowStock ? FontWeight.bold : null,
-                                ),
-                              )),
-                              DataCell(StatusBadge(
-                                label: product.isActive ? 'Activo' : 'Inactivo',
-                                status: product.isActive ? 'active' : 'inactive',
-                              )),
-                              DataCell(Builder(builder: (_) {
-                                final access = ref.watch(roleAccessProvider);
-                                return Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (access.canEditPrices)
-                                      IconButton(
-                                        tooltip: 'Editar',
-                                        icon: const Icon(Icons.edit_outlined,
-                                            size: 20),
-                                        onPressed: () => _onEditProduct(product),
-                                      ),
-                                    IconButton(
-                                      tooltip: 'Historial',
-                                      icon: const Icon(Icons.history_rounded,
-                                          size: 20),
-                                      onPressed: () => _onShowHistory(product),
-                                    ),
-                                    if (access.canManageInventoryAdjustments)
-                                      IconButton(
-                                        tooltip: 'Eliminar',
-                                        icon: const Icon(
-                                          Icons.delete_outline,
-                                          size: 20,
-                                          color: AppTokens.error,
-                                        ),
-                                        onPressed: () => _onDelete(product),
-                                      ),
-                                  ],
-                                );
-                              })),
-                            ],
-                          )).toList(),
+                      const _ProductRowHeader(),
+                      SizedBox(
+                        height: viewportHeight,
+                        child: ListView.builder(
+                          itemCount: filtered.length,
+                          itemExtent: 56,
+                          itemBuilder: (context, index) {
+                            final product = filtered[index];
+                            return _ProductRow(
+                              key: ValueKey(product.id),
+                              product: product,
+                              canEdit: access.canEditPrices,
+                              canDelete: access.canManageInventoryAdjustments,
+                              onEdit: () => _onEditProduct(product),
+                              onHistory: () => _onShowHistory(product),
+                              onDelete: () => _onDelete(product),
+                            );
+                          },
                         ),
                       ),
                     ],
@@ -1040,9 +986,219 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
   }
 }
 
+/// Header de la tabla virtualizada de productos (desktop). Se mantiene
+/// fijo arriba del ListView.builder que renderiza las filas; el header
+/// no se duplica por fila como en DataTable, así que es prácticamente
+/// gratis.
+class _ProductRowHeader extends StatelessWidget {
+  const _ProductRowHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTokens.background,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+      child: const Row(
+        children: [
+          Expanded(flex: 3, child: _ColumnLabel('Producto')),
+          Expanded(flex: 2, child: _ColumnLabel('SKU')),
+          Expanded(flex: 2, child: _ColumnLabel('Referencia')),
+          Expanded(flex: 2, child: _ColumnLabel('Categoría')),
+          Expanded(
+              flex: 2,
+              child:
+                  _ColumnLabel('Costo', align: TextAlign.right)),
+          Expanded(
+              flex: 2,
+              child:
+                  _ColumnLabel('Precio', align: TextAlign.right)),
+          Expanded(
+              flex: 2,
+              child:
+                  _ColumnLabel('Stock', align: TextAlign.right)),
+          Expanded(flex: 2, child: _ColumnLabel('Estado')),
+          SizedBox(width: 140, child: _ColumnLabel('Acciones')),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColumnLabel extends StatelessWidget {
+  const _ColumnLabel(this.text, {this.align = TextAlign.left});
+
+  final String text;
+  final TextAlign align;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: AppTokens.mutedForeground,
+        letterSpacing: 0.3,
+      ),
+    );
+  }
+}
+
+/// Fila virtualizada de la tabla de productos (desktop). Se usa con
+/// `ListView.builder(itemExtent: 56)` para que Flutter virtualice sin
+/// medir cada fila.
+class _ProductRow extends StatelessWidget {
+  const _ProductRow({
+    super.key,
+    required this.product,
+    required this.canEdit,
+    required this.canDelete,
+    required this.onEdit,
+    required this.onHistory,
+    required this.onDelete,
+  });
+
+  final InventoryProduct product;
+  final bool canEdit;
+  final bool canDelete;
+  final VoidCallback onEdit;
+  final VoidCallback onHistory;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final lowStock = product.isLowStock;
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(
+          top: BorderSide(color: AppTokens.border),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 3,
+            child: Text(
+              product.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: lowStock ? AppTokens.error : null,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              product.sku ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              product.internalCode ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              product.categoryName ?? '-',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(product.cost),
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTokens.mutedForeground,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(product.price),
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              qty(product.stock),
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                color: lowStock ? AppTokens.error : null,
+                fontWeight: lowStock ? FontWeight.bold : null,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: StatusBadge(
+              label: product.isActive ? 'Activo' : 'Inactivo',
+              status: product.isActive ? 'active' : 'inactive',
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (canEdit)
+                  IconButton(
+                    tooltip: 'Editar',
+                    icon: const Icon(Icons.edit_outlined, size: 20),
+                    onPressed: onEdit,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                IconButton(
+                  tooltip: 'Historial',
+                  icon: const Icon(Icons.history_rounded, size: 20),
+                  onPressed: onHistory,
+                  visualDensity: VisualDensity.compact,
+                ),
+                if (canDelete)
+                  IconButton(
+                    tooltip: 'Eliminar',
+                    icon: const Icon(
+                      Icons.delete_outline,
+                      size: 20,
+                      color: AppTokens.error,
+                    ),
+                    onPressed: onDelete,
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Mobile card for a single product.
 class _InventoryProductCard extends StatelessWidget {
   const _InventoryProductCard({
+    super.key,
     required this.product,
     required this.onEdit,
     required this.onToggle,
