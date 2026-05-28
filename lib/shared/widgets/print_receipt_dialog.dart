@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
 import '../../features/printing/data/printing.dart';
+import 'app_snackbar.dart';
 
 class PrintReceiptDialog extends StatefulWidget {
   const PrintReceiptDialog({super.key, required this.printData});
@@ -40,6 +41,53 @@ class _PrintReceiptDialogState extends State<PrintReceiptDialog> {
         PrintDocumentType.fiscalInvoice => 'Factura Fiscal',
         _ => 'Recibo de venta',
       };
+
+  /// Disparador del botón Imprimir.
+  ///
+  /// Importante para Flutter Web: NO hacemos Navigator.pop antes de llamar
+  /// a `Printing.layoutPdf`. Antes lo hacíamos y en algunos navegadores
+  /// (Chrome/Edge en Windows 10 con el bloqueador de pop-ups activo) el
+  /// "user gesture" del click se consideraba consumido por el pop y la
+  /// ventana de impresión nunca aparecía — sin error visible.
+  ///
+  /// Ahora:
+  ///   1. Llamamos `layoutPdf` directamente en el callback del click.
+  ///   2. Capturamos cualquier excepción y la mostramos con AppSnackBar
+  ///      (antes una falla era completamente silenciosa).
+  ///   3. Si retorna false (usuario canceló o el navegador bloqueó la
+  ///      ventana), mostramos un hint sobre el bloqueador de pop-ups.
+  ///   4. Solo cerramos el diálogo si la operación se completó OK.
+  Future<void> _onPrintPressed(BuildContext context) async {
+    final doc = widget.printData.document;
+    final name = doc.documentNumber;
+    final useThermal = _selectedSize == PrintPaperSize.thermal80mm;
+    final navigator = Navigator.of(context);
+    final messengerContext = context;
+
+    try {
+      final ok = await Printing.layoutPdf(
+        name: name,
+        onLayout: (format) => useThermal
+            ? const PdfReceiptBuilder().buildThermalBytes(doc)
+            : const PdfReceiptBuilder().buildBytes(doc, pageFormat: format),
+      );
+      if (!ok) {
+        if (messengerContext.mounted) {
+          AppSnackBar.info(
+            messengerContext,
+            'No se abrió la ventana de impresión. Si tu navegador la bloqueó, '
+            'permite las ventanas emergentes para este sitio.',
+          );
+        }
+        return;
+      }
+      if (navigator.mounted) navigator.pop();
+    } catch (error) {
+      if (messengerContext.mounted) {
+        AppSnackBar.error(messengerContext, 'No se pudo imprimir', error);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,19 +145,7 @@ class _PrintReceiptDialogState extends State<PrintReceiptDialog> {
           child: const Text('Cerrar'),
         ),
         FilledButton.icon(
-          onPressed: () async {
-            final doc = widget.printData.document;
-            final name = doc.documentNumber;
-            final useThermal = _selectedSize == PrintPaperSize.thermal80mm;
-            Navigator.pop(context);
-            await Printing.layoutPdf(
-              name: name,
-              onLayout: (format) => useThermal
-                  ? const PdfReceiptBuilder().buildThermalBytes(doc)
-                  : const PdfReceiptBuilder()
-                      .buildBytes(doc, pageFormat: format),
-            );
-          },
+          onPressed: () => _onPrintPressed(context),
           icon: const Icon(Icons.print_rounded, size: 18),
           label: const Text('Imprimir'),
         ),
