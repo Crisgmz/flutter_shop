@@ -1616,6 +1616,8 @@ class _ProductImagePicker extends StatelessWidget {
                       ? Image.network(
                           url,
                           fit: BoxFit.cover,
+                          cacheWidth: 144,
+                          cacheHeight: 144,
                           errorBuilder: (_, _, _) => const Icon(
                             Icons.broken_image_outlined,
                             color: AppTokens.mutedForeground,

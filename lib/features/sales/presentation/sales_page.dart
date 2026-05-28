@@ -54,7 +54,6 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     final productsAsync = ref.watch(salesProductsProvider);
     final categoriesAsync = ref.watch(salesCategoriesProvider);
     final clientsAsync = ref.watch(salesClientsProvider);
-    final query = ref.watch(salesSearchProvider).trim().toLowerCase();
     final selectedCategoryId = ref.watch(salesSelectedCategoryProvider);
     final posMode = ref.watch(posModeProvider);
     final isMobile = ResponsiveLayout.isMobile(context);
@@ -151,11 +150,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                       _buildSearchBar(categoriesAsync, selectedCategoryId),
                       const SizedBox(height: AppTokens.s12),
                       Expanded(
-                        child: _buildProductGrid(
-                          productsAsync,
-                          query,
-                          selectedCategoryId,
-                        ),
+                        child: _buildProductGrid(productsAsync),
                       ),
                     ],
                   ),
@@ -236,29 +231,35 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     );
   }
 
-  Widget _buildProductGrid(
-    AsyncValue<List<SalesProduct>> productsAsync,
-    String query,
-    String? selectedCategoryId,
-  ) {
+  Widget _buildProductGrid(AsyncValue<List<SalesProduct>> productsAsync) {
     return productsAsync.when(
-      data: (products) {
-        final filtered = _filterProducts(products, query: query, selectedCategoryId: selectedCategoryId);
+      data: (_) {
+        // El filtrado vive en salesFilteredProductsProvider — memoizado
+        // por (productsAsync × search × categoryId). Evita recalcular en
+        // cada keystroke / rebuild.
+        final filtered = ref.watch(salesFilteredProductsProvider);
         if (filtered.isEmpty) return const Center(child: Text('No hay productos.'));
 
         return LayoutBuilder(
           builder: (context, constraints) {
             final columns = (constraints.maxWidth / 165).floor().clamp(2, 8);
+            // mainAxisExtent fijo (vs childAspectRatio) permite a Flutter
+            // saltar a cualquier fila sin medir las anteriores — mucho
+            // más rápido en grids con muchos productos.
+            final tileSize =
+                ((constraints.maxWidth - (columns - 1) * 12) / columns)
+                    .clamp(120.0, 220.0);
             return GridView.builder(
               padding: const EdgeInsets.only(bottom: 20),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: columns,
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: 1, // cuadrado perfecto
+                mainAxisExtent: tileSize,
               ),
               itemCount: filtered.length,
               itemBuilder: (context, index) => _ProductCard(
+                key: ValueKey(filtered[index].id),
                 product: filtered[index],
                 onTap: () => _addProductToCart(filtered[index]),
               ),
@@ -545,12 +546,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// cliente o si la lista de clientes aún no se cargó.
   String? _currentClientTier() {
     if (_clientId == null) return null;
-    final clients = ref.read(salesClientsProvider).valueOrNull;
-    if (clients == null) return null;
-    for (final c in clients) {
-      if (c.id == _clientId) return c.priceTier;
-    }
-    return null;
+    return ref.read(salesClientsByIdProvider)[_clientId!]?.priceTier;
   }
 
   /// Si el setting global "No permitir venta sin stock" está apagado, el
@@ -642,18 +638,9 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     setState(() {
       _clientId = newId;
       if (_cart.isEmpty) return;
-      String? tier;
-      if (newId != null) {
-        final clients = ref.read(salesClientsProvider).valueOrNull;
-        if (clients != null) {
-          for (final c in clients) {
-            if (c.id == newId) {
-              tier = c.priceTier;
-              break;
-            }
-          }
-        }
-      }
+      final tier = newId == null
+          ? null
+          : ref.read(salesClientsByIdProvider)[newId]?.priceTier;
       for (var i = 0; i < _cart.length; i++) {
         final item = _cart[i];
         _cart[i] = SaleCartItem(
@@ -676,15 +663,6 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _searchController.clear();
     ref.read(salesSearchProvider.notifier).state = '';
   });
-
-  List<SalesProduct> _filterProducts(List<SalesProduct> products, {required String query, required String? selectedCategoryId}) {
-    return products.where((p) => 
-      p.isActive && 
-      p.stock > 0 && 
-      (selectedCategoryId == null || p.categoryId == selectedCategoryId) && 
-      (p.name.toLowerCase().contains(query) || (p.sku?.toLowerCase().contains(query) ?? false) || (p.barcode?.toLowerCase().contains(query) ?? false))
-    ).toList();
-  }
 
   /// Muestra un diálogo de confirmación con el resumen antes de enviar
   /// la venta a checkout. Si el usuario confirma, llama a `_checkout`.
@@ -1320,7 +1298,7 @@ class _ModePill extends StatelessWidget {
 }
 
 class _ProductCard extends StatelessWidget {
-  const _ProductCard({required this.product, required this.onTap});
+  const _ProductCard({super.key, required this.product, required this.onTap});
   final SalesProduct product;
   final VoidCallback onTap;
 
@@ -1366,6 +1344,13 @@ class _ProductCard extends StatelessWidget {
                               ? Image.network(
                                   product.imageUrl!,
                                   fit: BoxFit.cover,
+                                  // Decodificar a tamaño de pantalla (2x
+                                  // para retina). Evita gastar memoria
+                                  // decodificando una imagen de 2MB para
+                                  // un tile de 165 px.
+                                  cacheWidth: 360,
+                                  cacheHeight: 360,
+                                  filterQuality: FilterQuality.medium,
                                   errorBuilder: (_, _, _) => Center(
                                     child: Text(
                                       initial,
