@@ -41,15 +41,35 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
   /// IDs de clientes marcados con el checkbox para borrado masivo.
   final Set<String> _selectedIds = {};
 
+  /// Evita guardar el mismo cliente dos veces si el usuario reintenta antes
+  /// de que termine el primer guardado (red lenta) — causa de duplicados.
+  bool _isSavingClient = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Restaurar la selección si el usuario la dejó a medias y navegó a otra
+    // sección. Ver [clientsSelectionProvider].
+    _selectedIds.addAll(ref.read(clientsSelectionProvider));
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
+  /// Conserva la selección en el provider tras cada cambio (no en `dispose`,
+  /// que no es confiable) para no perderla al navegar a otra sección.
+  void _persistSelection() {
+    ref.read(clientsSelectionProvider.notifier).state =
+        Set<String>.from(_selectedIds);
+  }
+
   void _clearSelection() {
     if (_selectedIds.isEmpty) return;
     setState(_selectedIds.clear);
+    _persistSelection();
   }
 
   void _toggleSelected(String id, bool selected) {
@@ -60,6 +80,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
         _selectedIds.remove(id);
       }
     });
+    _persistSelection();
   }
 
   void _toggleSelectAll(List<ClientEntity> filtered, bool selectAll) {
@@ -70,6 +91,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
         _selectedIds.removeAll(filtered.map((c) => c.id));
       }
     });
+    _persistSelection();
   }
 
   Future<void> _onDeleteSelected(List<ClientEntity> filtered) async {
@@ -131,6 +153,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
 
     if (!mounted) return;
     setState(_selectedIds.clear);
+    _persistSelection();
     ref.invalidate(clientsListProvider);
     final parts = <String>[
       if (deleted > 0) '$deleted eliminado(s)',
@@ -375,6 +398,27 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
     ClientInput input, {
     required String successMessage,
   }) async {
+    // Guarda contra doble envío (evita insertar el mismo cliente 2 veces).
+    if (_isSavingClient) return;
+
+    // Al CREAR (sin id), avisar si ya hay un cliente con el mismo documento o
+    // nombre. No bloquea: deja crear si el usuario insiste.
+    if (input.id == null) {
+      final duplicate = _findDuplicateClient(input);
+      if (duplicate != null) {
+        final doc = duplicate.documentNumber?.trim();
+        final proceed = await _confirmDuplicate(
+          title: 'Posible cliente duplicado',
+          message:
+              'Ya existe el cliente "${duplicate.fullName}"'
+              '${doc != null && doc.isNotEmpty ? ' (Doc. $doc)' : ''}. '
+              '¿Crear uno nuevo de todas formas?',
+        );
+        if (proceed != true || !mounted) return;
+      }
+    }
+
+    _isSavingClient = true;
     final repository = ref.read(clientsRepositoryProvider);
     try {
       await repository.saveClient(input);
@@ -388,7 +432,55 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo guardar cliente: $error')),
       );
+    } finally {
+      _isSavingClient = false;
     }
+  }
+
+  /// Busca en la lista en memoria un cliente que probablemente sea el mismo
+  /// que se está por crear: coincide número de documento o nombre completo.
+  ClientEntity? _findDuplicateClient(ClientInput input) {
+    final clients = ref.read(clientsListProvider).valueOrNull;
+    if (clients == null) return null;
+
+    final name = input.fullName.trim().toLowerCase();
+    final doc = input.documentNumber?.trim().toLowerCase();
+
+    for (final c in clients) {
+      if (doc != null &&
+          doc.isNotEmpty &&
+          c.documentNumber?.trim().toLowerCase() == doc) {
+        return c;
+      }
+      if (name.isNotEmpty && c.fullName.trim().toLowerCase() == name) {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  /// Diálogo de confirmación reutilizable para avisos de posible duplicado.
+  Future<bool?> _confirmDuplicate({
+    required String title,
+    required String message,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Crear de todas formas'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _onToggleActive(ClientEntity client) async {

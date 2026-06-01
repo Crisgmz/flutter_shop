@@ -469,28 +469,39 @@ class InventoryRepository {
       for (final category in categories) category.id: category.name,
     };
 
-    final rows = await _client
-        .from('products')
-        .select(
-          'id, name, sku, barcode, category_id, unit, sale_unit, cost, price, '
-          'tax_rate, stock, min_stock, is_active, '
-          'internal_code, brand, model, image_url, notes, '
-          'is_service, is_tax_exempt, track_inventory, '
-          'size_label, variant_name, purchase_unit, '
-          'reorder_level, max_stock, allow_negative_stock, '
-          'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
-          'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
-          'price_tier_9, price_tier_10',
-        )
-        .eq('branch_id', branchId)
-        .order('name');
+    // Paginado: Supabase corta cada consulta en su tope (por defecto 1000
+    // filas). Con catálogos grandes (miles de productos) traer "todo" en una
+    // sola consulta dejaría fuera el resto. Pedimos en lotes avanzando por la
+    // cantidad realmente devuelta hasta que una página venga vacía.
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    var from = 0;
+    while (true) {
+      final page = await _client
+          .from('products')
+          .select(
+            'id, name, sku, barcode, category_id, unit, sale_unit, cost, price, '
+            'tax_rate, stock, min_stock, is_active, '
+            'internal_code, brand, model, image_url, notes, '
+            'is_service, is_tax_exempt, track_inventory, '
+            'size_label, variant_name, purchase_unit, '
+            'reorder_level, max_stock, allow_negative_stock, '
+            'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
+            'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
+            'price_tier_9, price_tier_10',
+          )
+          .eq('branch_id', branchId)
+          .order('name')
+          .range(from, from + pageSize - 1);
+      if (page.isEmpty) break;
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      from += page.length;
+      if (page.length < pageSize) break;
+    }
 
     return rows
         .map(
-          (item) => InventoryProduct.fromMap(
-            Map<String, dynamic>.from(item as Map),
-            categoryNames,
-          ),
+          (item) => InventoryProduct.fromMap(item, categoryNames),
         )
         .toList(growable: false);
   }

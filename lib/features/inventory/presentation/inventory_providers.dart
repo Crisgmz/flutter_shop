@@ -7,6 +7,12 @@ final inventorySearchProvider = StateProvider<String>((ref) => '');
 final inventoryLowStockOnlyProvider = StateProvider<bool>((ref) => false);
 final inventorySelectedCategoryProvider = StateProvider<String?>((ref) => null);
 
+/// IDs de productos marcados para borrado masivo. Vive en un provider (no en
+/// el estado local de la página) para que la selección no se pierda al
+/// navegar a otra sección y volver.
+final inventorySelectionProvider =
+    StateProvider<Set<String>>((ref) => <String>{});
+
 final inventoryRepositoryProvider = Provider<InventoryRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
   return InventoryRepository(client);

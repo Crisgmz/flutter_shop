@@ -31,6 +31,10 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
   bool _isSubmitting = false;
   bool _isBootstrapping = false;
   bool _didBootstrap = false;
+  // Cuando se guarda una cotización nueva, navegamos a su vista de edición.
+  // En ese caso NO debemos volver a guardar el borrador en dispose (sería
+  // restaurar líneas ya guardadas la próxima vez que se cree una nueva).
+  bool _skipDraftPersist = false;
   String? _quoteCode;
   DateTime? _createdAt;
   String? _convertedSaleId;
@@ -54,10 +58,40 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
       _convertedSaleId == null;
 
   @override
+  void initState() {
+    super.initState();
+    // Restaurar el borrador de una cotización nueva si el usuario lo dejó a
+    // medias y navegó a otra sección. No aplica al editar una existente.
+    if (!widget.isEditing) {
+      final draft = ref.read(quotationDraftProvider);
+      _items.addAll(draft.items);
+      _clientId = draft.clientId;
+      if (draft.validUntil != null) _validUntil = draft.validUntil!;
+      if (draft.status != null) _status = draft.status!;
+      _notesController.text = draft.notes;
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _notesController.dispose();
     super.dispose();
+  }
+
+  /// Guarda el borrador de la cotización NUEVA tras cada cambio (no en
+  /// `dispose`, que no es confiable) para no perderlo al navegar. Al editar
+  /// una existente no toca el borrador, y si ya se guardó tampoco
+  /// (ver [_skipDraftPersist]).
+  void _persistDraft() {
+    if (widget.isEditing || _skipDraftPersist) return;
+    ref.read(quotationDraftProvider.notifier).state = QuotationDraft(
+      items: List<QuoteDraftLine>.from(_items),
+      clientId: _clientId,
+      validUntil: _validUntil,
+      status: _status,
+      notes: _notesController.text,
+    );
   }
 
   @override
@@ -132,6 +166,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
         _items.add(QuoteDraftLine(product: product, quantity: 1));
       }
     });
+    _persistDraft();
   }
 
   void _updateQuantity(int index, double delta) {
@@ -145,6 +180,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
         _items[index] = current.copyWith(quantity: nextQuantity);
       }
     });
+    _persistDraft();
   }
 
   Future<void> _pickValidUntil() async {
@@ -171,6 +207,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
           _status = QuoteStatus.draft;
         }
       });
+      _persistDraft();
     }
   }
 
@@ -211,6 +248,10 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
         ref.invalidate(quotationDetailProvider(widget.quoteId!));
       } else {
         final createdId = await repository.createQuote(input);
+        // La cotización quedó guardada: descartamos el borrador para que la
+        // próxima "nueva" empiece en blanco y no lo re-guardamos en dispose.
+        _skipDraftPersist = true;
+        ref.read(quotationDraftProvider.notifier).state = const QuotationDraft();
         if (mounted) {
           context.go('/cotizaciones/$createdId');
         }
@@ -606,7 +647,10 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
                       ),
                     ],
                     onChanged: _canEditDocument
-                        ? (value) => setState(() => _clientId = value)
+                        ? (value) {
+                            setState(() => _clientId = value);
+                            _persistDraft();
+                          }
                         : null,
                   ),
                   loading: () => const LinearProgressIndicator(),
@@ -634,6 +678,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
                       ? (value) {
                           if (value != null) {
                             setState(() => _status = value);
+                            _persistDraft();
                           }
                         }
                       : null,
@@ -686,6 +731,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
               controller: _notesController,
               enabled: _canEditDocument,
               maxLines: 3,
+              onChanged: (_) => _persistDraft(),
               decoration: const InputDecoration(
                 hintText: 'Notas comerciales, condiciones o alcance...',
                 filled: true,

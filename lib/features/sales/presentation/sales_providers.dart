@@ -11,6 +11,32 @@ enum PosMode { sale, returnMode }
 
 final posModeProvider = StateProvider<PosMode>((ref) => PosMode.sale);
 
+/// Snapshot del carrito + cabecera de la venta en curso.
+///
+/// El POS guarda este snapshot al salir de la pantalla (en `dispose`) y lo
+/// restaura al volver (en `initState`). Así, si el cajero arma una venta y
+/// navega a otra sección, no pierde lo que estaba haciendo. El provider NO es
+/// autoDispose a propósito: debe sobrevivir mientras la app esté abierta.
+class SaleDraft {
+  const SaleDraft({
+    this.items = const [],
+    this.receiptType = 'consumer_final',
+    this.paymentMethod,
+    this.clientId,
+    this.notes = '',
+  });
+
+  final List<SaleCartItem> items;
+  final String receiptType;
+  final String? paymentMethod;
+  final String? clientId;
+  final String notes;
+
+  bool get isEmpty => items.isEmpty;
+}
+
+final saleDraftProvider = StateProvider<SaleDraft>((ref) => const SaleDraft());
+
 final salesRepositoryProvider = Provider<SalesRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
   return SalesRepository(client);

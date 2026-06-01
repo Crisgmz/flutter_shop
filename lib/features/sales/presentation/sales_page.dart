@@ -42,11 +42,39 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   double get _cartTotal => _cartSubtotal + _cartTax;
 
   @override
+  void initState() {
+    super.initState();
+    // Restaurar el carrito en curso si el cajero venía armando una venta y
+    // navegó a otra sección. Ver [saleDraftProvider].
+    final draft = ref.read(saleDraftProvider);
+    _cart.addAll(draft.items);
+    _receiptType = draft.receiptType;
+    _paymentMethod = draft.paymentMethod;
+    _clientId = draft.clientId;
+    _notesController.text = draft.notes;
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _notesController.dispose();
     _saleNumberController.dispose();
     super.dispose();
+  }
+
+  /// Guarda un snapshot del carrito + cabecera en [saleDraftProvider]. Se
+  /// llama tras cada cambio (no solo al salir) para que la venta en curso
+  /// sobreviva la navegación a otra sección. Guardar en `dispose` no es
+  /// confiable: escribir un provider mientras el widget se desmonta puede
+  /// no propagarse.
+  void _persistDraft() {
+    ref.read(saleDraftProvider.notifier).state = SaleDraft(
+      items: List<SaleCartItem>.from(_cart),
+      receiptType: _receiptType,
+      paymentMethod: _paymentMethod,
+      clientId: _clientId,
+      notes: _notesController.text,
+    );
   }
 
   @override
@@ -327,7 +355,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                               child: Text('Exportación (B16)'),
                             ),
                           ],
-                          onChanged: (v) => setState(() => _receiptType = v!),
+                          onChanged: (v) {
+                            setState(() => _receiptType = v!);
+                            _persistDraft();
+                          },
                         ),
                       ),
                     ),
@@ -375,6 +406,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
             padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16, vertical: 8),
             child: TextField(
               controller: _notesController,
+              onChanged: (_) => _persistDraft(),
               decoration: InputDecoration(
                 hintText: 'Notas de venta...',
                 hintStyle: const TextStyle(fontSize: 12),
@@ -429,8 +461,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                       if (!isReturn) ...[
                         _PaymentMethodPicker(
                           selected: _paymentMethod,
-                          onChange: (m) =>
-                              setState(() => _paymentMethod = m),
+                          onChange: (m) {
+                            setState(() => _paymentMethod = m);
+                            _persistDraft();
+                          },
                           isLocked: _isSubmitting,
                         ),
                         const SizedBox(height: 12),
@@ -583,6 +617,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         );
       }
     });
+    _persistDraft();
   }
 
   /// Setea la cantidad a un valor específico (desde el input del cart line).
@@ -605,6 +640,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           unitPrice: item.unitPrice,
           discountPct: item.discountPct,
         ));
+    _persistDraft();
   }
 
   /// Setea el precio unitario de una línea (override manual).
@@ -617,6 +653,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           unitPrice: value,
           discountPct: item.discountPct,
         ));
+    _persistDraft();
   }
 
   /// Setea el descuento porcentual de una línea (0-100).
@@ -629,6 +666,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           unitPrice: item.unitPrice,
           discountPct: clamped,
         ));
+    _persistDraft();
   }
 
   /// Cuando cambia el cliente, re-precia las líneas del carrito según el
@@ -651,18 +689,25 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         );
       }
     });
+    _persistDraft();
   }
 
-  void _removeItem(int index) => setState(() => _cart.removeAt(index));
+  void _removeItem(int index) {
+    setState(() => _cart.removeAt(index));
+    _persistDraft();
+  }
 
-  void _clearCart() => setState(() {
-    _cart.clear();
-    _notesController.clear();
-    _clientId = null;
-    _paymentMethod = null;
-    _searchController.clear();
-    ref.read(salesSearchProvider.notifier).state = '';
-  });
+  void _clearCart() {
+    setState(() {
+      _cart.clear();
+      _notesController.clear();
+      _clientId = null;
+      _paymentMethod = null;
+      _searchController.clear();
+      ref.read(salesSearchProvider.notifier).state = '';
+    });
+    _persistDraft();
+  }
 
   /// Muestra un diálogo de confirmación con el resumen antes de enviar
   /// la venta a checkout. Si el usuario confirma, llama a `_checkout`.
@@ -987,6 +1032,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
             'Devolución de venta ${result.saleNumber}';
         _saleNumberController.clear();
       });
+      _persistDraft();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

@@ -296,24 +296,35 @@ class SalesRepository {
       for (final category in categories) category.id: category.name,
     };
 
-    final rows = await _client
-        .from('products')
-        .select(
-          'id, name, sku, barcode, category_id, price, tax_rate, stock, '
-          'is_active, price_tier_1, price_tier_2, price_tier_3, '
-          'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
-          'price_tier_8, price_tier_9, price_tier_10, image_url',
-        )
-        .eq('branch_id', branchId)
-        .eq('is_active', true)
-        .order('name');
+    // Paginado: Supabase corta cada consulta en su tope (por defecto 1000
+    // filas). Con catálogos grandes (miles de productos) una sola consulta
+    // dejaría fuera el resto y no aparecerían en el POS. Pedimos en lotes
+    // avanzando por la cantidad devuelta hasta que una página venga vacía.
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    var from = 0;
+    while (true) {
+      final page = await _client
+          .from('products')
+          .select(
+            'id, name, sku, barcode, category_id, price, tax_rate, stock, '
+            'is_active, price_tier_1, price_tier_2, price_tier_3, '
+            'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
+            'price_tier_8, price_tier_9, price_tier_10, image_url',
+          )
+          .eq('branch_id', branchId)
+          .eq('is_active', true)
+          .order('name')
+          .range(from, from + pageSize - 1);
+      if (page.isEmpty) break;
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      from += page.length;
+      if (page.length < pageSize) break;
+    }
 
     return rows
         .map(
-          (item) => SalesProduct.fromMap(
-            Map<String, dynamic>.from(item as Map),
-            categoryNames,
-          ),
+          (item) => SalesProduct.fromMap(item, categoryNames),
         )
         .toList(growable: false);
   }

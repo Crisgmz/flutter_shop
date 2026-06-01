@@ -244,25 +244,35 @@ class ClientsRepository {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
-    final rows = await _client
-        .from('clients')
-        .select(
-          'id, full_name, entity_type, legal_name, email, phone, address, '
-          'document_type, document_number, credit_limit, balance_due, is_active, '
-          'first_name, last_name, company_name, secondary_phone, '
-          'address_line_1, address_line_2, city, province, country_code, '
-          'postal_code, google_maps_url, avatar_url, birthday, comments, '
-          'default_receipt_type, price_tier, tax_exempt, charge_itbis, '
-          'credit_invoice_limit',
-        )
-        .eq('branch_id', branchId)
-        .order('full_name');
+    // Paginado: Supabase corta cada consulta en su tope (por defecto 1000
+    // filas). Con muchos clientes una sola consulta dejaría fuera el resto.
+    // Pedimos en lotes avanzando por la cantidad devuelta hasta vaciar.
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    var from = 0;
+    while (true) {
+      final page = await _client
+          .from('clients')
+          .select(
+            'id, full_name, entity_type, legal_name, email, phone, address, '
+            'document_type, document_number, credit_limit, balance_due, is_active, '
+            'first_name, last_name, company_name, secondary_phone, '
+            'address_line_1, address_line_2, city, province, country_code, '
+            'postal_code, google_maps_url, avatar_url, birthday, comments, '
+            'default_receipt_type, price_tier, tax_exempt, charge_itbis, '
+            'credit_invoice_limit',
+          )
+          .eq('branch_id', branchId)
+          .order('full_name')
+          .range(from, from + pageSize - 1);
+      if (page.isEmpty) break;
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      from += page.length;
+      if (page.length < pageSize) break;
+    }
 
     return rows
-        .map(
-          (item) =>
-              ClientEntity.fromMap(Map<String, dynamic>.from(item as Map)),
-        )
+        .map(ClientEntity.fromMap)
         .toList(growable: false);
   }
 

@@ -6,6 +6,11 @@ import '../data/clients_repository.dart';
 final clientsSearchProvider = StateProvider<String>((ref) => '');
 final clientsShowInactiveProvider = StateProvider<bool>((ref) => false);
 
+/// IDs de clientes marcados para borrado masivo. Vive en un provider para
+/// que la selección no se pierda al navegar a otra sección y volver.
+final clientsSelectionProvider =
+    StateProvider<Set<String>>((ref) => <String>{});
+
 final clientsRepositoryProvider = Provider<ClientsRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
   return ClientsRepository(client);

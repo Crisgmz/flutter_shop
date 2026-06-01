@@ -33,15 +33,35 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
   /// IDs de productos marcados con el checkbox para borrado masivo.
   final Set<String> _selectedIds = {};
 
+  /// Evita guardar el mismo producto dos veces si el usuario reintenta antes
+  /// de que termine el primer guardado (red lenta) — causa de duplicados.
+  bool _isSavingProduct = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Restaurar la selección de productos si el usuario la dejó a medias y
+    // navegó a otra sección. Ver [inventorySelectionProvider].
+    _selectedIds.addAll(ref.read(inventorySelectionProvider));
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
+  /// Conserva la selección en el provider tras cada cambio (no en `dispose`,
+  /// que no es confiable) para no perderla al navegar a otra sección.
+  void _persistSelection() {
+    ref.read(inventorySelectionProvider.notifier).state =
+        Set<String>.from(_selectedIds);
+  }
+
   void _clearSelection() {
     if (_selectedIds.isEmpty) return;
     setState(_selectedIds.clear);
+    _persistSelection();
   }
 
   void _toggleSelected(String id, bool selected) {
@@ -52,6 +72,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         _selectedIds.remove(id);
       }
     });
+    _persistSelection();
   }
 
   /// Marca/desmarca todos los productos actualmente filtrados.
@@ -63,6 +84,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         _selectedIds.removeAll(filtered.map((p) => p.id));
       }
     });
+    _persistSelection();
   }
 
   @override
@@ -457,6 +479,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
 
     if (!mounted) return;
     setState(_selectedIds.clear);
+    _persistSelection();
     ref.invalidate(inventoryProductsProvider);
     final parts = <String>[
       if (deleted > 0) '$deleted eliminado(s)',
@@ -555,6 +578,27 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     InventoryProductInput input, {
     required String successMessage,
   }) async {
+    // Guarda contra doble envío (evita insertar el mismo producto 2 veces).
+    if (_isSavingProduct) return;
+
+    // Al CREAR (sin id), avisar si ya hay un producto con el mismo SKU,
+    // código de barras o nombre. No bloquea: deja crear si el usuario insiste.
+    if (input.id == null) {
+      final duplicate = _findDuplicateProduct(input);
+      if (duplicate != null) {
+        final sku = duplicate.sku?.trim();
+        final proceed = await _confirmDuplicate(
+          title: 'Posible producto duplicado',
+          message:
+              'Ya existe el producto "${duplicate.name}"'
+              '${sku != null && sku.isNotEmpty ? ' (SKU $sku)' : ''}. '
+              '¿Crear uno nuevo de todas formas?',
+        );
+        if (proceed != true || !mounted) return;
+      }
+    }
+
+    _isSavingProduct = true;
     final repository = ref.read(inventoryRepositoryProvider);
 
     try {
@@ -570,7 +614,59 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo guardar producto: $error')),
       );
+    } finally {
+      _isSavingProduct = false;
     }
+  }
+
+  /// Busca en la lista en memoria un producto que probablemente sea el mismo
+  /// que se está por crear: coincide SKU, código de barras o nombre.
+  InventoryProduct? _findDuplicateProduct(InventoryProductInput input) {
+    final products = ref.read(inventoryProductsProvider).valueOrNull;
+    if (products == null) return null;
+
+    final name = input.name.trim().toLowerCase();
+    final sku = input.sku?.trim().toLowerCase();
+    final barcode = input.barcode?.trim().toLowerCase();
+
+    for (final p in products) {
+      if (sku != null && sku.isNotEmpty && p.sku?.trim().toLowerCase() == sku) {
+        return p;
+      }
+      if (barcode != null &&
+          barcode.isNotEmpty &&
+          p.barcode?.trim().toLowerCase() == barcode) {
+        return p;
+      }
+      if (name.isNotEmpty && p.name.trim().toLowerCase() == name) {
+        return p;
+      }
+    }
+    return null;
+  }
+
+  /// Diálogo de confirmación reutilizable para avisos de posible duplicado.
+  Future<bool?> _confirmDuplicate({
+    required String title,
+    required String message,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Crear de todas formas'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<List<InventoryCategory>?> _readCategoriesOrShowError() async {
