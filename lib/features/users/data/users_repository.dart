@@ -262,7 +262,7 @@ class UsersRepository {
   }
 
   Future<void> updateUser(UserInput input) async {
-    await _client
+    final rows = await _client
         .from('profiles')
         .update({
           'full_name': input.fullName.trim(),
@@ -274,17 +274,33 @@ class UsersRepository {
           'hire_date': input.hireDate?.toIso8601String().split('T').first,
           'notes': _nullIfEmpty(input.notes),
         })
-        .eq('id', input.id);
+        .eq('id', input.id)
+        .select('id');
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'No se guardaron los cambios. No tienes permiso para modificar este '
+        'usuario o no pertenece a tu empresa.',
+      );
+    }
   }
 
   Future<void> setUserActive({
     required String userId,
     required bool isActive,
   }) async {
-    await _client
+    final rows = await _client
         .from('profiles')
         .update({'is_active': isActive})
-        .eq('id', userId);
+        .eq('id', userId)
+        .select('id');
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'No se pudo cambiar el estado. No tienes permiso para modificar este '
+        'usuario o no pertenece a tu empresa.',
+      );
+    }
   }
 
   Future<void> assignBranch(UserBranchAssignInput input) async {

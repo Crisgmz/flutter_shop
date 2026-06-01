@@ -676,21 +676,37 @@ class CashRegisterRepository {
         .toList(growable: false);
   }
 
-  /// Trae las sesiones abiertas del usuario actual en la sucursal,
-  /// joineando con cash_registers para obtener el nombre.
-  /// Útil cuando un usuario tiene varias cajas abiertas (migration 42).
+  /// Trae las sesiones de caja ABIERTAS a las que el usuario actual tiene
+  /// acceso (cajas a las que está asignado vía cash_register_users), sin
+  /// importar quién las abrió, más cualquier sesión propia (incluidas las
+  /// legacy sin caja). Así, si el admin ya abrió una caja, el cajero la ve
+  /// abierta y entra a ELLA en vez de abrir otra encima (2 cuadres).
+  /// Une con cash_registers para obtener el nombre de cada caja.
   Future<List<MyOpenCashSession>> fetchMyOpenSessions() async {
     final branchId = await _currentBranchId();
     final userId = _client.auth.currentUser?.id;
     if (branchId == null || userId == null) return const [];
 
-    final sessionRows = await _client
+    // Cajas a las que el usuario está asignado.
+    final myRegisters = await fetchMyCashRegisters();
+    final myRegisterIds = myRegisters.map((cr) => cr.id).toList();
+
+    final query = _client
         .from('cash_sessions')
         .select('id, cash_register_id, opened_at, opening_amount')
         .eq('branch_id', branchId)
-        .eq('opened_by', userId)
-        .eq('status', 'open')
-        .order('opened_at', ascending: false);
+        .eq('status', 'open');
+
+    final filtered = myRegisterIds.isEmpty
+        // Sin cajas asignadas → solo sus propias sesiones (modo legacy).
+        ? query.eq('opened_by', userId)
+        // Sesiones de mis cajas (de quien sea) + mis propias sesiones.
+        : query.or(
+            'cash_register_id.in.(${myRegisterIds.join(',')}),'
+            'opened_by.eq.$userId',
+          );
+
+    final sessionRows = await filtered.order('opened_at', ascending: false);
 
     if (sessionRows.isEmpty) return const [];
 

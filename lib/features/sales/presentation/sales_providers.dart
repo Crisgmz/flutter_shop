@@ -48,7 +48,10 @@ final salesFilteredProductsProvider =
   final categoryId = ref.watch(salesSelectedCategoryProvider);
 
   return products.where((p) {
-    if (!p.isActive || p.stock <= 0) return false;
+    // Mostramos productos aunque tengan stock 0 (se ven con cantidad 0); solo
+    // ocultamos los inactivos. El bloqueo de venta sin stock, si aplica, lo
+    // maneja el setting "No permitir venta sin stock" al agregar al carrito.
+    if (!p.isActive) return false;
     if (categoryId != null && p.categoryId != categoryId) return false;
     if (rawQuery.isEmpty) return true;
     return p.name.toLowerCase().contains(rawQuery) ||

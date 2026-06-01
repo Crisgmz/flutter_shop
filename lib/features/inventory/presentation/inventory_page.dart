@@ -30,10 +30,39 @@ class InventoryPage extends ConsumerStatefulWidget {
 class _InventoryPageState extends ConsumerState<InventoryPage> {
   final _searchController = TextEditingController();
 
+  /// IDs de productos marcados con el checkbox para borrado masivo.
+  final Set<String> _selectedIds = {};
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _clearSelection() {
+    if (_selectedIds.isEmpty) return;
+    setState(_selectedIds.clear);
+  }
+
+  void _toggleSelected(String id, bool selected) {
+    setState(() {
+      if (selected) {
+        _selectedIds.add(id);
+      } else {
+        _selectedIds.remove(id);
+      }
+    });
+  }
+
+  /// Marca/desmarca todos los productos actualmente filtrados.
+  void _toggleSelectAll(List<InventoryProduct> filtered, bool selectAll) {
+    setState(() {
+      if (selectAll) {
+        _selectedIds.addAll(filtered.map((p) => p.id));
+      } else {
+        _selectedIds.removeAll(filtered.map((p) => p.id));
+      }
+    });
   }
 
   @override
@@ -145,6 +174,14 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                 );
               } else {
                 final access = ref.watch(roleAccessProvider);
+                final canSelect = access.canManageInventoryAdjustments;
+                final allSelected = filtered.isNotEmpty &&
+                    filtered.every((p) => _selectedIds.contains(p.id));
+                final someSelected =
+                    filtered.any((p) => _selectedIds.contains(p.id));
+                // Tristate: true=todos, null=algunos, false=ninguno.
+                final bool? selectAllValue =
+                    allSelected ? true : (someSelected ? null : false);
                 mainContent = Container(
                   decoration: BoxDecoration(
                     color: AppTokens.card,
@@ -156,13 +193,46 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                     children: [
                       Padding(
                         padding: const EdgeInsets.all(AppTokens.s20),
-                        child: Text(
-                          'Productos (${filtered.length})',
-                          style: const TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold),
+                        child: Row(
+                          children: [
+                            Text(
+                              'Productos (${filtered.length})',
+                              style: const TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                            if (canSelect && _selectedIds.isNotEmpty) ...[
+                              const SizedBox(width: AppTokens.s16),
+                              Text(
+                                '${_selectedIds.length} seleccionado(s)',
+                                style: const TextStyle(
+                                  color: AppTokens.mutedForeground,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const Spacer(),
+                              TextButton(
+                                onPressed: _clearSelection,
+                                child: const Text('Cancelar'),
+                              ),
+                              const SizedBox(width: AppTokens.s8),
+                              FilledButton.icon(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppTokens.error,
+                                ),
+                                onPressed: () => _onDeleteSelected(filtered),
+                                icon: const Icon(Icons.delete_outline, size: 18),
+                                label: Text('Eliminar (${_selectedIds.length})'),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
-                      const _ProductRowHeader(),
+                      _ProductRowHeader(
+                        showCheckbox: canSelect,
+                        selectAllValue: selectAllValue,
+                        onSelectAll: (v) =>
+                            _toggleSelectAll(filtered, v ?? false),
+                      ),
                       SizedBox(
                         height: viewportHeight,
                         child: ListView.builder(
@@ -175,6 +245,10 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                               product: product,
                               canEdit: access.canEditPrices,
                               canDelete: access.canManageInventoryAdjustments,
+                              showCheckbox: canSelect,
+                              selected: _selectedIds.contains(product.id),
+                              onSelectedChanged: (v) =>
+                                  _toggleSelected(product.id, v ?? false),
                               onEdit: () => _onEditProduct(product),
                               onHistory: () => _onShowHistory(product),
                               onDelete: () => _onDelete(product),
@@ -324,6 +398,80 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     }
   }
 
+  Future<void> _onDeleteSelected(List<InventoryProduct> filtered) async {
+    final selected =
+        filtered.where((p) => _selectedIds.contains(p.id)).toList();
+    if (selected.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar productos'),
+        content: Text(
+          '¿Eliminar ${selected.length} producto(s) seleccionado(s)?\n\n'
+          'Los que tengan ventas o compras registradas no se podrán borrar '
+          'y se desactivarán en su lugar.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Eliminar (${selected.length})'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repository = ref.read(inventoryRepositoryProvider);
+    var deleted = 0;
+    var deactivated = 0;
+    var failed = 0;
+    for (final product in selected) {
+      try {
+        await repository.deleteProduct(product.id);
+        deleted++;
+      } on PostgrestException catch (e) {
+        // FK violation = tiene ventas/compras → soft-delete.
+        if (e.code == '23503') {
+          try {
+            await repository.setProductActive(
+              productId: product.id,
+              isActive: false,
+            );
+            deactivated++;
+          } catch (_) {
+            failed++;
+          }
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    ref.invalidate(inventoryProductsProvider);
+    final parts = <String>[
+      if (deleted > 0) '$deleted eliminado(s)',
+      if (deactivated > 0) '$deactivated desactivado(s)',
+      if (failed > 0) '$failed con error',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          parts.isEmpty ? 'Sin cambios.' : parts.join('  ·  '),
+        ),
+      ),
+    );
+  }
+
   Future<void> _onDelete(InventoryProduct product) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -443,8 +591,8 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
       position: PopupMenuPosition.under,
       onSelected: (value) {
         switch (value) {
-          case 'template':
-            _onDownloadTemplate();
+          case 'import':
+            _onOpenImportDialog();
             break;
           case 'export':
             _onExportInventory();
@@ -452,17 +600,14 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
           case 'export_pdf':
             _onExportInventoryPdf();
             break;
-          case 'import':
-            _onImportInventory();
-            break;
         }
       },
       itemBuilder: (_) => const [
         PopupMenuItem(
-          value: 'template',
+          value: 'import',
           child: ListTile(
-            leading: Icon(Icons.description_outlined),
-            title: Text('Descargar plantilla'),
+            leading: Icon(Icons.file_upload_outlined),
+            title: Text('Importar / Actualizar'),
             contentPadding: EdgeInsets.zero,
           ),
         ),
@@ -482,14 +627,6 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
             contentPadding: EdgeInsets.zero,
           ),
         ),
-        PopupMenuItem(
-          value: 'import',
-          child: ListTile(
-            leading: Icon(Icons.file_upload_outlined),
-            title: Text('Importar inventario'),
-            contentPadding: EdgeInsets.zero,
-          ),
-        ),
       ],
       child: OutlinedButton.icon(
         onPressed: null,
@@ -503,33 +640,11 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     );
   }
 
-  Future<void> _onDownloadTemplate() async {
-    final categories = await _readCategoriesOrShowError();
-    if (categories == null || !mounted) return;
-
-    try {
-      final bytes = InventoryExcelService().buildTemplate(
-        categories: categories,
-      );
-      final fileName =
-          'plantilla_inventario_${_timestamp()}.xlsx';
-      final saved = await FileIoHelper.saveBytes(
-        bytes: bytes,
-        fileName: fileName,
-        dialogTitle: 'Guardar plantilla de inventario',
-      );
-      if (!mounted) return;
-      if (saved) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Plantilla generada')),
-        );
-      }
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo generar la plantilla: $error')),
-      );
-    }
+  Future<void> _onOpenImportDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const _ImportInventoryDialog(),
+    );
   }
 
   Future<void> _onExportInventory() async {
@@ -582,79 +697,6 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
         SnackBar(content: Text('No se pudo exportar: $error')),
       );
     }
-  }
-
-  Future<void> _onImportInventory() async {
-    // Web: el FilePicker (input type=file) requiere user gesture activo.
-    // Si hacemos awaits antes (ej. cargar categorías), Chrome/Edge lo
-    // consideran consumido y el diálogo nunca aparece. Por eso abrimos
-    // el picker PRIMERO y cargamos categorías después.
-    final Uint8List? bytes;
-    try {
-      bytes = await FileIoHelper.pickXlsxBytes();
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo abrir el archivo: $error')),
-      );
-      return;
-    }
-    if (bytes == null || !mounted) return;
-
-    final categories = await _readCategoriesOrShowError();
-    if (categories == null || !mounted) return;
-
-    final InventoryImportParseResult parsed;
-    try {
-      parsed = InventoryExcelService().parseImport(
-        bytes: bytes,
-        categories: categories,
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Archivo inválido: $error')),
-      );
-      return;
-    }
-
-    if (parsed.totalRows == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('El archivo no contiene filas con datos.'),
-        ),
-      );
-      return;
-    }
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => _ImportPreviewDialog(parseResult: parsed),
-    );
-    if (confirmed != true || !mounted) return;
-    if (parsed.inputs.isEmpty) return;
-
-    final repository = ref.read(inventoryRepositoryProvider);
-    final InventoryBulkUpsertResult result;
-    try {
-      result = await repository.bulkUpsertProducts(parsed.inputs);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error durante la importación: $error')),
-      );
-      return;
-    }
-
-    if (!mounted) return;
-    ref.invalidate(inventoryProductsProvider);
-    await showDialog<void>(
-      context: context,
-      builder: (_) => _ImportResultDialog(
-        result: result,
-        parseErrors: parsed.errors,
-      ),
-    );
   }
 
   String _timestamp() {
@@ -991,7 +1033,15 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
 /// no se duplica por fila como en DataTable, así que es prácticamente
 /// gratis.
 class _ProductRowHeader extends StatelessWidget {
-  const _ProductRowHeader();
+  const _ProductRowHeader({
+    this.showCheckbox = false,
+    this.selectAllValue = false,
+    this.onSelectAll,
+  });
+
+  final bool showCheckbox;
+  final bool? selectAllValue;
+  final ValueChanged<bool?>? onSelectAll;
 
   @override
   Widget build(BuildContext context) {
@@ -999,9 +1049,18 @@ class _ProductRowHeader extends StatelessWidget {
       color: AppTokens.background,
       padding: const EdgeInsets.symmetric(
           horizontal: AppTokens.s16, vertical: AppTokens.s10),
-      child: const Row(
+      child: Row(
         children: [
-          Expanded(flex: 3, child: _ColumnLabel('Producto')),
+          if (showCheckbox)
+            SizedBox(
+              width: 40,
+              child: Checkbox(
+                value: selectAllValue,
+                tristate: true,
+                onChanged: onSelectAll,
+              ),
+            ),
+          const Expanded(flex: 3, child: _ColumnLabel('Producto')),
           Expanded(flex: 2, child: _ColumnLabel('SKU')),
           Expanded(flex: 2, child: _ColumnLabel('Referencia')),
           Expanded(flex: 2, child: _ColumnLabel('Categoría')),
@@ -1058,6 +1117,9 @@ class _ProductRow extends StatelessWidget {
     required this.onEdit,
     required this.onHistory,
     required this.onDelete,
+    this.showCheckbox = false,
+    this.selected = false,
+    this.onSelectedChanged,
   });
 
   final InventoryProduct product;
@@ -1066,19 +1128,31 @@ class _ProductRow extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onHistory;
   final VoidCallback onDelete;
+  final bool showCheckbox;
+  final bool selected;
+  final ValueChanged<bool?>? onSelectedChanged;
 
   @override
   Widget build(BuildContext context) {
     final lowStock = product.isLowStock;
     return Container(
-      decoration: const BoxDecoration(
-        border: Border(
+      decoration: BoxDecoration(
+        color: selected ? AppTokens.primary.withValues(alpha: 0.06) : null,
+        border: const Border(
           top: BorderSide(color: AppTokens.border),
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
       child: Row(
         children: [
+          if (showCheckbox)
+            SizedBox(
+              width: 40,
+              child: Checkbox(
+                value: selected,
+                onChanged: onSelectedChanged,
+              ),
+            ),
           Expanded(
             flex: 3,
             child: Text(
@@ -1912,6 +1986,316 @@ class _CategoryColorDot extends StatelessWidget {
       radix: 16,
     );
     return value == null ? null : Color(value);
+  }
+}
+
+/// Diálogo de 2 pasos para importar / actualizar inventario por Excel.
+///
+/// Paso 1: descargar plantilla (artículos nuevos = vacía, o existentes =
+/// inventario actual pre-llenado para editar). Paso 2: subir el archivo
+/// lleno; la SKU decide si cada fila se crea o se actualiza.
+class _ImportInventoryDialog extends ConsumerStatefulWidget {
+  const _ImportInventoryDialog();
+
+  @override
+  ConsumerState<_ImportInventoryDialog> createState() =>
+      _ImportInventoryDialogState();
+}
+
+class _ImportInventoryDialogState
+    extends ConsumerState<_ImportInventoryDialog> {
+  Uint8List? _pickedBytes;
+  String? _pickedName;
+
+  /// Operación en curso: 'new', 'existing' o 'process' (null = ninguna).
+  String? _busy;
+
+  bool get _isBusy => _busy != null;
+
+  String _stamp() {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}';
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<List<InventoryCategory>?> _categories() async {
+    try {
+      return await ref.read(inventoryCategoriesProvider.future);
+    } catch (error) {
+      _snack('No se pudieron cargar categorías: $error');
+      return null;
+    }
+  }
+
+  Future<void> _downloadNew() async {
+    setState(() => _busy = 'new');
+    try {
+      final categories = await _categories();
+      if (categories == null) return;
+      final bytes = InventoryExcelService().buildTemplate(
+        categories: categories,
+      );
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'plantilla_articulos_nuevos_${_stamp()}.xlsx',
+        dialogTitle: 'Guardar plantilla de artículos nuevos',
+      );
+      if (saved) _snack('Plantilla para artículos nuevos generada');
+    } catch (error) {
+      _snack('No se pudo generar la plantilla: $error');
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  Future<void> _downloadExisting() async {
+    setState(() => _busy = 'existing');
+    try {
+      final categories = await _categories();
+      if (categories == null) return;
+      final products = await ref.read(inventoryProductsProvider.future);
+      if (products.isEmpty) {
+        _snack('No hay artículos existentes para actualizar.');
+        return;
+      }
+      final bytes = InventoryExcelService().buildExport(
+        products: products,
+        categories: categories,
+      );
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'actualizar_articulos_existentes_${_stamp()}.xlsx',
+        dialogTitle: 'Guardar plantilla de artículos existentes',
+      );
+      if (saved) {
+        _snack('Plantilla con ${products.length} artículos existentes generada');
+      }
+    } catch (error) {
+      _snack('No se pudo generar la plantilla: $error');
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  Future<void> _pickFile() async {
+    // Web: el picker requiere user gesture activo, así que se invoca
+    // directo desde el onPressed sin awaits previos.
+    try {
+      final picked = await FileIoHelper.pickXlsxFile();
+      if (picked == null || !mounted) return;
+      setState(() {
+        _pickedBytes = picked.bytes;
+        _pickedName = picked.name;
+      });
+    } catch (error) {
+      _snack('No se pudo abrir el archivo: $error');
+    }
+  }
+
+  Future<void> _process() async {
+    final bytes = _pickedBytes;
+    if (bytes == null) return;
+    setState(() => _busy = 'process');
+    try {
+      final categories = await _categories();
+      if (categories == null) return;
+
+      final InventoryImportParseResult parsed;
+      try {
+        parsed = InventoryExcelService().parseImport(
+          bytes: bytes,
+          categories: categories,
+        );
+      } catch (error) {
+        _snack('Archivo inválido: $error');
+        return;
+      }
+
+      if (parsed.totalRows == 0) {
+        _snack('El archivo no contiene filas con datos.');
+        return;
+      }
+
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => _ImportPreviewDialog(parseResult: parsed),
+      );
+      if (confirmed != true || !mounted) return;
+      if (parsed.inputs.isEmpty) return;
+
+      final repository = ref.read(inventoryRepositoryProvider);
+      final InventoryBulkUpsertResult result;
+      try {
+        result = await repository.bulkUpsertProducts(parsed.inputs);
+      } catch (error) {
+        _snack('Error durante la importación: $error');
+        return;
+      }
+
+      if (!mounted) return;
+      ref.invalidate(inventoryProductsProvider);
+      // El diálogo de resultado se muestra encima; al cerrarse, cerramos
+      // también este diálogo de importación.
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _ImportResultDialog(
+          result: result,
+          parseErrors: parsed.errors,
+        ),
+      );
+      if (mounted) Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isMobile = ResponsiveLayout.isMobile(context);
+    return AlertDialog(
+      title: const Text('Importar / Actualizar inventario'),
+      content: SizedBox(
+        width: isMobile ? double.maxFinite : 560,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _stepHeader(
+                'Paso 1',
+                'Descarga una plantilla, llénala con tus artículos y guárdala.',
+              ),
+              const SizedBox(height: AppTokens.s12),
+              _downloadButton(
+                icon: Icons.note_add_outlined,
+                label: 'Plantilla para artículos NUEVOS',
+                busyKey: 'new',
+                onPressed: _downloadNew,
+              ),
+              const SizedBox(height: AppTokens.s8),
+              _downloadButton(
+                icon: Icons.edit_note_outlined,
+                label: 'Plantilla para artículos EXISTENTES (actualizar)',
+                busyKey: 'existing',
+                onPressed: _downloadExisting,
+              ),
+              const SizedBox(height: AppTokens.s20),
+              const Divider(height: 1),
+              const SizedBox(height: AppTokens.s20),
+              _stepHeader(
+                'Paso 2',
+                'Sube el archivo lleno para crear y actualizar. La columna '
+                    '"sku" decide: si existe se actualiza, si no, se crea.',
+              ),
+              const SizedBox(height: AppTokens.s12),
+              Row(
+                children: [
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'La ruta del archivo',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      child: Text(
+                        _pickedName ?? 'Ningún archivo seleccionado',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _pickedName == null
+                              ? AppTokens.mutedForeground
+                              : AppTokens.foreground,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: AppTokens.s8),
+                  OutlinedButton.icon(
+                    onPressed: _isBusy ? null : _pickFile,
+                    icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    label: const Text('Elegir archivo'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isBusy ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cerrar'),
+        ),
+        FilledButton.icon(
+          onPressed: (_pickedBytes == null || _isBusy) ? null : _process,
+          icon: _busy == 'process'
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.upload_file_outlined, size: 18),
+          label: const Text('Procesar'),
+        ),
+      ],
+    );
+  }
+
+  Widget _stepHeader(String step, String description) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          step,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          description,
+          style: const TextStyle(
+            color: AppTokens.mutedForeground,
+            fontSize: 13,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _downloadButton({
+    required IconData icon,
+    required String label,
+    required String busyKey,
+    required VoidCallback onPressed,
+  }) {
+    final isBusy = _busy == busyKey;
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.tonalIcon(
+        onPressed: _isBusy ? null : onPressed,
+        icon: isBusy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(icon, size: 18),
+        label: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(label),
+        ),
+        style: FilledButton.styleFrom(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+      ),
+    );
   }
 }
 

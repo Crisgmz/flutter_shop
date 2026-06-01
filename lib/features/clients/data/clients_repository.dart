@@ -394,6 +394,22 @@ class ClientsRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Borra el cliente físicamente. Si tiene ventas/pagos vinculados la DB
+  /// lo bloquea con FK violation (código 23503). El caller decide si hacer
+  /// fallback a soft-delete (desactivar).
+  Future<void> deleteClient(String clientId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    await _client
+        .from('clients')
+        .delete()
+        .eq('id', clientId)
+        .eq('branch_id', branchId);
+  }
+
   /// Historial de pagos hechos por un cliente.
   Future<List<ClientPaymentRow>> fetchPaymentsForClient(
     String clientId, {

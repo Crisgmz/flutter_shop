@@ -76,6 +76,24 @@ class FileIoHelper {
     return File(path).readAsBytes();
   }
 
+  /// Igual que [pickXlsxBytes] pero devuelve también el nombre del archivo,
+  /// para mostrarlo en la UI ("La ruta del archivo").
+  static Future<({Uint8List bytes, String name})?> pickXlsxFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['xlsx'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+    var bytes = file.bytes;
+    if (bytes == null && file.path != null) {
+      bytes = await File(file.path!).readAsBytes();
+    }
+    if (bytes == null) return null;
+    return (bytes: bytes, name: file.name);
+  }
+
   /// MIME type aproximado a partir de la extensión sin punto. Usado por la
   /// descarga web; el resto de plataformas no lo necesitan.
   static String _mimeFor(String extension) {

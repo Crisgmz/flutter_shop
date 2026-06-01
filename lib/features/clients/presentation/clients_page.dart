@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -37,10 +38,110 @@ class ClientsPage extends ConsumerStatefulWidget {
 class _ClientsPageState extends ConsumerState<ClientsPage> {
   final _searchController = TextEditingController();
 
+  /// IDs de clientes marcados con el checkbox para borrado masivo.
+  final Set<String> _selectedIds = {};
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _clearSelection() {
+    if (_selectedIds.isEmpty) return;
+    setState(_selectedIds.clear);
+  }
+
+  void _toggleSelected(String id, bool selected) {
+    setState(() {
+      if (selected) {
+        _selectedIds.add(id);
+      } else {
+        _selectedIds.remove(id);
+      }
+    });
+  }
+
+  void _toggleSelectAll(List<ClientEntity> filtered, bool selectAll) {
+    setState(() {
+      if (selectAll) {
+        _selectedIds.addAll(filtered.map((c) => c.id));
+      } else {
+        _selectedIds.removeAll(filtered.map((c) => c.id));
+      }
+    });
+  }
+
+  Future<void> _onDeleteSelected(List<ClientEntity> filtered) async {
+    final selected =
+        filtered.where((c) => _selectedIds.contains(c.id)).toList();
+    if (selected.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar clientes'),
+        content: Text(
+          '¿Eliminar ${selected.length} cliente(s) seleccionado(s)?\n\n'
+          'Los que tengan ventas o pagos registrados no se podrán borrar '
+          'y se desactivarán en su lugar.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTokens.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Eliminar (${selected.length})'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repository = ref.read(clientsRepositoryProvider);
+    var deleted = 0;
+    var deactivated = 0;
+    var failed = 0;
+    for (final client in selected) {
+      try {
+        await repository.deleteClient(client.id);
+        deleted++;
+      } on PostgrestException catch (e) {
+        // FK violation = tiene ventas/pagos → soft-delete.
+        if (e.code == '23503') {
+          try {
+            await repository.setClientActive(
+              clientId: client.id,
+              isActive: false,
+            );
+            deactivated++;
+          } catch (_) {
+            failed++;
+          }
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    ref.invalidate(clientsListProvider);
+    final parts = <String>[
+      if (deleted > 0) '$deleted eliminado(s)',
+      if (deactivated > 0) '$deactivated desactivado(s)',
+      if (failed > 0) '$failed con error',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(parts.isEmpty ? 'Sin cambios.' : parts.join('  ·  ')),
+      ),
+    );
   }
 
   @override
@@ -77,6 +178,15 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
               final filtered = ref.watch(clientsFilteredProvider);
               final totalBalance = ref.watch(clientsFilteredBalanceProvider);
 
+              final canSelect = ref.watch(roleAccessProvider).canDeleteRecord;
+              final allSelected = filtered.isNotEmpty &&
+                  filtered.every((c) => _selectedIds.contains(c.id));
+              final someSelected =
+                  filtered.any((c) => _selectedIds.contains(c.id));
+              // Tristate: true=todos, null=algunos, false=ninguno.
+              final bool? selectAllValue =
+                  allSelected ? true : (someSelected ? null : false);
+
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -96,10 +206,40 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                       children: [
                         Padding(
                           padding: const EdgeInsets.all(AppTokens.s20),
-                          child: Text(
-                            'Clientes (${filtered.length})',
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold),
+                          child: Row(
+                            children: [
+                              Text(
+                                'Clientes (${filtered.length})',
+                                style: const TextStyle(
+                                    fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                              if (canSelect && _selectedIds.isNotEmpty) ...[
+                                const SizedBox(width: AppTokens.s16),
+                                Text(
+                                  '${_selectedIds.length} seleccionado(s)',
+                                  style: const TextStyle(
+                                    color: AppTokens.mutedForeground,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const Spacer(),
+                                TextButton(
+                                  onPressed: _clearSelection,
+                                  child: const Text('Cancelar'),
+                                ),
+                                const SizedBox(width: AppTokens.s8),
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppTokens.error,
+                                  ),
+                                  onPressed: () => _onDeleteSelected(filtered),
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 18),
+                                  label:
+                                      Text('Eliminar (${_selectedIds.length})'),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                         if (filtered.isEmpty)
@@ -113,7 +253,12 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                             ),
                           )
                         else ...[
-                          const _ClientRowHeader(),
+                          _ClientRowHeader(
+                            showCheckbox: canSelect,
+                            selectAllValue: selectAllValue,
+                            onSelectAll: (v) =>
+                                _toggleSelectAll(filtered, v ?? false),
+                          ),
                           SizedBox(
                             // Altura del viewport para que ListView.builder
                             // virtualice: sólo renderiza los items visibles.
@@ -130,6 +275,10 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                                   documentDisplay: _documentDisplay(client),
                                   entityLabel:
                                       _entityTypeLabel(client.entityType),
+                                  showCheckbox: canSelect,
+                                  selected: _selectedIds.contains(client.id),
+                                  onSelectedChanged: (v) =>
+                                      _toggleSelected(client.id, v ?? false),
                                   onEdit: () => _onEditClient(client),
                                   onHistory: () =>
                                       _onShowPaymentHistory(client),
@@ -280,24 +429,22 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
       tooltip: 'Exportar / Importar',
       onSelected: (action) {
         switch (action) {
-          case 'template':
-            _onDownloadTemplate();
+          case 'import':
+            _onOpenImportDialog();
           case 'export':
             _onExportClients();
           case 'export_pdf':
             _onExportClientsPdf();
-          case 'import':
-            _onImportClients();
         }
       },
       itemBuilder: (_) => const [
         PopupMenuItem(
-          value: 'template',
+          value: 'import',
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.download_outlined, size: 18),
-            title: Text('Descargar plantilla Excel'),
+            leading: Icon(Icons.file_upload_outlined, size: 18),
+            title: Text('Importar / Actualizar'),
           ),
         ),
         PopupMenuItem(
@@ -316,15 +463,6 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.picture_as_pdf_outlined, size: 18),
             title: Text('Exportar a PDF'),
-          ),
-        ),
-        PopupMenuItem(
-          value: 'import',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.file_download_outlined, size: 18),
-            title: Text('Importar desde Excel'),
           ),
         ),
       ],
@@ -598,26 +736,11 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
         '${n.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _onDownloadTemplate() async {
-    try {
-      final bytes = ClientsExcelService().buildTemplate();
-      final saved = await FileIoHelper.saveBytes(
-        bytes: bytes,
-        fileName: 'plantilla_clientes_${_timestamp()}.xlsx',
-        dialogTitle: 'Guardar plantilla de clientes',
-      );
-      if (!mounted) return;
-      if (saved) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Plantilla generada.')),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo generar la plantilla: $e')),
-      );
-    }
+  Future<void> _onOpenImportDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const _ImportClientsDialog(),
+    );
   }
 
   Future<void> _onExportClients() async {
@@ -661,136 +784,351 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
     }
   }
 
-  Future<void> _onImportClients() async {
-    final Uint8List? bytes;
-    try {
-      bytes = await FileIoHelper.pickXlsxBytes();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo abrir el archivo: $e')),
-      );
-      return;
-    }
-    if (bytes == null || !mounted) return;
+}
 
-    final List<ClientEntity> existing;
-    try {
-      existing = await ref.read(clientsListProvider.future);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudieron cargar clientes: $e')),
-      );
-      return;
-    }
+/// Diálogo de 2 pasos para importar / actualizar clientes por Excel.
+///
+/// Paso 1: descargar plantilla (clientes nuevos = vacía, o existentes =
+/// listado actual pre-llenado para editar). Paso 2: subir el archivo lleno;
+/// el documento/identificador decide si cada fila se crea o se actualiza.
+class _ImportClientsDialog extends ConsumerStatefulWidget {
+  const _ImportClientsDialog();
 
-    final ClientImportParseResult parsed;
-    try {
-      parsed = ClientsExcelService().parseImport(
-        bytes: bytes,
-        existingClients: existing,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Archivo inválido: $e')),
-      );
-      return;
-    }
+  @override
+  ConsumerState<_ImportClientsDialog> createState() =>
+      _ImportClientsDialogState();
+}
 
-    if (parsed.totalRows == 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('El archivo no contiene filas.')),
-      );
-      return;
-    }
+class _ImportClientsDialogState extends ConsumerState<_ImportClientsDialog> {
+  Uint8List? _pickedBytes;
+  String? _pickedName;
 
+  /// Operación en curso: 'new', 'existing' o 'process' (null = ninguna).
+  String? _busy;
+
+  bool get _isBusy => _busy != null;
+
+  String _stamp() {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}';
+  }
+
+  void _snack(String message) {
     if (!mounted) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Confirmar importación'),
-        content: SizedBox(
-          width: 480,
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _downloadNew() async {
+    setState(() => _busy = 'new');
+    try {
+      final bytes = ClientsExcelService().buildTemplate();
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'plantilla_clientes_nuevos_${_stamp()}.xlsx',
+        dialogTitle: 'Guardar plantilla de clientes nuevos',
+      );
+      if (saved) _snack('Plantilla para clientes nuevos generada');
+    } catch (e) {
+      _snack('No se pudo generar la plantilla: $e');
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  Future<void> _downloadExisting() async {
+    setState(() => _busy = 'existing');
+    try {
+      final clients = await ref.read(clientsListProvider.future);
+      if (clients.isEmpty) {
+        _snack('No hay clientes existentes para actualizar.');
+        return;
+      }
+      final bytes = ClientsExcelService().buildExport(clients: clients);
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: 'actualizar_clientes_existentes_${_stamp()}.xlsx',
+        dialogTitle: 'Guardar plantilla de clientes existentes',
+      );
+      if (saved) {
+        _snack('Plantilla con ${clients.length} clientes existentes generada');
+      }
+    } catch (e) {
+      _snack('No se pudo generar la plantilla: $e');
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  Future<void> _pickFile() async {
+    try {
+      final picked = await FileIoHelper.pickXlsxFile();
+      if (picked == null || !mounted) return;
+      setState(() {
+        _pickedBytes = picked.bytes;
+        _pickedName = picked.name;
+      });
+    } catch (e) {
+      _snack('No se pudo abrir el archivo: $e');
+    }
+  }
+
+  Future<void> _process() async {
+    final bytes = _pickedBytes;
+    if (bytes == null) return;
+    setState(() => _busy = 'process');
+    try {
+      final List<ClientEntity> existing;
+      try {
+        existing = await ref.read(clientsListProvider.future);
+      } catch (e) {
+        _snack('No se pudieron cargar clientes: $e');
+        return;
+      }
+
+      final ClientImportParseResult parsed;
+      try {
+        parsed = ClientsExcelService().parseImport(
+          bytes: bytes,
+          existingClients: existing,
+        );
+      } catch (e) {
+        _snack('Archivo inválido: $e');
+        return;
+      }
+
+      if (parsed.totalRows == 0) {
+        _snack('El archivo no contiene filas.');
+        return;
+      }
+
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Confirmar importación'),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Filas leídas: ${parsed.totalRows}'),
+                Text('Listas para importar: ${parsed.inputs.length}'),
+                if (parsed.errors.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Errores:',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 200),
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: parsed.errors
+                          .map(
+                            (e) => Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 2),
+                              child: Text(
+                                'Fila ${e.rowNumber}: ${e.message}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppTokens.destructive,
+                                ),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: parsed.inputs.isEmpty
+                  ? null
+                  : () => Navigator.of(dialogContext).pop(true),
+              child: Text('Importar ${parsed.inputs.length}'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted || parsed.inputs.isEmpty) return;
+
+      try {
+        final result = await ref
+            .read(clientsRepositoryProvider)
+            .bulkUpsertClients(parsed.inputs);
+        if (!mounted) return;
+        ref.invalidate(clientsListProvider);
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppTokens.success,
+            content: Text(
+              'Importación completa · ${result.created} nuevos, '
+              '${result.updated} actualizados'
+              '${result.errors.isNotEmpty ? " (${result.errors.length} con error)" : ""}.',
+              style: const TextStyle(color: AppTokens.successForeground),
+            ),
+          ),
+        );
+      } catch (e) {
+        _snack('Error al importar: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isMobile = ResponsiveLayout.isMobile(context);
+    return AlertDialog(
+      title: const Text('Importar / Actualizar clientes'),
+      content: SizedBox(
+        width: isMobile ? double.maxFinite : 560,
+        child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Filas leídas: ${parsed.totalRows}'),
-              Text('Listas para importar: ${parsed.inputs.length}'),
-              if (parsed.errors.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                const Text(
-                  'Errores:',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 4),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: parsed.errors
-                        .map(
-                          (e) => Padding(
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 2),
-                            child: Text(
-                              'Fila ${e.rowNumber}: ${e.message}',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppTokens.destructive,
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
+              _stepHeader(
+                'Paso 1',
+                'Descarga una plantilla, llénala con tus clientes y guárdala.',
+              ),
+              const SizedBox(height: AppTokens.s12),
+              _downloadButton(
+                icon: Icons.note_add_outlined,
+                label: 'Plantilla para clientes NUEVOS',
+                busyKey: 'new',
+                onPressed: _downloadNew,
+              ),
+              const SizedBox(height: AppTokens.s8),
+              _downloadButton(
+                icon: Icons.edit_note_outlined,
+                label: 'Plantilla para clientes EXISTENTES (actualizar)',
+                busyKey: 'existing',
+                onPressed: _downloadExisting,
+              ),
+              const SizedBox(height: AppTokens.s20),
+              const Divider(height: 1),
+              const SizedBox(height: AppTokens.s20),
+              _stepHeader(
+                'Paso 2',
+                'Sube el archivo lleno para crear y actualizar clientes.',
+              ),
+              const SizedBox(height: AppTokens.s12),
+              Row(
+                children: [
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'La ruta del archivo',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      child: Text(
+                        _pickedName ?? 'Ningún archivo seleccionado',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _pickedName == null
+                              ? AppTokens.mutedForeground
+                              : AppTokens.foreground,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: AppTokens.s8),
+                  OutlinedButton.icon(
+                    onPressed: _isBusy ? null : _pickFile,
+                    icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    label: const Text('Elegir archivo'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: parsed.inputs.isEmpty
-                ? null
-                : () => Navigator.of(dialogContext).pop(true),
-            child: Text('Importar ${parsed.inputs.length}'),
-          ),
-        ],
       ),
+      actions: [
+        TextButton(
+          onPressed: _isBusy ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cerrar'),
+        ),
+        FilledButton.icon(
+          onPressed: (_pickedBytes == null || _isBusy) ? null : _process,
+          icon: _busy == 'process'
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.upload_file_outlined, size: 18),
+          label: const Text('Procesar'),
+        ),
+      ],
     );
-    if (confirmed != true || !mounted || parsed.inputs.isEmpty) return;
+  }
 
-    try {
-      final result = await ref
-          .read(clientsRepositoryProvider)
-          .bulkUpsertClients(parsed.inputs);
-      if (!mounted) return;
-      ref.invalidate(clientsListProvider);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: AppTokens.success,
-          content: Text(
-            'Importación completa · ${result.created} nuevos, '
-            '${result.updated} actualizados'
-            '${result.errors.isNotEmpty ? " (${result.errors.length} con error)" : ""}.',
-            style: const TextStyle(color: AppTokens.successForeground),
+  Widget _stepHeader(String step, String description) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          step,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          description,
+          style: const TextStyle(
+            color: AppTokens.mutedForeground,
+            fontSize: 13,
           ),
         ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al importar: $e')),
-      );
-    }
+      ],
+    );
+  }
+
+  Widget _downloadButton({
+    required IconData icon,
+    required String label,
+    required String busyKey,
+    required VoidCallback onPressed,
+  }) {
+    final isBusy = _busy == busyKey;
+    return SizedBox(
+      width: double.infinity,
+      child: FilledButton.tonalIcon(
+        onPressed: _isBusy ? null : onPressed,
+        icon: isBusy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(icon, size: 18),
+        label: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(label),
+        ),
+        style: FilledButton.styleFrom(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+      ),
+    );
   }
 }
 
@@ -1284,7 +1622,15 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
 /// Header de la tabla virtualizada de clientes — fijo arriba del
 /// ListView.builder, no se duplica por fila.
 class _ClientRowHeader extends StatelessWidget {
-  const _ClientRowHeader();
+  const _ClientRowHeader({
+    this.showCheckbox = false,
+    this.selectAllValue = false,
+    this.onSelectAll,
+  });
+
+  final bool showCheckbox;
+  final bool? selectAllValue;
+  final ValueChanged<bool?>? onSelectAll;
 
   @override
   Widget build(BuildContext context) {
@@ -1292,9 +1638,18 @@ class _ClientRowHeader extends StatelessWidget {
       color: AppTokens.background,
       padding: const EdgeInsets.symmetric(
           horizontal: AppTokens.s16, vertical: AppTokens.s10),
-      child: const Row(
+      child: Row(
         children: [
-          Expanded(flex: 3, child: _ColumnLabel('Nombre')),
+          if (showCheckbox)
+            SizedBox(
+              width: 40,
+              child: Checkbox(
+                value: selectAllValue,
+                tristate: true,
+                onChanged: onSelectAll,
+              ),
+            ),
+          const Expanded(flex: 3, child: _ColumnLabel('Nombre')),
           Expanded(flex: 2, child: _ColumnLabel('Tipo')),
           Expanded(flex: 2, child: _ColumnLabel('Documento')),
           Expanded(flex: 2, child: _ColumnLabel('Teléfono')),
@@ -1345,6 +1700,9 @@ class _ClientRow extends StatelessWidget {
     required this.onEdit,
     required this.onHistory,
     required this.onToggle,
+    this.showCheckbox = false,
+    this.selected = false,
+    this.onSelectedChanged,
   });
 
   final ClientEntity client;
@@ -1353,16 +1711,28 @@ class _ClientRow extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onHistory;
   final VoidCallback onToggle;
+  final bool showCheckbox;
+  final bool selected;
+  final ValueChanged<bool?>? onSelectedChanged;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppTokens.border)),
+      decoration: BoxDecoration(
+        color: selected ? AppTokens.primary.withValues(alpha: 0.06) : null,
+        border: const Border(top: BorderSide(color: AppTokens.border)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
       child: Row(
         children: [
+          if (showCheckbox)
+            SizedBox(
+              width: 40,
+              child: Checkbox(
+                value: selected,
+                onChanged: onSelectedChanged,
+              ),
+            ),
           Expanded(
             flex: 3,
             child: Text(
