@@ -68,13 +68,16 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// confiable: escribir un provider mientras el widget se desmonta puede
   /// no propagarse.
   void _persistDraft() {
-    ref.read(saleDraftProvider.notifier).state = SaleDraft(
+    final draft = SaleDraft(
       items: List<SaleCartItem>.from(_cart),
       receiptType: _receiptType,
       paymentMethod: _paymentMethod,
       clientId: _clientId,
       notes: _notesController.text,
     );
+    ref.read(saleDraftProvider.notifier).state = draft;
+    // Persistir también a localStorage (web) para sobrevivir recargas.
+    saveSaleDraftToStore(draft);
   }
 
   @override
@@ -134,7 +137,18 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                   ],
                 ),
               ),
-              const _ActiveCashRegisterChip(),
+              // En desktop el toggle Venta/Devolución va en la misma línea
+              // que el título. En móvil baja a una segunda fila (abajo) para
+              // no apretar ni desbordar el encabezado.
+              if (!isMobile) ...[
+                const SizedBox(width: AppTokens.s12),
+                _PosModeToggle(
+                  mode: posMode,
+                  onChange: _changePosMode,
+                ),
+                const SizedBox(width: AppTokens.s12),
+                const _ActiveCashRegisterChip(),
+              ],
               if (isMobile && _cartLines > 0)
                 Padding(
                   padding: const EdgeInsets.only(left: 8),
@@ -148,23 +162,30 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                 ),
             ],
           ),
+          if (isMobile) ...[
+            const SizedBox(height: AppTokens.s12),
+            Row(
+              children: [
+                _PosModeToggle(
+                  mode: posMode,
+                  onChange: _changePosMode,
+                ),
+                const Spacer(),
+                const _ActiveCashRegisterChip(),
+              ],
+            ),
+          ],
           const SizedBox(height: AppTokens.s12),
           const NcfStockBanner(),
-          Row(
-            children: [
-              _PosModeToggle(
-                mode: posMode,
-                onChange: _changePosMode,
+          if (posMode == PosMode.returnMode)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => context.push('/devoluciones'),
+                icon: const Icon(Icons.history_rounded, size: 18),
+                label: const Text('Historial'),
               ),
-              const Spacer(),
-              if (posMode == PosMode.returnMode)
-                TextButton.icon(
-                  onPressed: () => context.push('/devoluciones'),
-                  icon: const Icon(Icons.history_rounded, size: 18),
-                  label: const Text('Historial'),
-                ),
-            ],
-          ),
+            ),
           const SizedBox(height: AppTokens.s20),
           
           Expanded(

@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/web/kv_store.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../data/sales_repository.dart';
 
@@ -35,7 +38,105 @@ class SaleDraft {
   bool get isEmpty => items.isEmpty;
 }
 
-final saleDraftProvider = StateProvider<SaleDraft>((ref) => const SaleDraft());
+/// El provider se hidrata del store al crearse: en web lee de localStorage,
+/// así el carrito sobrevive una recarga de página (F5 / banner "Actualizar"),
+/// no solo la navegación entre secciones.
+final saleDraftProvider = StateProvider<SaleDraft>(
+  (ref) => _decodeSaleDraft(kvRead(_saleDraftKey)) ?? const SaleDraft(),
+);
+
+const _saleDraftKey = 'bpw.sale_draft.v1';
+
+/// Persiste el borrador en el store. Llamar tras cada cambio del carrito.
+/// Si el carrito quedó vacío y sin datos de cabecera, borra la entrada.
+void saveSaleDraftToStore(SaleDraft draft) {
+  if (draft.items.isEmpty &&
+      draft.notes.isEmpty &&
+      draft.clientId == null &&
+      draft.paymentMethod == null) {
+    kvRemove(_saleDraftKey);
+  } else {
+    kvWrite(_saleDraftKey, _encodeSaleDraft(draft));
+  }
+}
+
+String _encodeSaleDraft(SaleDraft d) => jsonEncode({
+      'receiptType': d.receiptType,
+      'paymentMethod': d.paymentMethod,
+      'clientId': d.clientId,
+      'notes': d.notes,
+      'items': [
+        for (final it in d.items)
+          {
+            'product': _salesProductToJson(it.product),
+            'quantity': it.quantity,
+            'unitPrice': it.unitPrice,
+            'discountPct': it.discountPct,
+          },
+      ],
+    });
+
+SaleDraft? _decodeSaleDraft(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  try {
+    final map = jsonDecode(raw) as Map<String, dynamic>;
+    final items = <SaleCartItem>[
+      for (final e in (map['items'] as List? ?? const []))
+        if (e is Map<String, dynamic>)
+          SaleCartItem(
+            product:
+                _salesProductFromJson(e['product'] as Map<String, dynamic>),
+            quantity: (e['quantity'] as num).toDouble(),
+            unitPrice: (e['unitPrice'] as num?)?.toDouble(),
+            discountPct: (e['discountPct'] as num?)?.toDouble() ?? 0,
+          ),
+    ];
+    return SaleDraft(
+      items: items,
+      receiptType: map['receiptType']?.toString() ?? 'consumer_final',
+      paymentMethod: map['paymentMethod']?.toString(),
+      clientId: map['clientId']?.toString(),
+      notes: map['notes']?.toString() ?? '',
+    );
+  } catch (_) {
+    // JSON corrupto o de una versión vieja del modelo: empezar limpio.
+    return null;
+  }
+}
+
+Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
+      'id': p.id,
+      'name': p.name,
+      'sku': p.sku,
+      'barcode': p.barcode,
+      'category_id': p.categoryId,
+      'category_name': p.categoryName,
+      'price': p.price,
+      'tax_rate': p.taxRate,
+      'stock': p.stock,
+      'is_active': p.isActive,
+      'price_tier_1': p.priceTier1,
+      'price_tier_2': p.priceTier2,
+      'price_tier_3': p.priceTier3,
+      'price_tier_4': p.priceTier4,
+      'price_tier_5': p.priceTier5,
+      'price_tier_6': p.priceTier6,
+      'price_tier_7': p.priceTier7,
+      'price_tier_8': p.priceTier8,
+      'price_tier_9': p.priceTier9,
+      'price_tier_10': p.priceTier10,
+      'image_url': p.imageUrl,
+    };
+
+SalesProduct _salesProductFromJson(Map<String, dynamic> m) {
+  // SalesProduct.fromMap deriva categoryName del mapa categoryNames; le
+  // pasamos el par guardado para reconstruirlo idéntico.
+  final categoryId = m['category_id']?.toString();
+  final categoryName = m['category_name']?.toString();
+  return SalesProduct.fromMap(m, {
+    if (categoryId != null && categoryName != null) categoryId: categoryName,
+  });
+}
 
 final salesRepositoryProvider = Provider<SalesRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);

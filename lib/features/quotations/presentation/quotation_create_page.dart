@@ -85,13 +85,16 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
   /// (ver [_skipDraftPersist]).
   void _persistDraft() {
     if (widget.isEditing || _skipDraftPersist) return;
-    ref.read(quotationDraftProvider.notifier).state = QuotationDraft(
+    final draft = QuotationDraft(
       items: List<QuoteDraftLine>.from(_items),
       clientId: _clientId,
       validUntil: _validUntil,
       status: _status,
       notes: _notesController.text,
     );
+    ref.read(quotationDraftProvider.notifier).state = draft;
+    // Persistir también a localStorage (web) para sobrevivir recargas.
+    saveQuotationDraftToStore(draft);
   }
 
   @override
@@ -252,6 +255,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
         // próxima "nueva" empiece en blanco y no lo re-guardamos en dispose.
         _skipDraftPersist = true;
         ref.read(quotationDraftProvider.notifier).state = const QuotationDraft();
+        saveQuotationDraftToStore(const QuotationDraft());
         if (mounted) {
           context.go('/cotizaciones/$createdId');
         }
