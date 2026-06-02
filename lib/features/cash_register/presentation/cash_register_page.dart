@@ -296,7 +296,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
-                onPressed: _onCloseSession,
+                onPressed: () => _onCloseSession(openSession.id),
                 icon: const Icon(Icons.lock_outline, size: 18),
                 label: const Text('Cerrar caja'),
               ),
@@ -398,7 +398,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     }
   }
 
-  Future<void> _onCloseSession() async {
+  Future<void> _onCloseSession(String sessionId) async {
     final input = await showDialog<CloseCashInput>(
       context: context,
       builder: (_) => const _CloseSessionDialog(),
@@ -409,10 +409,16 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     final repository = ref.read(cashRegisterRepositoryProvider);
 
     try {
-      await repository.closeSession(input);
+      await repository.closeSession(input, cashSessionId: sessionId);
       if (!mounted) return;
 
+      // Si la caja que se cerró era la activa, deseleccionarla para que el POS
+      // pida elegir caja de nuevo en vez de quedar apuntando a una cerrada.
+      if (ref.read(activeCashSessionIdProvider) == sessionId) {
+        ref.read(activeCashSessionIdProvider.notifier).state = null;
+      }
       ref.invalidate(cashRegisterDataProvider);
+      ref.invalidate(myOpenCashSessionsProvider);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Caja cerrada correctamente.')),
       );
@@ -536,7 +542,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
 
     final repository = ref.read(cashRegisterRepositoryProvider);
     try {
-      await repository.addMovement(input);
+      await repository.addMovement(input, cashSessionId: sessionId);
       if (!mounted) return;
       ref.invalidate(cashRegisterDataProvider);
       final label = movementType == 'deposit'

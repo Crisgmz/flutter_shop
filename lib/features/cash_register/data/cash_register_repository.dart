@@ -323,7 +323,12 @@ class CashRegisterRepository {
     return overviews;
   }
 
-  Future<CashRegisterData> fetchData() async {
+  /// [activeSessionId]: la caja que el usuario tiene seleccionada en el POS
+  /// (`activeCashSessionIdProvider`). Cuando un mismo usuario tiene varias
+  /// cajas abiertas a la vez, el cuadre/movimientos/cierre deben operar sobre
+  /// ESA caja, no sobre "la última abierta". Si es null o ya no está abierta,
+  /// cae a la última sesión abierta del usuario.
+  Future<CashRegisterData> fetchData({String? activeSessionId}) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       return CashRegisterData(
@@ -333,7 +338,8 @@ class CashRegisterRepository {
       );
     }
 
-    final openSession = await _fetchOpenSession(branchId);
+    final openSession =
+        await _fetchActiveOrLatestOpenSession(branchId, activeSessionId);
     final recentSessions = await _fetchRecentSessions(branchId);
 
     CashSessionMetrics? metrics;
@@ -377,7 +383,10 @@ class CashRegisterRepository {
     });
   }
 
-  Future<void> closeSession(CloseCashInput input) async {
+  /// [cashSessionId]: la caja activa que se está cerrando. Si es null, cierra
+  /// la última abierta del usuario (compatibilidad). Esto evita cerrar la
+  /// caja equivocada cuando hay varias abiertas a la vez.
+  Future<void> closeSession(CloseCashInput input, {String? cashSessionId}) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
@@ -388,7 +397,8 @@ class CashRegisterRepository {
       throw Exception('Sesión inválida. Inicia sesión de nuevo.');
     }
 
-    final openSession = await _fetchOpenSession(branchId);
+    final openSession =
+        await _fetchActiveOrLatestOpenSession(branchId, cashSessionId);
     if (openSession == null) {
       throw Exception('No hay una sesión de caja abierta.');
     }
@@ -411,6 +421,33 @@ class CashRegisterRepository {
         })
         .eq('id', openSession.id)
         .eq('branch_id', branchId);
+  }
+
+  /// Resuelve qué sesión opera la pantalla de Caja. Prioriza la caja ACTIVA
+  /// seleccionada en el POS; si no hay (o esa sesión ya no está abierta), cae
+  /// a la última abierta del usuario. Evita "ligar" cajas cuando un mismo
+  /// usuario tiene varias abiertas a la vez.
+  Future<CashSessionEntity?> _fetchActiveOrLatestOpenSession(
+    String branchId,
+    String? activeSessionId,
+  ) async {
+    if (activeSessionId != null && activeSessionId.isNotEmpty) {
+      final rows = await _client
+          .from('cash_sessions')
+          .select(
+            'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes, cash_register_id',
+          )
+          .eq('id', activeSessionId)
+          .eq('branch_id', branchId)
+          .eq('status', 'open')
+          .limit(1);
+      if (rows.isNotEmpty) {
+        return CashSessionEntity.fromMap(
+          Map<String, dynamic>.from(rows.first as Map),
+        );
+      }
+    }
+    return _fetchOpenSession(branchId);
   }
 
   /// Sesión abierta DEL USUARIO ACTUAL (multi-caja). Cada cajero abre y
@@ -530,7 +567,14 @@ class CashRegisterRepository {
 
   /// Registra un movimiento manual de efectivo en la sesión activa.
   /// El trigger SQL ajusta `cash_sessions.expected_amount` automáticamente.
-  Future<void> addMovement(CashMovementInput input) async {
+  /// [cashSessionId]: la caja activa sobre la que se registra el movimiento.
+  /// Si es null, usa la última abierta del usuario (compatibilidad). Pasar la
+  /// caja activa evita que un depósito/sangría caiga en otra caja del mismo
+  /// usuario cuando tiene varias abiertas.
+  Future<void> addMovement(
+    CashMovementInput input, {
+    String? cashSessionId,
+  }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
@@ -539,7 +583,8 @@ class CashRegisterRepository {
     if (userId == null) {
       throw Exception('Sesión inválida. Inicia sesión de nuevo.');
     }
-    final openSession = await _fetchOpenSession(branchId);
+    final openSession =
+        await _fetchActiveOrLatestOpenSession(branchId, cashSessionId);
     if (openSession == null) {
       throw Exception(
         'No hay una sesión de caja abierta. Abre la caja primero.',

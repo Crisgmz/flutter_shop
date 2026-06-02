@@ -9,8 +9,12 @@ final cashRegisterRepositoryProvider = Provider<CashRegisterRepository>((ref) {
 });
 
 final cashRegisterDataProvider = FutureProvider<CashRegisterData>((ref) async {
+  // La pantalla de Caja opera sobre la caja ACTIVA seleccionada en el POS, no
+  // sobre "la última abierta". Sin esto, un usuario con varias cajas abiertas
+  // veía/operaba siempre la más reciente (cajas "ligadas").
+  final activeSessionId = ref.watch(activeCashSessionIdProvider);
   final repository = ref.watch(cashRegisterRepositoryProvider);
-  return repository.fetchData();
+  return repository.fetchData(activeSessionId: activeSessionId);
 });
 
 /// Vista admin/supervisor: todas las cajas abiertas en la sucursal con
