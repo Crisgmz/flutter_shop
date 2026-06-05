@@ -1,0 +1,14 @@
+-- Fix: "invalid input value for enum cash_movement_type: opening_top_up"
+-- al registrar un movimiento de caja.
+--
+-- Causa: el enum `cash_movement_type` se definió en DOS migraciones distintas
+-- con valores diferentes:
+--   - 05_cash_foundation_core.sql      → lista larga, SIN 'opening_top_up'
+--   - 20260509_16_operational_extensions → deposit/withdrawal/adjustment/opening_top_up
+-- Ambas usan `if not exists`, así que solo se aplicó la primera que corrió.
+-- En la BD desplegada quedó la versión SIN 'opening_top_up', pero el cliente
+-- usa ese valor (p. ej. "Agregar efectivo") → PostgrestException 22P02.
+--
+-- Fix idempotente: agregar el valor al enum si falta. (ADD VALUE no debe ir
+-- dentro de un bloque transaccional, por eso no hay begin/commit.)
+alter type public.cash_movement_type add value if not exists 'opening_top_up';
