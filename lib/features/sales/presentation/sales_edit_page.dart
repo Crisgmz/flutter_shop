@@ -413,7 +413,12 @@ class _EditForm extends StatelessWidget {
           subtotal: subtotal,
           tax: tax,
           total: total,
-          paid: detail.sale.paidAmount,
+          // En ventas PAGADAS el pago sigue al total (queda saldada), igual
+          // que hace el RPC al guardar. En crédito se conserva lo pagado y el
+          // pendiente se recalcula contra el nuevo total.
+          paid: detail.sale.status == 'completed'
+              ? total
+              : detail.sale.paidAmount,
         ),
       ],
     );

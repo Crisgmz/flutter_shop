@@ -123,7 +123,13 @@ class ExpensesRepository {
         .toList(growable: false);
   }
 
-  Future<void> createExpense(ExpenseInput input) async {
+  /// [cashSessionId]: la caja ACTIVA del POS (activeCashSessionIdProvider).
+  /// Si se pasa, el gasto se imputa a esa caja para que aparezca en su cuadre.
+  /// Si es null, cae a la última caja abierta del usuario (compatibilidad).
+  Future<void> createExpense(
+    ExpenseInput input, {
+    String? cashSessionId,
+  }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
@@ -133,11 +139,13 @@ class ExpensesRepository {
       throw Exception('El monto debe ser mayor que 0.');
     }
 
-    final cashSessionId = await _currentOpenCashSessionId(branchId);
+    final resolvedSessionId = (cashSessionId != null && cashSessionId.isNotEmpty)
+        ? cashSessionId
+        : await _currentOpenCashSessionId(branchId);
 
     await _client.from('expenses').insert({
       'branch_id': branchId,
-      'cash_session_id': cashSessionId,
+      'cash_session_id': resolvedSessionId,
       'supplier_id': _nullIfEmpty(input.supplierId),
       'category': input.category.trim(),
       'description': _nullIfEmpty(input.description),

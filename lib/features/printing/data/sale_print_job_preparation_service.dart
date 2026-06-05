@@ -40,9 +40,12 @@ class SalePrintJobPreparationService {
     int copies = 1,
   }) {
     final normalizedStatus = sale.status.trim().toLowerCase();
-    if (normalizedStatus != 'completed') {
+    // Las ventas a crédito también generan recibo (el cliente necesita el
+    // comprobante del saldo aunque no haya pagado). Solo se bloquean estados
+    // sin recibo válido (p. ej. anuladas).
+    if (normalizedStatus != 'completed' && normalizedStatus != 'credit') {
       throw StateError(
-        'Solo se puede preparar impresión para ventas completadas.',
+        'Solo se puede preparar impresión para ventas pagadas o a crédito.',
       );
     }
 

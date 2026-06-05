@@ -12,6 +12,7 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../inventory/data/file_io_helper.dart';
 import '../data/expenses_excel_service.dart';
 import '../data/expenses_repository.dart';
@@ -176,10 +177,15 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
     final repository = ref.read(expensesRepositoryProvider);
 
     try {
-      await repository.createExpense(input);
+      await repository.createExpense(
+        input,
+        cashSessionId: ref.read(activeCashSessionIdProvider),
+      );
       if (!mounted) return;
 
       ref.invalidate(expensesListProvider);
+      // Refrescar la caja para que el gasto se refleje en su cuadre.
+      ref.invalidate(cashRegisterDataProvider);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Gasto registrado.')));
