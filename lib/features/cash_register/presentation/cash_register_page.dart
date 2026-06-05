@@ -51,7 +51,11 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
               if (openSession == null)
                 _noSessionCard()
               else
-                _openSessionCard(openSession, metrics),
+                _openSessionCard(
+                  openSession,
+                  metrics,
+                  data.pettyCashExpensesToday,
+                ),
               if (canSeeAllCashiers) ...[
                 const SizedBox(height: AppTokens.s24),
                 const _AllCashiersPanel(),
@@ -252,6 +256,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
   Widget _openSessionCard(
     CashSessionEntity openSession,
     CashSessionMetrics? metrics,
+    double pettyCashExpensesToday,
   ) {
     final expectedCash = metrics == null
         ? openSession.expectedAmount
@@ -322,9 +327,12 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   icon: Icons.payments_outlined,
                 ),
                 KPICard(
-                  label: 'Gastos (todos)',
-                  value: money(metrics?.totalExpenses ?? 0),
-                  icon: Icons.money_off_outlined,
+                  // Informativo: los gastos se manejan en Caja Chica. Muestra
+                  // el total de gastos de caja chica del día (no afecta el
+                  // efectivo esperado de esta caja).
+                  label: 'Gastos caja chica (hoy)',
+                  value: money(pettyCashExpensesToday),
+                  icon: Icons.savings_outlined,
                 ),
                 KPICard(
                   label: 'Ingreso efectivo',
@@ -948,23 +956,34 @@ class _AllCashiersPanel extends ConsumerWidget {
                   ],
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                    AppTokens.s16, AppTokens.s8, AppTokens.s16, AppTokens.s12),
+              // Footer de ancho completo: etiqueta a la izquierda y total a la
+              // derecha, con borde superior, para que cubra toda la fila.
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(top: AppTokens.s8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppTokens.s16,
+                  vertical: AppTokens.s12,
+                ),
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF8FAFC),
+                  border: Border(top: BorderSide(color: AppTokens.border)),
+                ),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Total vendido por todas las cajas: ',
+                      'Total vendido por todas las cajas',
                       style: TextStyle(
                         color: AppTokens.mutedForeground,
                         fontSize: 13,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     Text(
                       money(totalSold),
                       style: const TextStyle(
-                        fontSize: 15,
+                        fontSize: 16,
                         fontWeight: FontWeight.w900,
                         color: Color(0xFF2563EB),
                       ),

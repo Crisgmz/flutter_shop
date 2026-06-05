@@ -79,11 +79,16 @@ class CashRegisterData {
     required this.openSession,
     required this.openMetrics,
     required this.recentSessions,
+    this.pettyCashExpensesToday = 0,
   });
 
   final CashSessionEntity? openSession;
   final CashSessionMetrics? openMetrics;
   final List<CashSessionEntity> recentSessions;
+
+  /// Total de gastos de CAJA CHICA registrados hoy en la sucursal. Informativo:
+  /// los gastos se manejan en Caja Chica, no en la sesión de la caja principal.
+  final double pettyCashExpensesToday;
 }
 
 /// Vista enriquecida de una caja para el panel del dueño: incluye nombre del
@@ -341,6 +346,7 @@ class CashRegisterRepository {
     final openSession =
         await _fetchActiveOrLatestOpenSession(branchId, activeSessionId);
     final recentSessions = await _fetchRecentSessions(branchId);
+    final pettyCashExpensesToday = await _fetchPettyCashExpensesToday(branchId);
 
     CashSessionMetrics? metrics;
     if (openSession != null) {
@@ -351,7 +357,35 @@ class CashRegisterRepository {
       openSession: openSession,
       openMetrics: metrics,
       recentSessions: recentSessions,
+      pettyCashExpensesToday: pettyCashExpensesToday,
     );
+  }
+
+  /// Suma los gastos de CAJA CHICA registrados hoy en la sucursal. Es solo
+  /// informativo para la tarjeta "Gastos" de la Caja: los gastos se llevan en
+  /// Caja Chica, no en la sesión de la caja principal.
+  Future<double> _fetchPettyCashExpensesToday(String branchId) async {
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day);
+    final end = start.add(const Duration(days: 1));
+    try {
+      final rows = await _client
+          .from('petty_cash_movements')
+          .select('amount')
+          .eq('branch_id', branchId)
+          .eq('movement_type', 'expense')
+          .gte('occurred_at', start.toUtc().toIso8601String())
+          .lt('occurred_at', end.toUtc().toIso8601String());
+      return _round2(
+        rows.fold<double>(
+          0,
+          (sum, item) => sum + _toDouble((item as Map)['amount']),
+        ),
+      );
+    } catch (_) {
+      // Si la tabla de caja chica no existe aún en este entorno, no romper.
+      return 0;
+    }
   }
 
   Future<void> openSession(OpenCashInput input) async {

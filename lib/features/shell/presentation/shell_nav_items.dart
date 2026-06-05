@@ -148,7 +148,6 @@ const navItems = [
   clientsNavItem,
   suppliersNavItem,
   reportsNavItem,
-  expensesNavItem,
   cashRegisterNavItem,
   pettyCashNavItem,
   fiscalDocumentsNavItem,
@@ -182,7 +181,7 @@ const navSections = [
   ),
   NavSection(
     label: 'Control',
-    items: [reportsNavItem, expensesNavItem, fiscalDocumentsNavItem, taxesNavItem],
+    items: [reportsNavItem, fiscalDocumentsNavItem, taxesNavItem],
   ),
   NavSection(
     label: 'Administración',
