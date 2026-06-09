@@ -144,8 +144,9 @@ class SalesHistoryRepository {
           'ncf, subtotal, total_amount, paid_amount, balance_due, due_date, '
           'client_id, cashier_id, cash_session_id, notes',
         )
-        .eq('branch_id', branchId)
-        .neq('status', 'voided');
+        .eq('branch_id', branchId);
+    // Nota: las ventas anuladas (voided) SÍ se incluyen — deben quedar en el
+    // historial marcadas como "Anulada", no desaparecer.
 
     if (filter.from != null) {
       query = query.gte('sale_date', filter.from!.toIso8601String());
@@ -494,9 +495,10 @@ class SalesHistoryRepository {
       methods.putIfAbsent(sid, () => <String>{}).add(method);
     }
 
+    // Devolvemos los métodos usados unidos por coma (en orden de inserción),
+    // ej. "cash,transfer". La UI los traduce y muestra "Efectivo + Transferencia".
     return {
-      for (final entry in methods.entries)
-        entry.key: entry.value.length == 1 ? entry.value.first : 'mixed',
+      for (final entry in methods.entries) entry.key: entry.value.join(','),
     };
   }
 

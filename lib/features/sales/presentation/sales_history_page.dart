@@ -102,7 +102,7 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                             FlexTableColumn(label: 'NCF'),
                             FlexTableColumn(label: 'Estado'),
                             FlexTableColumn(label: 'Caja', flex: 2),
-                            FlexTableColumn(label: 'Cobro'),
+                            FlexTableColumn(label: 'Cobro', flex: 2),
                             FlexTableColumn(label: 'Total', numeric: true),
                             FlexTableColumn(label: 'Ganancia', numeric: true),
                             FlexTableColumn(label: 'Acción', flex: 2),
@@ -127,8 +127,8 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                     ),
                                     _StatusChip(status: row.status),
                                     Text(row.cashRegisterName ?? '—'),
-                                    Text(_paymentMethodLabel(
-                                        row.paymentMethod, row.status)),
+                                    _paymentMethodsCell(
+                                        row.paymentMethod, row.status),
                                     Text(
                                       money(row.totalAmount),
                                       style: const TextStyle(
@@ -164,9 +164,8 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
   }
 }
 
-/// Etiqueta del método de cobro en español. Si la venta no tiene pagos
-/// registrados pero está a crédito, lo muestra como "Crédito".
-String _paymentMethodLabel(String? method, String status) {
+/// Etiqueta de un único método de pago en español.
+String _singleMethodLabel(String method) {
   switch (method) {
     case 'cash':
       return 'Efectivo';
@@ -176,13 +175,36 @@ String _paymentMethodLabel(String? method, String status) {
       return 'Transferencia';
     case 'mobile':
       return 'Pago móvil';
+    case 'other':
+      return 'Otro';
     case 'credit':
       return 'Crédito';
     case 'mixed':
       return 'Mixto';
+    default:
+      return method;
   }
-  if (status == 'credit') return 'Crédito';
-  return '—';
+}
+
+/// Celda de cobro. Si hubo varios métodos (ej. "cash,transfer"), los muestra
+/// uno debajo del otro. Si no hay pagos pero la venta es a crédito, "Crédito".
+Widget _paymentMethodsCell(String? method, String status) {
+  final raw = method?.trim() ?? '';
+  final labels = raw.isEmpty
+      ? [status == 'credit' ? 'Crédito' : '—']
+      : raw
+          .split(',')
+          .where((m) => m.trim().isNotEmpty)
+          .map((m) => _singleMethodLabel(m.trim()))
+          .toList(growable: false);
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      for (final l in labels)
+        Text(l, style: const TextStyle(fontSize: 13)),
+    ],
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -387,6 +409,7 @@ class _StatusChip extends StatelessWidget {
       'completed' => ('Pagada', const Color(0xFF16A34A)),
       'credit' => ('Crédito', const Color(0xFFF59E0B)),
       'pending' => ('Pendiente', const Color(0xFF6B7280)),
+      'voided' => ('Anulada', const Color(0xFFEF4444)),
       _ => (status, AppTokens.mutedForeground),
     };
     return Container(

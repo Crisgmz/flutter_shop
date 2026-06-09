@@ -192,12 +192,25 @@ class SaleCartItem {
   double get lineTotal => _round2(lineSubtotal + lineTax);
 }
 
+/// Una línea de pago para ventas con pago mixto (varios métodos que suman el
+/// total). `method` es un valor del enum payment_method
+/// (cash | card | transfer | mobile | other).
+class SalePaymentLine {
+  const SalePaymentLine({required this.method, required this.amount});
+
+  final String method;
+  final double amount;
+
+  Map<String, dynamic> toJson() => {'method': method, 'amount': amount};
+}
+
 class SaleCheckoutInput {
   SaleCheckoutInput({
     required this.items,
     required this.receiptType,
     required this.asCredit,
     this.paymentMethod,
+    this.payments = const <SalePaymentLine>[],
     this.clientId,
     this.notes,
     this.disallowNoStock = false,
@@ -211,6 +224,11 @@ class SaleCheckoutInput {
   final String receiptType;
   final bool asCredit;
   final String? paymentMethod;
+
+  /// Pago mixto: una o más líneas {método, monto}. Si está vacío, se usa
+  /// `paymentMethod` por el total (flujo de pago único anterior).
+  final List<SalePaymentLine> payments;
+
   final String? clientId;
   final String? notes;
 
@@ -390,18 +408,28 @@ class SalesRepository {
       ),
     );
 
+    final params = <String, dynamic>{
+      'p_items': normalizedCheckout.toRpcItems(),
+      'p_receipt_type': normalizedCheckout.receiptType,
+      'p_as_credit': normalizedCheckout.asCredit,
+      'p_payment_method': normalizedCheckout.paymentMethod,
+      'p_client_id': normalizedCheckout.clientId,
+      'p_notes': normalizedCheckout.notes,
+      'p_credit_due_days': input.creditDueDays,
+      'p_cash_session_id': _nullIfEmpty(input.cashSessionId),
+    };
+
+    // Pago mixto: solo cuando hay 2+ métodos. El parámetro p_payments solo
+    // existe tras aplicar la migración 50; mandarlo solo en split real evita
+    // romper ventas normales si el app se despliega antes que la migración.
+    if (!input.asCredit && input.payments.length >= 2) {
+      params['p_payments'] =
+          input.payments.map((p) => p.toJson()).toList(growable: false);
+    }
+
     final rpcResult = await _client.rpc(
       'checkout_sale_transactional',
-      params: {
-        'p_items': normalizedCheckout.toRpcItems(),
-        'p_receipt_type': normalizedCheckout.receiptType,
-        'p_as_credit': normalizedCheckout.asCredit,
-        'p_payment_method': normalizedCheckout.paymentMethod,
-        'p_client_id': normalizedCheckout.clientId,
-        'p_notes': normalizedCheckout.notes,
-        'p_credit_due_days': input.creditDueDays,
-        'p_cash_session_id': _nullIfEmpty(input.cashSessionId),
-      },
+      params: params,
     );
 
     final payload = Map<String, dynamic>.from(rpcResult as Map);
