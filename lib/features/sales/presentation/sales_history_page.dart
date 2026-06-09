@@ -101,7 +101,10 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                             FlexTableColumn(label: 'Cliente', flex: 2),
                             FlexTableColumn(label: 'NCF'),
                             FlexTableColumn(label: 'Estado'),
+                            FlexTableColumn(label: 'Caja', flex: 2),
+                            FlexTableColumn(label: 'Cobro'),
                             FlexTableColumn(label: 'Total', numeric: true),
+                            FlexTableColumn(label: 'Ganancia', numeric: true),
                             FlexTableColumn(label: 'Acción', flex: 2),
                           ],
                           rows: page.rows
@@ -123,10 +126,22 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                       ),
                                     ),
                                     _StatusChip(status: row.status),
+                                    Text(row.cashRegisterName ?? '—'),
+                                    Text(_paymentMethodLabel(
+                                        row.paymentMethod, row.status)),
                                     Text(
                                       money(row.totalAmount),
                                       style: const TextStyle(
                                         fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    Text(
+                                      money(row.profit),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: row.profit < 0
+                                            ? AppTokens.destructive
+                                            : AppTokens.success,
                                       ),
                                     ),
                                     _RowActions(row: row),
@@ -147,6 +162,27 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
       ),
     );
   }
+}
+
+/// Etiqueta del método de cobro en español. Si la venta no tiene pagos
+/// registrados pero está a crédito, lo muestra como "Crédito".
+String _paymentMethodLabel(String? method, String status) {
+  switch (method) {
+    case 'cash':
+      return 'Efectivo';
+    case 'card':
+      return 'Tarjeta';
+    case 'transfer':
+      return 'Transferencia';
+    case 'mobile':
+      return 'Pago móvil';
+    case 'credit':
+      return 'Crédito';
+    case 'mixed':
+      return 'Mixto';
+  }
+  if (status == 'credit') return 'Crédito';
+  return '—';
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -256,6 +256,16 @@ class _UsersPageState extends ConsumerState<UsersPage> {
                               ),
                               visualDensity: VisualDensity.compact,
                             ),
+                            IconButton(
+                              tooltip: 'Eliminar',
+                              onPressed: () => _onDeleteUser(user),
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                size: AppTokens.iconSizeS,
+                                color: AppTokens.destructive,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
                           ],
                         )),
                       ],
@@ -458,15 +468,29 @@ class _UsersPageState extends ConsumerState<UsersPage> {
   }
 
   Future<void> _onEditUser(UserEntity user) async {
-    final input = await showDialog<UserInput>(
+    final result = await showDialog<_EditUserResult>(
       context: context,
       builder: (_) => _EditUserDialog(user: user),
     );
-    if (input == null || !mounted) return;
+    if (result == null || !mounted) return;
 
     try {
       final repository = ref.read(usersRepositoryProvider);
-      await repository.updateUser(input);
+      await repository.updateUser(result.input);
+
+      // Correo y contraseña tocan auth.users → van por RPC aparte.
+      final originalEmail = (user.email ?? '').trim().toLowerCase();
+      final newEmail = result.email.trim().toLowerCase();
+      if (newEmail.isNotEmpty && newEmail != originalEmail) {
+        await repository.updateUserEmail(userId: user.id, email: newEmail);
+      }
+      if (result.password.isNotEmpty) {
+        await repository.setUserPassword(
+          userId: user.id,
+          password: result.password,
+        );
+      }
+
       if (!mounted) return;
       ref.invalidate(usersListProvider);
       ScaffoldMessenger.of(
@@ -476,6 +500,49 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo guardar usuario: $error')),
+      );
+    }
+  }
+
+  Future<void> _onDeleteUser(UserEntity user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar usuario'),
+        content: Text(
+          '¿Eliminar a ${user.fullName}?\n\n'
+          'Se borrará su acceso al sistema de forma permanente. Esta acción no '
+          'se puede deshacer. Si solo quieres bloquear el acceso temporalmente, '
+          'usa "Desactivar".',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: AppTokens.destructive),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final repository = ref.read(usersRepositoryProvider);
+      await repository.deleteUser(user.id);
+      if (!mounted) return;
+      ref.invalidate(usersListProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Usuario eliminado')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo eliminar el usuario: $error')),
       );
     }
   }
@@ -668,6 +735,8 @@ class _EditUserDialog extends StatefulWidget {
 class _EditUserDialogState extends State<_EditUserDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
+  late final TextEditingController _emailController;
+  late final TextEditingController _passwordController;
   late final TextEditingController _phoneController;
   late final TextEditingController _employeeCodeController;
   late final TextEditingController _jobTitleController;
@@ -675,11 +744,14 @@ class _EditUserDialogState extends State<_EditUserDialog> {
   late String _role;
   late bool _isActive;
   DateTime? _hireDate;
+  bool _obscurePassword = true;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.user.fullName);
+    _emailController = TextEditingController(text: widget.user.email ?? '');
+    _passwordController = TextEditingController();
     _phoneController = TextEditingController(text: widget.user.phone ?? '');
     _employeeCodeController =
         TextEditingController(text: widget.user.employeeCode ?? '');
@@ -694,6 +766,8 @@ class _EditUserDialogState extends State<_EditUserDialog> {
   @override
   void dispose() {
     _nameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
     _phoneController.dispose();
     _employeeCodeController.dispose();
     _jobTitleController.dispose();
@@ -739,9 +813,41 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
-                  initialValue: widget.user.email ?? '',
-                  readOnly: true,
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
                   decoration: const InputDecoration(labelText: 'Email'),
+                  validator: (value) {
+                    final v = (value ?? '').trim();
+                    if (v.isEmpty) return 'Campo requerido';
+                    if (!v.contains('@')) return 'Correo no válido';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: 'Nueva contraseña',
+                    helperText: 'Déjalo vacío para no cambiarla',
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                        size: 20,
+                      ),
+                      onPressed: () => setState(
+                          () => _obscurePassword = !_obscurePassword),
+                    ),
+                  ),
+                  validator: (value) {
+                    final v = value ?? '';
+                    if (v.isNotEmpty && v.length < 6) {
+                      return 'Mínimo 6 caracteres';
+                    }
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
@@ -838,19 +944,37 @@ class _EditUserDialogState extends State<_EditUserDialog> {
     if (!_formKey.currentState!.validate()) return;
 
     Navigator.of(context).pop(
-      UserInput(
-        id: widget.user.id,
-        fullName: _nameController.text.trim(),
-        phone: _phoneController.text.trim(),
-        role: _role,
-        isActive: _isActive,
-        employeeCode: _employeeCodeController.text.trim(),
-        jobTitle: _jobTitleController.text.trim(),
-        hireDate: _hireDate,
-        notes: _notesController.text.trim(),
+      _EditUserResult(
+        input: UserInput(
+          id: widget.user.id,
+          fullName: _nameController.text.trim(),
+          phone: _phoneController.text.trim(),
+          role: _role,
+          isActive: _isActive,
+          employeeCode: _employeeCodeController.text.trim(),
+          jobTitle: _jobTitleController.text.trim(),
+          hireDate: _hireDate,
+          notes: _notesController.text.trim(),
+        ),
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
       ),
     );
   }
+}
+
+/// Resultado del diálogo de editar usuario: los campos de perfil (UserInput)
+/// más el correo y la contraseña nueva (que van por RPC aparte si cambian).
+class _EditUserResult {
+  const _EditUserResult({
+    required this.input,
+    required this.email,
+    required this.password,
+  });
+
+  final UserInput input;
+  final String email;
+  final String password;
 }
 
 Widget _sectionHeader(String label) {

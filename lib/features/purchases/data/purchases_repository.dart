@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../printing/data/printing.dart';
+
 class PurchaseSupplier {
   PurchaseSupplier({required this.id, required this.name});
 
@@ -19,29 +21,35 @@ class PurchaseProduct {
     required this.id,
     required this.name,
     required this.cost,
+    required this.price,
     required this.stock,
     this.sku,
     this.barcode,
     this.unit,
+    this.imageUrl,
   });
 
   final String id;
   final String name;
   final double cost;
+  final double price;
   final double stock;
   final String? sku;
   final String? barcode;
   final String? unit;
+  final String? imageUrl;
 
   factory PurchaseProduct.fromMap(Map<String, dynamic> map) {
     return PurchaseProduct(
       id: (map['id'] ?? '').toString(),
       name: (map['name'] ?? '').toString(),
       cost: _toDouble(map['cost']),
+      price: _toDouble(map['price']),
       stock: _toDouble(map['stock']),
       sku: map['sku']?.toString(),
       barcode: map['barcode']?.toString(),
       unit: (map['sale_unit'] ?? map['unit'])?.toString(),
+      imageUrl: map['image_url']?.toString(),
     );
   }
 }
@@ -114,13 +122,16 @@ class PurchaseLineInput {
     required this.quantity,
     required this.unitCost,
     required this.taxRate,
+    this.salePrice = 0,
     this.notes,
   });
 
   final PurchaseProduct product;
-  final double quantity;
-  final double unitCost;
-  final double taxRate;
+  // Editables en línea desde el diálogo de compra.
+  double quantity;
+  double unitCost;
+  double taxRate;
+  double salePrice;
   final String? notes;
 
   double get lineSubtotal => _round2(quantity * unitCost);
@@ -148,6 +159,68 @@ class PurchaseCreateInput {
   final String paymentStatus;
   final String? purchaseCategory;
   final DateTime? expectedAt;
+}
+
+class PurchaseItemDetail {
+  PurchaseItemDetail({
+    required this.description,
+    required this.quantity,
+    required this.unitCost,
+    required this.taxRate,
+    required this.lineSubtotal,
+    required this.lineTax,
+    required this.lineTotal,
+    this.productId,
+    this.sku,
+    this.unitName,
+  });
+
+  final String? productId;
+  final String description;
+  final double quantity;
+  final double unitCost;
+  final double taxRate;
+  final double lineSubtotal;
+  final double lineTax;
+  final double lineTotal;
+  final String? sku;
+  final String? unitName;
+}
+
+class PurchaseDetail {
+  PurchaseDetail({
+    required this.id,
+    required this.supplierId,
+    required this.supplierName,
+    required this.purchaseDate,
+    required this.status,
+    required this.paymentStatus,
+    required this.subtotal,
+    required this.taxAmount,
+    required this.totalAmount,
+    required this.items,
+    this.purchaseNumber,
+    this.invoiceNumber,
+    this.purchaseCategory,
+    this.expectedAt,
+    this.notes,
+  });
+
+  final String id;
+  final String supplierId;
+  final String supplierName;
+  final String? purchaseNumber;
+  final String? invoiceNumber;
+  final DateTime purchaseDate;
+  final String status;
+  final String paymentStatus;
+  final String? purchaseCategory;
+  final DateTime? expectedAt;
+  final String? notes;
+  final double subtotal;
+  final double taxAmount;
+  final double totalAmount;
+  final List<PurchaseItemDetail> items;
 }
 
 class PurchasesRepository {
@@ -180,7 +253,7 @@ class PurchasesRepository {
 
     final rows = await _client
         .from('products')
-        .select('id, name, cost, stock, sku, barcode, sale_unit, unit')
+        .select('id, name, cost, price, stock, sku, barcode, sale_unit, unit, image_url')
         .eq('branch_id', branchId)
         .eq('is_active', true)
         .order('name');
@@ -262,7 +335,250 @@ class PurchasesRepository {
       throw Exception('No se pudo crear la compra.');
     }
 
-    final linePayload = input.items
+    await _insertPurchaseItems(purchaseId, branchId, input.items);
+    await _applyProductCostsPrices(branchId, input.items);
+  }
+
+  /// Actualiza una compra existente: reemplaza sus items (el cascade/trigger de
+  /// `purchase_items` revierte y vuelve a aplicar el stock) y recalcula totales.
+  Future<void> updatePurchase(
+    String purchaseId,
+    PurchaseCreateInput input,
+  ) async {
+    if (input.items.isEmpty) {
+      throw Exception('Agrega al menos un artículo.');
+    }
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    final subtotal = _round2(
+      input.items.fold<double>(0, (sum, item) => sum + item.lineSubtotal),
+    );
+    final taxAmount = _round2(
+      input.items.fold<double>(0, (sum, item) => sum + item.lineTax),
+    );
+    final totalAmount = _round2(subtotal + taxAmount);
+
+    final updated = await _client
+        .from('purchases')
+        .update({
+          'supplier_id': input.supplierId,
+          'invoice_number': _nullIfEmpty(input.invoiceNumber),
+          'payment_status': input.paymentStatus,
+          'purchase_category': _nullIfEmpty(input.purchaseCategory),
+          'purchase_date':
+              input.purchaseDate.toIso8601String().split('T').first,
+          'expected_at': input.expectedAt?.toIso8601String(),
+          'notes': _nullIfEmpty(input.notes),
+          'subtotal': subtotal,
+          'discount_amount': 0,
+          'tax_amount': taxAmount,
+          'total_amount': totalAmount,
+        })
+        .eq('id', purchaseId)
+        .eq('branch_id', branchId)
+        .select('id');
+
+    if (updated.isEmpty) {
+      throw Exception('No se encontró la compra o no tienes permiso.');
+    }
+
+    // Borrar items viejos (el trigger resta su stock) e insertar los nuevos
+    // (el trigger vuelve a sumar). El neto deja el stock correcto.
+    await _client
+        .from('purchase_items')
+        .delete()
+        .eq('purchase_id', purchaseId)
+        .eq('branch_id', branchId);
+
+    await _insertPurchaseItems(purchaseId, branchId, input.items);
+    await _applyProductCostsPrices(branchId, input.items);
+  }
+
+  /// Elimina una compra. El `ON DELETE CASCADE` borra sus `purchase_items` y el
+  /// trigger de stock revierte automáticamente las cantidades.
+  Future<void> deletePurchase(String purchaseId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    await _client
+        .from('purchases')
+        .delete()
+        .eq('id', purchaseId)
+        .eq('branch_id', branchId);
+  }
+
+  /// Carga una compra con sus líneas y el proveedor, para ver/editar/imprimir.
+  Future<PurchaseDetail?> fetchPurchaseDetail(String purchaseId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return null;
+
+    final rows = await _client
+        .from('purchases')
+        .select(
+          'id, supplier_id, purchase_number, invoice_number, purchase_date, '
+          'status, payment_status, purchase_category, expected_at, notes, '
+          'subtotal, tax_amount, total_amount',
+        )
+        .eq('id', purchaseId)
+        .eq('branch_id', branchId)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    final p = Map<String, dynamic>.from(rows.first as Map);
+
+    final supplierId = (p['supplier_id'] ?? '').toString();
+    var supplierName = '-';
+    if (supplierId.isNotEmpty) {
+      final sup = await _client
+          .from('suppliers')
+          .select('legal_name')
+          .eq('id', supplierId)
+          .eq('branch_id', branchId)
+          .limit(1);
+      if (sup.isNotEmpty) {
+        supplierName =
+            (Map<String, dynamic>.from(sup.first as Map)['legal_name'] ?? '-')
+                .toString();
+      }
+    }
+
+    final itemRows = await _client
+        .from('purchase_items')
+        .select(
+          'product_id, description, product_name_snapshot, sku_snapshot, '
+          'unit_name, quantity, unit_cost, tax_rate, line_subtotal, line_tax, '
+          'line_total',
+        )
+        .eq('purchase_id', purchaseId)
+        .eq('branch_id', branchId)
+        .order('created_at');
+
+    final items = itemRows.map((raw) {
+      final m = Map<String, dynamic>.from(raw as Map);
+      return PurchaseItemDetail(
+        productId: m['product_id']?.toString(),
+        description:
+            (m['product_name_snapshot'] ?? m['description'] ?? '').toString(),
+        sku: m['sku_snapshot']?.toString(),
+        unitName: m['unit_name']?.toString(),
+        quantity: _toDouble(m['quantity']),
+        unitCost: _toDouble(m['unit_cost']),
+        taxRate: _toDouble(m['tax_rate']),
+        lineSubtotal: _toDouble(m['line_subtotal']),
+        lineTax: _toDouble(m['line_tax']),
+        lineTotal: _toDouble(m['line_total']),
+      );
+    }).toList(growable: false);
+
+    return PurchaseDetail(
+      id: (p['id'] ?? '').toString(),
+      supplierId: supplierId,
+      supplierName: supplierName,
+      purchaseNumber: p['purchase_number']?.toString(),
+      invoiceNumber: p['invoice_number']?.toString(),
+      purchaseDate:
+          DateTime.tryParse((p['purchase_date'] ?? '').toString()) ??
+              DateTime.now(),
+      status: (p['status'] ?? '').toString(),
+      paymentStatus: (p['payment_status'] ?? 'pending').toString(),
+      purchaseCategory: p['purchase_category']?.toString(),
+      expectedAt: p['expected_at'] == null
+          ? null
+          : DateTime.tryParse(p['expected_at'].toString()),
+      notes: p['notes']?.toString(),
+      subtotal: _toDouble(p['subtotal']),
+      taxAmount: _toDouble(p['tax_amount']),
+      totalAmount: _toDouble(p['total_amount']),
+      items: items,
+    );
+  }
+
+  /// Arma el trabajo de impresión de una compra (orden de compra) reutilizando
+  /// la misma infraestructura de impresión de las ventas.
+  Future<PreparedPrintJobData?> preparePurchasePrintJob(
+    String purchaseId, {
+    PrintPaperSize paperSize = PrintPaperSize.thermal80mm,
+  }) async {
+    final detail = await fetchPurchaseDetail(purchaseId);
+    if (detail == null) return null;
+    final branchId = await _currentBranchId();
+    if (branchId == null) return null;
+
+    final branchRows = await _client
+        .from('branches')
+        .select('name, address, phone')
+        .eq('id', branchId)
+        .limit(1);
+    final branch = branchRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(branchRows.first as Map);
+
+    final settingsRows =
+        await _client.from('app_settings').select('company_tax_id').limit(1);
+    final settings = settingsRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(settingsRows.first as Map);
+
+    final document = PrintDocumentData(
+      documentType: PrintDocumentType.purchaseOrder,
+      documentNumber: detail.purchaseNumber ?? detail.id,
+      issuedAt: detail.purchaseDate,
+      branch: PrintBranchIdentity(
+        name: (branch['name'] ?? 'Sucursal').toString(),
+        address: branch['address']?.toString(),
+        phone: branch['phone']?.toString(),
+        taxId: settings['company_tax_id']?.toString(),
+      ),
+      customer: PrintParty(name: detail.supplierName),
+      referenceNumber: detail.invoiceNumber,
+      receiptTypeLabel: 'Compra',
+      notes: detail.notes,
+      showBarcode: false,
+      items: detail.items
+          .map(
+            (it) => PrintDocumentItem(
+              description: it.description,
+              quantity: it.quantity,
+              unitPrice: it.unitCost,
+              lineSubtotal: it.lineSubtotal,
+              lineTax: it.lineTax,
+              lineTotal: it.lineTotal,
+              sku: it.sku,
+              unitLabel: it.unitName,
+            ),
+          )
+          .toList(growable: false),
+      totals: PrintTotals(
+        subtotal: detail.subtotal,
+        tax: detail.taxAmount,
+        total: detail.totalAmount,
+      ),
+    );
+
+    return PreparedPrintJobData(
+      document: document,
+      paperSize: paperSize,
+      job: PrintJobDraft(
+        branchId: branchId,
+        documentType: PrintDocumentType.purchaseOrder,
+        paperSize: paperSize,
+        sourceTable: 'purchases',
+        sourceId: detail.id,
+        payload: const <String, dynamic>{},
+      ),
+      dispatchPayload: const <String, dynamic>{},
+    );
+  }
+
+  Future<void> _insertPurchaseItems(
+    String purchaseId,
+    String branchId,
+    List<PurchaseLineInput> items,
+  ) async {
+    final payload = items
         .map(
           (line) => {
             'purchase_id': purchaseId,
@@ -285,13 +601,23 @@ class PurchasesRepository {
           },
         )
         .toList(growable: false);
+    await _client.from('purchase_items').insert(payload);
+  }
 
-    await _client.from('purchase_items').insert(linePayload);
-
-    for (final line in input.items) {
+  Future<void> _applyProductCostsPrices(
+    String branchId,
+    List<PurchaseLineInput> items,
+  ) async {
+    for (final line in items) {
+      final update = <String, dynamic>{'cost': line.unitCost};
+      // Solo actualizamos el precio de venta si se especificó uno (> 0),
+      // para no borrar el precio existente del producto.
+      if (line.salePrice > 0) {
+        update['price'] = line.salePrice;
+      }
       await _client
           .from('products')
-          .update({'cost': line.unitCost})
+          .update(update)
           .eq('id', line.product.id)
           .eq('branch_id', branchId);
     }

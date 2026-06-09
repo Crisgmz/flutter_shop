@@ -39,6 +39,7 @@ class _PrintReceiptDialogState extends State<PrintReceiptDialog> {
   String get _docTitle => switch (widget.printData.document.documentType) {
         PrintDocumentType.quote => 'Cotización',
         PrintDocumentType.fiscalInvoice => 'Factura Fiscal',
+        PrintDocumentType.purchaseOrder => 'Orden de compra',
         _ => 'Recibo de venta',
       };
 

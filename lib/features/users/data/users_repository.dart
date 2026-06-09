@@ -285,6 +285,35 @@ class UsersRepository {
     }
   }
 
+  /// Cambia el correo de un empleado vía RPC (toca auth.users con privilegios).
+  Future<void> updateUserEmail({
+    required String userId,
+    required String email,
+  }) async {
+    await _client.rpc('update_employee_email', params: {
+      'p_user_id': userId,
+      'p_email': email.trim().toLowerCase(),
+    });
+  }
+
+  /// Cambia la contraseña de un empleado vía RPC.
+  Future<void> setUserPassword({
+    required String userId,
+    required String password,
+  }) async {
+    await _client.rpc('set_employee_password', params: {
+      'p_user_id': userId,
+      'p_password': password,
+    });
+  }
+
+  /// Elimina un empleado (auth.users + cascade de profile y sucursales).
+  Future<void> deleteUser(String userId) async {
+    await _client.rpc('delete_employee_user', params: {
+      'p_user_id': userId,
+    });
+  }
+
   Future<void> setUserActive({
     required String userId,
     required bool isActive,

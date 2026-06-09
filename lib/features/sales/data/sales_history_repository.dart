@@ -16,6 +16,9 @@ class SalesHistoryRow {
     this.clientId,
     this.clientName,
     this.cashierName,
+    this.cashRegisterName,
+    this.profit = 0,
+    this.paymentMethod,
     this.notes,
     this.dueDate,
   });
@@ -34,6 +37,9 @@ class SalesHistoryRow {
   final String? clientId;
   final String? clientName;
   final String? cashierName;
+  final String? cashRegisterName;
+  final double profit;
+  final String? paymentMethod;
   final String? notes;
   final DateTime? dueDate;
 
@@ -56,6 +62,9 @@ class SalesHistoryRow {
       clientId: _s(map['client_id']),
       clientName: _s(map['client_name']),
       cashierName: _s(map['cashier_name']),
+      cashRegisterName: _s(map['cash_register_name']),
+      profit: _d(map['profit']),
+      paymentMethod: _s(map['payment_method']),
       notes: _s(map['notes']),
       dueDate: rawDue == null || rawDue.isEmpty
           ? null
@@ -132,8 +141,8 @@ class SalesHistoryRepository {
         .from('sales')
         .select(
           'id, branch_id, sale_number, sale_date, status, receipt_type, '
-          'ncf, total_amount, paid_amount, balance_due, due_date, '
-          'client_id, cashier_id, notes',
+          'ncf, subtotal, total_amount, paid_amount, balance_due, due_date, '
+          'client_id, cashier_id, cash_session_id, notes',
         )
         .eq('branch_id', branchId)
         .neq('status', 'voided');
@@ -179,15 +188,31 @@ class SalesHistoryRepository {
     final saleIds = page.map((m) => (m['id'] ?? '').toString()).toList();
     final itemsCount = await _loadItemsCount(branchId, saleIds);
 
+    // Caja (registro) que hizo cada venta, ganancia y método de cobro.
+    final sessionIds = page
+        .map((m) => m['cash_session_id']?.toString())
+        .whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    final registerBySession = await _loadRegisterNames(sessionIds);
+    final cogsBySale = await _loadCogsBySale(branchId, saleIds);
+    final methodBySale = await _loadPaymentMethods(branchId, saleIds);
+
     final result = page.map((m) {
       final id = (m['id'] ?? '').toString();
       final clientId = m['client_id']?.toString();
       final cashierId = m['cashier_id']?.toString();
+      final sessionId = m['cash_session_id']?.toString();
       m['items_count'] = itemsCount[id] ?? 0;
       m['client_name'] =
           clientId == null ? null : clientsById[clientId];
       m['cashier_name'] =
           cashierId == null ? null : cashiersById[cashierId];
+      m['cash_register_name'] =
+          sessionId == null ? null : registerBySession[sessionId];
+      m['profit'] = _d(m['subtotal']) - (cogsBySale[id] ?? 0);
+      m['payment_method'] = methodBySale[id];
       return SalesHistoryRow.fromMap(m);
     }).toList(growable: false);
 
@@ -377,6 +402,102 @@ class SalesHistoryRepository {
       counts[sid] = (counts[sid] ?? 0) + 1;
     }
     return counts;
+  }
+
+  /// Nombre de la caja (cash_register) por cada cash_session_id.
+  /// sales.cash_session_id -> cash_sessions.cash_register_id -> cash_registers.name
+  Future<Map<String, String>> _loadRegisterNames(
+    List<String> sessionIds,
+  ) async {
+    if (sessionIds.isEmpty) return const {};
+    final rows = await _client
+        .from('cash_sessions')
+        .select('id, cash_registers(name)')
+        .inFilter('id', sessionIds);
+    final result = <String, String>{};
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final id = row['id']?.toString();
+      final reg = row['cash_registers'];
+      final name = reg is Map ? reg['name']?.toString() : null;
+      if (id != null && name != null && name.isNotEmpty) {
+        result[id] = name;
+      }
+    }
+    return result;
+  }
+
+  /// COGS (costo de lo vendido) por venta = Σ(cantidad × costo del producto).
+  /// La ganancia se calcula luego como subtotal - COGS, igual que las vistas
+  /// de márgenes del sistema.
+  Future<Map<String, double>> _loadCogsBySale(
+    String branchId,
+    List<String> saleIds,
+  ) async {
+    if (saleIds.isEmpty) return const {};
+    final items = await _client
+        .from('sale_items')
+        .select('sale_id, product_id, quantity')
+        .eq('branch_id', branchId)
+        .inFilter('sale_id', saleIds);
+
+    final productIds = <String>{};
+    for (final raw in items) {
+      final pid = (raw as Map)['product_id']?.toString();
+      if (pid != null && pid.isNotEmpty) productIds.add(pid);
+    }
+
+    final productCosts = <String, double>{};
+    if (productIds.isNotEmpty) {
+      final products = await _client
+          .from('products')
+          .select('id, cost')
+          .inFilter('id', productIds.toList(growable: false));
+      for (final raw in products) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final id = row['id']?.toString();
+        if (id != null) productCosts[id] = _d(row['cost']);
+      }
+    }
+
+    final cogs = <String, double>{};
+    for (final raw in items) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final sid = row['sale_id']?.toString();
+      if (sid == null) continue;
+      final qty = _d(row['quantity']);
+      final cost = productCosts[row['product_id']?.toString()] ?? 0;
+      cogs[sid] = (cogs[sid] ?? 0) + qty * cost;
+    }
+    return cogs;
+  }
+
+  /// Método de cobro por venta. Si hay varios métodos distintos en una misma
+  /// venta lo marca como 'mixed'. Si no hay pagos registrados, queda null.
+  Future<Map<String, String>> _loadPaymentMethods(
+    String branchId,
+    List<String> saleIds,
+  ) async {
+    if (saleIds.isEmpty) return const {};
+    final rows = await _client
+        .from('payments')
+        .select('sale_id, payment_method')
+        .eq('branch_id', branchId)
+        .inFilter('sale_id', saleIds);
+
+    final methods = <String, Set<String>>{};
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final sid = row['sale_id']?.toString();
+      final method = row['payment_method']?.toString();
+      if (sid == null || method == null || method.isEmpty) continue;
+      methods.putIfAbsent(sid, () => <String>{}).add(method);
+    }
+
+    return {
+      for (final entry in methods.entries)
+        entry.key: entry.value.length == 1 ? entry.value.first : 'mixed',
+    };
   }
 
   Future<Map<String, String>> _loadClientsById(String branchId) async {

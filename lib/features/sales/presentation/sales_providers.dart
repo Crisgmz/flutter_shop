@@ -112,6 +112,7 @@ Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
       'category_id': p.categoryId,
       'category_name': p.categoryName,
       'price': p.price,
+      'cost': p.cost,
       'tax_rate': p.taxRate,
       'stock': p.stock,
       'is_active': p.isActive,

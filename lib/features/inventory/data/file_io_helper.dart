@@ -94,6 +94,24 @@ class FileIoHelper {
     return (bytes: bytes, name: file.name);
   }
 
+  /// Picker para importar inventario: acepta .xlsx y .csv. El CSV sirve de
+  /// respaldo cuando un .xlsx falla al leerse por sus formatos internos.
+  static Future<({Uint8List bytes, String name})?> pickImportFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['xlsx', 'csv'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+    var bytes = file.bytes;
+    if (bytes == null && file.path != null) {
+      bytes = await File(file.path!).readAsBytes();
+    }
+    if (bytes == null) return null;
+    return (bytes: bytes, name: file.name);
+  }
+
   /// MIME type aproximado a partir de la extensión sin punto. Usado por la
   /// descarga web; el resto de plataformas no lo necesitan.
   static String _mimeFor(String extension) {

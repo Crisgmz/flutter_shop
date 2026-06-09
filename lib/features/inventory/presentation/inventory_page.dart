@@ -273,6 +273,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                                   _toggleSelected(product.id, v ?? false),
                               onEdit: () => _onEditProduct(product),
                               onHistory: () => _onShowHistory(product),
+                              onAdjust: () => _onAdjustStock(product),
                               onDelete: () => _onDelete(product),
                             );
                           },
@@ -391,6 +392,41 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     if (input == null || !mounted) return;
 
     await _saveProduct(input, successMessage: 'Producto actualizado');
+  }
+
+  Future<void> _onAdjustStock(InventoryProduct product) async {
+    final result = await showDialog<_StockAdjustResult>(
+      context: context,
+      builder: (_) => _StockAdjustDialog(product: product),
+    );
+    if (result == null || !mounted) return;
+
+    final repository = ref.read(inventoryRepositoryProvider);
+    try {
+      final delta = await repository.adjustStock(
+        productId: product.id,
+        currentStock: product.stock,
+        newStock: result.newStock,
+        reason: result.reason,
+        notes: result.notes,
+      );
+      if (!mounted) return;
+      ref.invalidate(inventoryProductsProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            delta == 0
+                ? 'Sin cambios en el stock'
+                : 'Stock ajustado (${delta > 0 ? '+' : ''}${qty(delta)})',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo ajustar el stock: $error')),
+      );
+    }
   }
 
   Future<void> _onToggleActive(InventoryProduct product) async {
@@ -1212,6 +1248,7 @@ class _ProductRow extends StatelessWidget {
     required this.canDelete,
     required this.onEdit,
     required this.onHistory,
+    required this.onAdjust,
     required this.onDelete,
     this.showCheckbox = false,
     this.selected = false,
@@ -1223,6 +1260,7 @@ class _ProductRow extends StatelessWidget {
   final bool canDelete;
   final VoidCallback onEdit;
   final VoidCallback onHistory;
+  final VoidCallback onAdjust;
   final VoidCallback onDelete;
   final bool showCheckbox;
   final bool selected;
@@ -1328,7 +1366,7 @@ class _ProductRow extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: 140,
+            width: 180,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1337,6 +1375,13 @@ class _ProductRow extends StatelessWidget {
                     tooltip: 'Editar',
                     icon: const Icon(Icons.edit_outlined, size: 20),
                     onPressed: onEdit,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                if (canDelete)
+                  IconButton(
+                    tooltip: 'Ajustar stock',
+                    icon: const Icon(Icons.tune_rounded, size: 20),
+                    onPressed: onAdjust,
                     visualDensity: VisualDensity.compact,
                   ),
                 IconButton(
@@ -1452,6 +1497,144 @@ class _InventoryProductCard extends StatelessWidget {
             fontWeight: FontWeight.bold,
             color: isBad ? AppTokens.error : null,
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StockAdjustResult {
+  const _StockAdjustResult({
+    required this.newStock,
+    this.reason,
+    this.notes,
+  });
+
+  final double newStock;
+  final String? reason;
+  final String? notes;
+}
+
+/// Diálogo para ajustar el stock físico de un producto. El usuario ingresa el
+/// nuevo conteo y el sistema registra un movimiento de inventario con la
+/// diferencia (el backend recalcula el stock vía trigger).
+class _StockAdjustDialog extends StatefulWidget {
+  const _StockAdjustDialog({required this.product});
+
+  final InventoryProduct product;
+
+  @override
+  State<_StockAdjustDialog> createState() => _StockAdjustDialogState();
+}
+
+class _StockAdjustDialogState extends State<_StockAdjustDialog> {
+  late final TextEditingController _stockController;
+  final _notesController = TextEditingController();
+  String _reason = 'Conteo físico';
+
+  static const _reasons = [
+    'Conteo físico',
+    'Mercancía dañada',
+    'Producto vencido',
+    'Merma',
+    'Devolución',
+    'Otro',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _stockController =
+        TextEditingController(text: qty(widget.product.stock));
+  }
+
+  @override
+  void dispose() {
+    _stockController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  double? get _newStock => double.tryParse(_stockController.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    final current = widget.product.stock;
+    final next = _newStock;
+    final delta = next == null ? null : next - current;
+
+    return AlertDialog(
+      title: const Text('Ajustar stock'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.product.name,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: AppTokens.s4),
+            Text(
+              'Stock actual: ${qty(current)}',
+              style: const TextStyle(color: AppTokens.mutedForeground),
+            ),
+            const SizedBox(height: AppTokens.s16),
+            TextField(
+              controller: _stockController,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Nuevo stock (conteo físico)',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: AppTokens.s8),
+            if (delta != null && delta != 0)
+              Text(
+                'Diferencia: ${delta > 0 ? '+' : ''}${qty(delta)}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: delta > 0 ? AppTokens.success : AppTokens.error,
+                ),
+              ),
+            const SizedBox(height: AppTokens.s12),
+            DropdownButtonFormField<String>(
+              initialValue: _reason,
+              decoration: const InputDecoration(labelText: 'Motivo'),
+              items: _reasons
+                  .map((r) => DropdownMenuItem(value: r, child: Text(r)))
+                  .toList(growable: false),
+              onChanged: (v) => setState(() => _reason = v ?? 'Conteo físico'),
+            ),
+            const SizedBox(height: AppTokens.s12),
+            TextField(
+              controller: _notesController,
+              decoration: const InputDecoration(
+                labelText: 'Notas (opcional)',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: (next == null || delta == 0)
+              ? null
+              : () => Navigator.of(context).pop(
+                    _StockAdjustResult(
+                      newStock: next,
+                      reason: _reason,
+                      notes: _notesController.text,
+                    ),
+                  ),
+          child: const Text('Guardar ajuste'),
         ),
       ],
     );
@@ -2183,7 +2366,7 @@ class _ImportInventoryDialogState
     // Web: el picker requiere user gesture activo, así que se invoca
     // directo desde el onPressed sin awaits previos.
     try {
-      final picked = await FileIoHelper.pickXlsxFile();
+      final picked = await FileIoHelper.pickImportFile();
       if (picked == null || !mounted) return;
       setState(() {
         _pickedBytes = picked.bytes;
@@ -2202,12 +2385,13 @@ class _ImportInventoryDialogState
       final categories = await _categories();
       if (categories == null) return;
 
+      final isCsv = (_pickedName ?? '').toLowerCase().endsWith('.csv');
+      final service = InventoryExcelService();
       final InventoryImportParseResult parsed;
       try {
-        parsed = InventoryExcelService().parseImport(
-          bytes: bytes,
-          categories: categories,
-        );
+        parsed = isCsv
+            ? service.parseImportCsv(bytes: bytes, categories: categories)
+            : service.parseImport(bytes: bytes, categories: categories);
       } catch (error) {
         _snack('Archivo inválido: $error');
         return;
@@ -2287,8 +2471,10 @@ class _ImportInventoryDialogState
               const SizedBox(height: AppTokens.s20),
               _stepHeader(
                 'Paso 2',
-                'Sube el archivo lleno para crear y actualizar. La columna '
-                    '"sku" decide: si existe se actualiza, si no, se crea.',
+                'Sube el archivo lleno (.xlsx o .csv) para crear y actualizar. '
+                    'La columna "sku" decide: si existe se actualiza, si no, se '
+                    'crea. Si tu Excel da error al leerse, guárdalo como CSV y '
+                    'súbelo.',
               ),
               const SizedBox(height: AppTokens.s12),
               Row(

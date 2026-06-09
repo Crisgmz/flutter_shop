@@ -611,6 +611,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   bool get _stockEnforced =>
       ref.read(appSettingsProvider).valueOrNull?.invDisallowNoStock ?? false;
 
+  /// app_settings.inv_disallow_below_cost — si está prendido, no se permite
+  /// vender ningún producto por debajo de su costo. Lo decide el dueño con el
+  /// toggle de Ajustes › Inventario.
+  bool get _belowCostEnforced =>
+      ref.read(appSettingsProvider).valueOrNull?.invDisallowBelowCost ?? false;
+
   void _addProductToCart(SalesProduct product) {
     final index = _cart.indexWhere((item) => item.product.id == product.id);
     if (_stockEnforced &&
@@ -668,6 +674,15 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   void _setUnitPrice(int index, double value) {
     if (value < 0) return;
     final item = _cart[index];
+    if (_belowCostEnforced && value < item.product.cost) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Precio por debajo del costo (${money(item.product.cost)}).',
+          ),
+        ),
+      );
+    }
     setState(() => _cart[index] = SaleCartItem(
           product: item.product,
           quantity: item.quantity,
@@ -889,6 +904,27 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     if (asCredit && _clientId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Para ventas a crédito debe seleccionar un cliente.')));
       return;
+    }
+
+    // app_settings.inv_disallow_below_cost — bloquea registrar la venta si
+    // algún producto se está vendiendo por debajo de su costo (precio neto,
+    // ya descontado). Solo aplica cuando el dueño activa el flag.
+    if (_belowCostEnforced) {
+      for (final item in _cart) {
+        final netUnit = item.unitPrice * (1 - item.discountPct / 100);
+        if (netUnit < item.product.cost) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.red,
+              content: Text(
+                'No puedes vender ${item.product.name} por debajo del costo '
+                '(${money(item.product.cost)}).',
+              ),
+            ),
+          );
+          return;
+        }
+      }
     }
 
     setState(() => _isSubmitting = true);

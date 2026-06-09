@@ -998,7 +998,7 @@ class ReportsRepository {
         .select(
           'id, sale_number, sale_date, receipt_type, ncf, status, '
           'subtotal, tax_amount, total_amount, discount_amount, '
-          'paid_amount, balance_due, cashier_id, '
+          'paid_amount, balance_due, cashier_id, cash_session_id, '
           'clients(full_name)',
         )
         .eq('branch_id', branchId)
@@ -1040,6 +1040,72 @@ class ReportsRepository {
       }
     }
 
+    // Nombre de la caja (registro) que hizo cada venta. La venta apunta a
+    // cash_sessions.cash_session_id; la sesión apunta a cash_registers.
+    final sessionIds = <String>{};
+    final saleIds = <String>{};
+    for (final raw in salesRows) {
+      final m = raw as Map;
+      final sid = m['cash_session_id']?.toString();
+      if (sid != null && sid.isNotEmpty) sessionIds.add(sid);
+      final id = m['id']?.toString();
+      if (id != null && id.isNotEmpty) saleIds.add(id);
+    }
+
+    final registerNames = <String, String>{};
+    if (sessionIds.isNotEmpty) {
+      final sessions = await _client
+          .from('cash_sessions')
+          .select('id, cash_registers(name)')
+          .inFilter('id', sessionIds.toList(growable: false));
+      for (final raw in sessions) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final id = row['id']?.toString();
+        final reg = row['cash_registers'];
+        final name = reg is Map ? reg['name']?.toString() : null;
+        if (id != null && name != null && name.isNotEmpty) {
+          registerNames[id] = name;
+        }
+      }
+    }
+
+    // Ganancia por venta = subtotal - COGS, donde COGS = Σ(cantidad × costo).
+    // El costo se toma del producto actual (mismo criterio que las vistas de
+    // márgenes del sistema). sale_items no guarda snapshot de costo.
+    final cogsBySale = <String, double>{};
+    if (saleIds.isNotEmpty) {
+      final items = await _client
+          .from('sale_items')
+          .select('sale_id, product_id, quantity')
+          .inFilter('sale_id', saleIds.toList(growable: false));
+      final productIds = <String>{};
+      for (final raw in items) {
+        final pid = (raw as Map)['product_id']?.toString();
+        if (pid != null && pid.isNotEmpty) productIds.add(pid);
+      }
+      final productCosts = <String, double>{};
+      if (productIds.isNotEmpty) {
+        final products = await _client
+            .from('products')
+            .select('id, cost')
+            .inFilter('id', productIds.toList(growable: false));
+        for (final raw in products) {
+          final row = Map<String, dynamic>.from(raw as Map);
+          final id = row['id']?.toString();
+          if (id != null) productCosts[id] = _toDouble(row['cost']);
+        }
+      }
+      for (final raw in items) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final saleId = row['sale_id']?.toString();
+        final pid = row['product_id']?.toString();
+        if (saleId == null) continue;
+        final qty = _toDouble(row['quantity']);
+        final cost = productCosts[pid] ?? 0;
+        cogsBySale[saleId] = (cogsBySale[saleId] ?? 0) + qty * cost;
+      }
+    }
+
     return salesRows.map((item) {
       final m = Map<String, dynamic>.from(item as Map);
       final cashierId = m['cashier_id']?.toString();
@@ -1048,6 +1114,12 @@ class ReportsRepository {
       if (cashierId != null && cashierNames.containsKey(cashierId)) {
         m['profiles'] = {'full_name': cashierNames[cashierId]};
       }
+      final sessionId = m['cash_session_id']?.toString();
+      if (sessionId != null && registerNames.containsKey(sessionId)) {
+        m['cash_register_name'] = registerNames[sessionId];
+      }
+      final saleId = m['id']?.toString();
+      m['profit'] = _toDouble(m['subtotal']) - (cogsBySale[saleId] ?? 0);
       return SaleDetailRow.fromMap(m);
     }).toList(growable: false);
   }
@@ -1875,9 +1947,11 @@ class SaleDetailRow {
     required this.discountAmount,
     required this.paidAmount,
     required this.balanceDue,
+    required this.profit,
     this.ncf,
     this.clientName,
     this.cashierName,
+    this.cashRegisterName,
   });
 
   factory SaleDetailRow.fromMap(Map<String, dynamic> map) {
@@ -1897,8 +1971,10 @@ class SaleDetailRow {
       discountAmount: _toDouble(map['discount_amount']),
       paidAmount: _toDouble(map['paid_amount']),
       balanceDue: _toDouble(map['balance_due']),
+      profit: _toDouble(map['profit']),
       clientName: clients is Map ? clients['full_name']?.toString() : null,
       cashierName: profiles is Map ? profiles['full_name']?.toString() : null,
+      cashRegisterName: map['cash_register_name']?.toString(),
     );
   }
 
@@ -1914,8 +1990,10 @@ class SaleDetailRow {
   final double discountAmount;
   final double paidAmount;
   final double balanceDue;
+  final double profit;
   final String? clientName;
   final String? cashierName;
+  final String? cashRegisterName;
 }
 
 class HourlySalesRow {

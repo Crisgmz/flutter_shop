@@ -11,6 +11,7 @@ class SalesProduct {
     required this.id,
     required this.name,
     required this.price,
+    required this.cost,
     required this.taxRate,
     required this.stock,
     required this.isActive,
@@ -38,6 +39,7 @@ class SalesProduct {
   final String? categoryId;
   final String? categoryName;
   final double price;
+  final double cost;
   final double taxRate;
   final double stock;
   final bool isActive;
@@ -104,6 +106,7 @@ class SalesProduct {
       categoryId: categoryId,
       categoryName: categoryId == null ? null : categoryNames[categoryId],
       price: _toDouble(map['price']),
+      cost: _toDouble(map['cost']),
       taxRate: _toDouble(map['tax_rate']),
       stock: _toDouble(map['stock']),
       isActive: map['is_active'] == true,
@@ -307,7 +310,7 @@ class SalesRepository {
       final page = await _client
           .from('products')
           .select(
-            'id, name, sku, barcode, category_id, price, tax_rate, stock, '
+            'id, name, sku, barcode, category_id, price, cost, tax_rate, stock, '
             'is_active, price_tier_1, price_tier_2, price_tier_3, '
             'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
             'price_tier_8, price_tier_9, price_tier_10, image_url',

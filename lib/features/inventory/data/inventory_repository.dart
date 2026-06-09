@@ -550,6 +550,37 @@ class InventoryRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Registra un ajuste manual de inventario para llevar el stock del producto
+  /// a [newStock]. Inserta en `inventory_movements`; el trigger del backend
+  /// recalcula `products.stock`. Devuelve el delta aplicado (positivo o
+  /// negativo). Si no hay diferencia, no inserta nada.
+  Future<double> adjustStock({
+    required String productId,
+    required double currentStock,
+    required double newStock,
+    String? reason,
+    String? notes,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    final delta = double.parse((newStock - currentStock).toStringAsFixed(3));
+    if (delta == 0) return 0;
+    String? clean(String? v) =>
+        (v == null || v.trim().isEmpty) ? null : v.trim();
+    await _client.from('inventory_movements').insert({
+      'branch_id': branchId,
+      'product_id': productId,
+      'movement_type': delta > 0 ? 'adjustment_in' : 'adjustment_out',
+      'quantity': delta.abs(),
+      'reason': clean(reason),
+      'notes': clean(notes),
+      'recorded_by': _client.auth.currentUser?.id,
+    });
+    return delta;
+  }
+
   Future<InventoryBulkUpsertResult> bulkUpsertProducts(
     List<InventoryProductInput> inputs,
   ) async {

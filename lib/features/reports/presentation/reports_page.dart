@@ -1852,16 +1852,20 @@ class _DetailedSalesReport extends ConsumerWidget {
                   r.ncf ?? '—',
                   r.clientName ?? 'Consumidor Final',
                   r.cashierName ?? '—',
+                  r.cashRegisterName ?? '—',
                   _statusLabel(r.status),
                   money(r.subtotal),
                   money(r.taxAmount),
                   money(r.totalAmount),
+                  money(r.profit),
                 ])
             .toList(growable: false);
         final totalAmount =
             rows.fold<double>(0, (s, r) => s + r.totalAmount);
         final totalTax =
             rows.fold<double>(0, (s, r) => s + r.taxAmount);
+        final totalProfit =
+            rows.fold<double>(0, (s, r) => s + r.profit);
 
         const columns = [
           'Fecha',
@@ -1869,10 +1873,12 @@ class _DetailedSalesReport extends ConsumerWidget {
           'NCF',
           'Cliente',
           'Cajero',
+          'Caja',
           'Estado',
           'Subtotal',
           'ITBIS',
           'Total',
+          'Ganancia',
         ];
         final range = ref.read(reportDateRangeProvider);
         _publishExport(
@@ -1889,7 +1895,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                 table: ReportTable(
                   columns: columns,
                   rows: tableRows,
-                  numericColumns: const {6, 7, 8},
+                  numericColumns: const {7, 8, 9, 10},
                 ),
                 totals: rows.isEmpty
                     ? null
@@ -1897,6 +1903,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                         ReportKv('Ventas', '${rows.length}'),
                         ReportKv('ITBIS', money(totalTax)),
                         ReportKv('Total', money(totalAmount), highlight: true),
+                        ReportKv('Ganancia', money(totalProfit)),
                       ],
               ),
             ],
@@ -1917,10 +1924,12 @@ class _DetailedSalesReport extends ConsumerWidget {
                   'NCF',
                   'Cliente',
                   'Cajero',
+                  'Caja',
                   'Estado',
                   'Subtotal',
                   'ITBIS',
                   'Total',
+                  'Ganancia',
                 ],
                 rows: tableRows,
               ),
@@ -1930,6 +1939,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                   'Ventas': '${rows.length}',
                   'ITBIS': money(totalTax),
                   'Total': money(totalAmount),
+                  'Ganancia': money(totalProfit),
                 }),
               ],
             ],
