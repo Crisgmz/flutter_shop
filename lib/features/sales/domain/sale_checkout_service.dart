@@ -51,9 +51,11 @@ class SaleCheckoutService {
           availableStock: product.stock,
           unitPrice: round2(product.price),
           taxRate: round2(product.taxRate),
+          imeis: item.imeis,
         );
       } else {
         existing.quantity = round3(existing.quantity + item.quantity);
+        existing.imeis.addAll(item.imeis);
       }
     }
 
@@ -84,6 +86,7 @@ class SaleCheckoutService {
             lineSubtotal: lineSubtotal,
             lineTax: lineTax,
             lineTotal: lineTotal,
+            imeis: line.imeis,
           );
         })
         .toList(growable: false);
@@ -173,10 +176,15 @@ class SaleCheckoutServiceInput {
 }
 
 class SaleCheckoutSourceItem {
-  const SaleCheckoutSourceItem({required this.product, required this.quantity});
+  const SaleCheckoutSourceItem({
+    required this.product,
+    required this.quantity,
+    this.imeis = const <String>[],
+  });
 
   final SaleCheckoutSourceProduct product;
   final double quantity;
+  final List<String> imeis;
 }
 
 class SaleCheckoutSourceProduct {
@@ -235,6 +243,7 @@ class NormalizedSaleCheckout {
             'quantity': item.quantity,
             'unit_price': item.unitPrice,
             'tax_rate': item.taxRate,
+            if (item.imeis.isNotEmpty) 'imeis': item.imeis,
           },
         )
         .toList(growable: false);
@@ -252,6 +261,7 @@ class NormalizedSaleCheckoutItem {
     required this.lineSubtotal,
     required this.lineTax,
     required this.lineTotal,
+    this.imeis = const <String>[],
   });
 
   final String productId;
@@ -263,6 +273,7 @@ class NormalizedSaleCheckoutItem {
   final double lineSubtotal;
   final double lineTax;
   final double lineTotal;
+  final List<String> imeis;
 }
 
 class SaleCheckoutValidationException implements Exception {
@@ -282,7 +293,8 @@ class _MutableSaleLine {
     required this.availableStock,
     required this.unitPrice,
     required this.taxRate,
-  });
+    List<String>? imeis,
+  }) : imeis = [...?imeis];
 
   final String productId;
   final String description;
@@ -290,6 +302,7 @@ class _MutableSaleLine {
   final double availableStock;
   final double unitPrice;
   final double taxRate;
+  final List<String> imeis;
 }
 
 String normalizeReceiptType(String value) {

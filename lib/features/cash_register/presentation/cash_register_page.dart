@@ -322,27 +322,42 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   icon: Icons.lock_open_outlined,
                 ),
                 KPICard(
-                  label: 'Cobros (todos)',
-                  value: money(metrics?.totalPayments ?? 0),
+                  label: 'Ingreso efectivo',
+                  value: money(metrics?.cashPayments ?? 0),
                   icon: Icons.payments_outlined,
                 ),
                 KPICard(
-                  // Informativo: los gastos se manejan en Caja Chica. Muestra
-                  // el total de gastos de caja chica del día (no afecta el
-                  // efectivo esperado de esta caja).
-                  label: 'Gastos caja chica (hoy)',
-                  value: money(pettyCashExpensesToday),
+                  label: 'Transferencia',
+                  value: money(metrics?.transferPayments ?? 0),
+                  icon: Icons.account_balance_outlined,
+                ),
+                KPICard(
+                  label: 'Tarjeta',
+                  value: money(metrics?.cardPayments ?? 0),
+                  icon: Icons.credit_card_outlined,
+                ),
+                KPICard(
+                  label: 'Otro',
+                  value: money(metrics?.otherPayments ?? 0),
+                  icon: Icons.more_horiz_rounded,
+                ),
+                KPICard(
+                  // Gastos registrados contra ESTA sesión de caja (tabla
+                  // expenses con cash_session_id). El efectivo de estos gastos
+                  // ya baja del esperado.
+                  label: 'Gastos caja (hoy)',
+                  value: money(metrics?.totalExpenses ?? 0),
                   icon: Icons.savings_outlined,
                 ),
                 KPICard(
-                  label: 'Ingreso efectivo',
-                  value: money(metrics?.cashPayments ?? 0),
-                  icon: Icons.arrow_downward_rounded,
+                  label: 'Cambio devuelto',
+                  value: money(metrics?.changeGiven ?? 0),
+                  icon: Icons.currency_exchange_rounded,
                 ),
                 KPICard(
-                  label: 'Egreso efectivo',
-                  value: money(metrics?.cashExpenses ?? 0),
-                  icon: Icons.arrow_upward_rounded,
+                  label: 'Total de venta',
+                  value: money(metrics?.salesTotal ?? 0),
+                  icon: Icons.point_of_sale_outlined,
                 ),
                 KPICard(
                   label: 'Esperado en caja',
@@ -808,45 +823,134 @@ class _CloseSessionDialog extends StatefulWidget {
 }
 
 class _CloseSessionDialogState extends State<_CloseSessionDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _closingController = TextEditingController(text: '0');
   final _notesController = TextEditingController();
+
+  // Denominaciones del peso dominicano (de mayor a menor).
+  static const List<int> _denoms = [2000, 1000, 500, 200, 100, 50, 25, 10, 5, 1];
+  late final Map<int, TextEditingController> _qty = {
+    for (final d in _denoms) d: TextEditingController(),
+  };
 
   @override
   void dispose() {
-    _closingController.dispose();
     _notesController.dispose();
+    for (final c in _qty.values) {
+      c.dispose();
+    }
     super.dispose();
   }
+
+  int _qtyOf(int d) => int.tryParse(_qty[d]!.text.trim()) ?? 0;
+  double get _total =>
+      _denoms.fold<double>(0, (sum, d) => sum + d * _qtyOf(d));
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Cerrar caja'),
       content: SizedBox(
-        width: ResponsiveLayout.isMobile(context) ? double.maxFinite : 380,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: _closingController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Conteo de cierre'),
-                validator: (value) {
-                  final parsed = double.tryParse(value ?? '');
-                  if (parsed == null || parsed < 0) return 'Monto inválido';
-                  return null;
-                },
+        width: ResponsiveLayout.isMobile(context) ? double.maxFinite : 440,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Cuenta el efectivo por denominación:',
+              style:
+                  TextStyle(fontSize: 13, color: AppTokens.mutedForeground),
+            ),
+            const SizedBox(height: 8),
+            const Row(
+              children: [
+                Expanded(
+                    flex: 3,
+                    child: Text('Denominación',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700))),
+                Expanded(
+                    flex: 2,
+                    child: Text('Cantidad',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700))),
+                Expanded(
+                    flex: 3,
+                    child: Text('Subtotal',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700))),
+              ],
+            ),
+            const Divider(height: 14),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final d in _denoms)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: Text(money(d.toDouble()),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                            Expanded(
+                              flex: 2,
+                              child: SizedBox(
+                                height: 38,
+                                child: TextField(
+                                  controller: _qty[d],
+                                  keyboardType: TextInputType.number,
+                                  textAlign: TextAlign.center,
+                                  onChanged: (_) => setState(() {}),
+                                  decoration: const InputDecoration(
+                                    isDense: true,
+                                    hintText: '0',
+                                    contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 8),
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              flex: 3,
+                              child: Text(
+                                money(d * _qtyOf(d).toDouble()),
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(
+                                    color: AppTokens.mutedForeground),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
-              TextFormField(
-                controller: _notesController,
-                decoration: const InputDecoration(labelText: 'Nota (opcional)'),
-              ),
-            ],
-          ),
+            ),
+            const Divider(height: 14),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Total contado',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w800)),
+                Text(money(_total),
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF2563EB))),
+              ],
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _notesController,
+              decoration: const InputDecoration(labelText: 'Nota (opcional)'),
+            ),
+          ],
         ),
       ),
       actions: [
@@ -860,11 +964,9 @@ class _CloseSessionDialogState extends State<_CloseSessionDialog> {
   }
 
   void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-
     Navigator.of(context).pop(
       CloseCashInput(
-        closingAmount: double.parse(_closingController.text),
+        closingAmount: _total,
         notes: _notesController.text,
       ),
     );
@@ -912,9 +1014,16 @@ class _AllCashiersPanel extends ConsumerWidget {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
+              LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minWidth: constraints.maxWidth.isFinite
+                          ? constraints.maxWidth
+                          : 0,
+                    ),
+                    child: DataTable(
                   columns: const [
                     DataColumn(label: Text('Cajero')),
                     DataColumn(label: Text('Apertura')),
@@ -954,6 +1063,8 @@ class _AllCashiersPanel extends ConsumerWidget {
                         )),
                       ]),
                   ],
+                    ),
+                  ),
                 ),
               ),
               // Footer de ancho completo: etiqueta a la izquierda y total a la

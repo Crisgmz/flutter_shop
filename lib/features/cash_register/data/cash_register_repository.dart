@@ -60,17 +60,35 @@ class CashSessionMetrics {
     required this.cashPayments,
     required this.totalExpenses,
     required this.cashExpenses,
+    this.cardPayments = 0,
+    this.transferPayments = 0,
+    this.otherPayments = 0,
+    this.salesTotal = 0,
+    this.changeGiven = 0,
   });
 
   final double totalPayments;
   final double cashPayments;
+  final double cardPayments;
+  final double transferPayments;
+  final double otherPayments;
   final double totalExpenses;
   final double cashExpenses;
 
+  /// Total vendido en la sesión (suma de total_amount de las ventas).
+  final double salesTotal;
+
+  /// Cambio entregado en efectivo (sobrepagos). Sale del efectivo de la caja.
+  final double changeGiven;
+
   double get netPayments => _round2(totalPayments - totalExpenses);
 
+  /// Efectivo esperado = apertura + cobros en efectivo − gastos en efectivo
+  /// − cambio entregado en efectivo.
   double expectedCashFromOpening(double openingAmount) {
-    return _round2(openingAmount + cashPayments - cashExpenses);
+    return _round2(
+      openingAmount + cashPayments - cashExpenses - changeGiven,
+    );
   }
 }
 
@@ -566,14 +584,33 @@ class CashRegisterRepository {
       ),
     );
 
-    final cashPayments = _round2(
-      payments.fold<double>(0, (sum, item) {
-        final row = item as Map;
-        final method = (row['payment_method'] ?? '').toString();
-        if (method != 'cash') return sum;
-        return sum + _toDouble(row['amount']);
-      }),
-    );
+    double sumByMethod(bool Function(String m) test) => _round2(
+          payments.fold<double>(0, (sum, item) {
+            final row = item as Map;
+            final method = (row['payment_method'] ?? '').toString();
+            if (!test(method)) return sum;
+            return sum + _toDouble(row['amount']);
+          }),
+        );
+
+    final cashPayments = sumByMethod((m) => m == 'cash');
+    final cardPayments = sumByMethod((m) => m == 'card');
+    final transferPayments = sumByMethod((m) => m == 'transfer');
+    // "Otro" = todo lo que no es efectivo/tarjeta/transferencia.
+    final otherPayments = sumByMethod(
+        (m) => m != 'cash' && m != 'card' && m != 'transfer');
+
+    // Total vendido y cambio entregado (sobrepagos) de las ventas de la sesión.
+    final salesRows = await _client
+        .from('sales')
+        .select('total_amount, change_amount')
+        .eq('branch_id', branchId)
+        .eq('cash_session_id', cashSessionId)
+        .neq('status', 'voided');
+    final salesTotal = _round2(salesRows.fold<double>(
+        0, (sum, item) => sum + _toDouble((item as Map)['total_amount'])));
+    final changeGiven = _round2(salesRows.fold<double>(
+        0, (sum, item) => sum + _toDouble((item as Map)['change_amount'])));
 
     final totalExpenses = _round2(
       expenses.fold<double>(
@@ -594,6 +631,11 @@ class CashRegisterRepository {
     return CashSessionMetrics(
       totalPayments: totalPayments,
       cashPayments: cashPayments,
+      cardPayments: cardPayments,
+      transferPayments: transferPayments,
+      otherPayments: otherPayments,
+      salesTotal: salesTotal,
+      changeGiven: changeGiven,
       totalExpenses: totalExpenses,
       cashExpenses: cashExpenses,
     );

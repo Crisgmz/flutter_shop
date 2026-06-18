@@ -150,6 +150,7 @@ const navItems = [
   reportsNavItem,
   cashRegisterNavItem,
   pettyCashNavItem,
+  expensesNavItem,
   fiscalDocumentsNavItem,
   taxesNavItem,
   branchesNavItem,
@@ -168,6 +169,7 @@ const navSections = [
       cobrosNavItem,
       cashRegisterNavItem,
       pettyCashNavItem,
+      expensesNavItem,
     ],
   ),
   NavSection(

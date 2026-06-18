@@ -35,6 +35,7 @@ class AppSettings {
   bool get invDefaultIsService => _bool('inv_default_is_service', false);
   String get invBarcodeIdSource => _str('inv_barcode_id_source', 'item_id');
   bool get invDisallowBelowCost => _bool('inv_disallow_below_cost', false);
+  bool get invImeiMode => _bool('inv_imei_mode', false);
   bool get invDisallowNoStock => _bool('inv_disallow_no_stock', false);
   bool get invHighlightMinStock => _bool('inv_highlight_min_stock', true);
   bool get invDisableMarginCalculator =>

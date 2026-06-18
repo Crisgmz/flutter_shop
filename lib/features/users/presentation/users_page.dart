@@ -181,7 +181,11 @@ class _UsersPageState extends ConsumerState<UsersPage> {
     if (isMobile) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [searchField, const SizedBox(height: AppTokens.s12), filterChip],
+        children: [
+          searchField,
+          const SizedBox(height: AppTokens.s12),
+          filterChip,
+        ],
       );
     }
 
@@ -223,51 +227,67 @@ class _UsersPageState extends ConsumerState<UsersPage> {
                     (user) => DataRow(
                       selected: user.id == selectedUserId,
                       onSelectChanged: (_) =>
-                          ref.read(selectedUserIdProvider.notifier).state = user.id,
+                          ref.read(selectedUserIdProvider.notifier).state =
+                              user.id,
                       cells: [
-                        DataCell(Text(
-                          user.fullName,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        )),
+                        DataCell(
+                          Text(
+                            user.fullName,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
                         DataCell(Text(user.email ?? '-')),
                         DataCell(Text(_roleLabel(user.role))),
                         DataCell(Text(user.phone ?? '-')),
                         DataCell(Text(user.activeBranchCount.toString())),
-                        DataCell(StatusBadge(
-                          label: user.isActive ? 'Activo' : 'Inactivo',
-                          status: user.isActive ? 'active' : 'inactive',
-                        )),
-                        DataCell(Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: 'Editar',
-                              onPressed: () => _onEditUser(user),
-                              icon: const Icon(Icons.edit_outlined, size: AppTokens.iconSizeS),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            IconButton(
-                              tooltip: user.isActive ? 'Desactivar' : 'Activar',
-                              onPressed: () => _onToggleActive(user),
-                              icon: Icon(
-                                user.isActive ? Icons.block_outlined : Icons.check_circle_outline,
-                                size: AppTokens.iconSizeS,
-                                color: user.isActive ? AppTokens.destructive : AppTokens.success,
+                        DataCell(
+                          StatusBadge(
+                            label: user.isActive ? 'Activo' : 'Inactivo',
+                            status: user.isActive ? 'active' : 'inactive',
+                          ),
+                        ),
+                        DataCell(
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Editar',
+                                onPressed: () => _onEditUser(user),
+                                icon: const Icon(
+                                  Icons.edit_outlined,
+                                  size: AppTokens.iconSizeS,
+                                ),
+                                visualDensity: VisualDensity.compact,
                               ),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            IconButton(
-                              tooltip: 'Eliminar',
-                              onPressed: () => _onDeleteUser(user),
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                size: AppTokens.iconSizeS,
-                                color: AppTokens.destructive,
+                              IconButton(
+                                tooltip: user.isActive
+                                    ? 'Desactivar'
+                                    : 'Activar',
+                                onPressed: () => _onToggleActive(user),
+                                icon: Icon(
+                                  user.isActive
+                                      ? Icons.block_outlined
+                                      : Icons.check_circle_outline,
+                                  size: AppTokens.iconSizeS,
+                                  color: user.isActive
+                                      ? AppTokens.destructive
+                                      : AppTokens.success,
+                                ),
+                                visualDensity: VisualDensity.compact,
                               ),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                          ],
-                        )),
+                              IconButton(
+                                tooltip: 'Eliminar',
+                                onPressed: () => _onDeleteUser(user),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: AppTokens.iconSizeS,
+                                  color: AppTokens.destructive,
+                                ),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   )
@@ -281,11 +301,17 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       title: selectedUser == null
           ? 'Sucursales del usuario'
           : 'Sucursales de ${selectedUser.fullName}',
+      scrollable: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(AppTokens.s20, AppTokens.s12, AppTokens.s20, 0),
+            padding: const EdgeInsets.fromLTRB(
+              AppTokens.s20,
+              AppTokens.s12,
+              AppTokens.s20,
+              0,
+            ),
             child: Align(
               alignment: Alignment.centerRight,
               child: FilledButton.tonalIcon(
@@ -314,124 +340,157 @@ class _UsersPageState extends ConsumerState<UsersPage> {
               ),
             )
           else
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: DataTable(
-                columns: const [
-                  DataColumn(label: Text('Sucursal')),
-                  DataColumn(label: Text('Rol override')),
-                  DataColumn(label: Text('Caja')),
-                  DataColumn(label: Text('Default')),
-                  DataColumn(label: Text('Estado')),
-                  DataColumn(label: Text('Acciones')),
-                ],
-                rows: selectedUser.branches
-                    .map(
-                      (branch) => DataRow(
-                        cells: [
-                          DataCell(Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '${branch.branchCode} - ${branch.branchName}',
-                                style: const TextStyle(fontWeight: FontWeight.w600),
-                              ),
-                              if (branch.membershipNotes != null &&
-                                  branch.membershipNotes!.isNotEmpty)
-                                Text(
-                                  branch.membershipNotes!,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: AppTokens.mutedForeground,
-                                  ),
-                                ),
-                            ],
-                          )),
-                          DataCell(Text(_roleLabel(branch.roleOverride ?? '-'))),
-                          DataCell(Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Tooltip(
-                                message: 'Puede abrir caja',
-                                child: Icon(
-                                  branch.canOpenCash
-                                      ? Icons.lock_open_outlined
-                                      : Icons.lock_outline,
-                                  size: 14,
-                                  color: branch.canOpenCash
-                                      ? AppTokens.success
-                                      : AppTokens.mutedForeground,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Tooltip(
-                                message: 'Puede cerrar caja',
-                                child: Icon(
-                                  branch.canCloseCash
-                                      ? Icons.lock_outlined
-                                      : Icons.lock_outline,
-                                  size: 14,
-                                  color: branch.canCloseCash
-                                      ? AppTokens.success
-                                      : AppTokens.mutedForeground,
-                                ),
-                              ),
-                            ],
-                          )),
-                          DataCell(StatusBadge(
-                            label: branch.isDefault ? 'Sí' : 'No',
-                            status: branch.isDefault ? 'active' : 'inactive',
-                          )),
-                          DataCell(StatusBadge(
-                            label: branch.isActive ? 'Activa' : 'Inactiva',
-                            status: branch.isActive ? 'active' : 'inactive',
-                          )),
-                          DataCell(Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'Editar asignación',
-                                onPressed: () =>
-                                    _onEditMembership(branch),
-                                icon: const Icon(Icons.edit_outlined,
-                                    size: AppTokens.iconSizeS),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              IconButton(
-                                tooltip: 'Marcar default',
-                                onPressed: branch.isDefault
-                                    ? null
-                                    : () => _onSetDefaultBranch(
-                                        userId: selectedUser.id,
-                                        branchId: branch.branchId,
+            LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: constraints.maxWidth.isFinite
+                        ? constraints.maxWidth
+                        : 0,
+                  ),
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Sucursal')),
+                      DataColumn(label: Text('Rol override')),
+                      DataColumn(label: Text('Caja')),
+                      DataColumn(label: Text('Default')),
+                      DataColumn(label: Text('Estado')),
+                      DataColumn(label: Text('Acciones')),
+                    ],
+                    rows: selectedUser.branches
+                        .map(
+                          (branch) => DataRow(
+                            cells: [
+                              DataCell(
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${branch.branchCode} - ${branch.branchName}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
                                       ),
-                                icon: const Icon(Icons.star_outline,
-                                    size: AppTokens.iconSizeS),
-                                visualDensity: VisualDensity.compact,
+                                    ),
+                                    if (branch.membershipNotes != null &&
+                                        branch.membershipNotes!.isNotEmpty)
+                                      Text(
+                                        branch.membershipNotes!,
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppTokens.mutedForeground,
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
-                              IconButton(
-                                tooltip: branch.isActive
-                                    ? 'Desactivar'
-                                    : 'Activar',
-                                onPressed: () => _onToggleMembership(
-                                  membershipId: branch.membershipId,
-                                  isActive: !branch.isActive,
+                              DataCell(
+                                Text(_roleLabel(branch.roleOverride ?? '-')),
+                              ),
+                              DataCell(
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Tooltip(
+                                      message: 'Puede abrir caja',
+                                      child: Icon(
+                                        branch.canOpenCash
+                                            ? Icons.lock_open_outlined
+                                            : Icons.lock_outline,
+                                        size: 14,
+                                        color: branch.canOpenCash
+                                            ? AppTokens.success
+                                            : AppTokens.mutedForeground,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Tooltip(
+                                      message: 'Puede cerrar caja',
+                                      child: Icon(
+                                        branch.canCloseCash
+                                            ? Icons.lock_outlined
+                                            : Icons.lock_outline,
+                                        size: 14,
+                                        color: branch.canCloseCash
+                                            ? AppTokens.success
+                                            : AppTokens.mutedForeground,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                icon: Icon(
-                                  branch.isActive
-                                      ? Icons.link_off_outlined
-                                      : Icons.link_outlined,
-                                  size: AppTokens.iconSizeS,
+                              ),
+                              DataCell(
+                                StatusBadge(
+                                  label: branch.isDefault ? 'Sí' : 'No',
+                                  status: branch.isDefault
+                                      ? 'active'
+                                      : 'inactive',
                                 ),
-                                visualDensity: VisualDensity.compact,
+                              ),
+                              DataCell(
+                                StatusBadge(
+                                  label: branch.isActive
+                                      ? 'Activa'
+                                      : 'Inactiva',
+                                  status: branch.isActive
+                                      ? 'active'
+                                      : 'inactive',
+                                ),
+                              ),
+                              DataCell(
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: 'Editar asignación',
+                                      onPressed: () =>
+                                          _onEditMembership(branch),
+                                      icon: const Icon(
+                                        Icons.edit_outlined,
+                                        size: AppTokens.iconSizeS,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Marcar default',
+                                      onPressed: branch.isDefault
+                                          ? null
+                                          : () => _onSetDefaultBranch(
+                                              userId: selectedUser.id,
+                                              branchId: branch.branchId,
+                                            ),
+                                      icon: const Icon(
+                                        Icons.star_outline,
+                                        size: AppTokens.iconSizeS,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    IconButton(
+                                      tooltip: branch.isActive
+                                          ? 'Desactivar'
+                                          : 'Activar',
+                                      onPressed: () => _onToggleMembership(
+                                        membershipId: branch.membershipId,
+                                        isActive: !branch.isActive,
+                                      ),
+                                      icon: Icon(
+                                        branch.isActive
+                                            ? Icons.link_off_outlined
+                                            : Icons.link_outlined,
+                                        size: AppTokens.iconSizeS,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ],
-                          )),
-                        ],
-                      ),
-                    )
-                    .toList(growable: false),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+                ),
               ),
             ),
         ],
@@ -457,7 +516,9 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       if (!mounted) return;
       ref.invalidate(usersListProvider);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Usuario ${input.fullName} creado exitosamente')),
+        SnackBar(
+          content: Text('Usuario ${input.fullName} creado exitosamente'),
+        ),
       );
     } catch (error) {
       if (!mounted) return;
@@ -522,7 +583,8 @@ class _UsersPageState extends ConsumerState<UsersPage> {
           ),
           FilledButton(
             style: FilledButton.styleFrom(
-                backgroundColor: AppTokens.destructive),
+              backgroundColor: AppTokens.destructive,
+            ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Eliminar'),
           ),
@@ -536,9 +598,9 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       await repository.deleteUser(user.id);
       if (!mounted) return;
       ref.invalidate(usersListProvider);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Usuario eliminado')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Usuario eliminado')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -632,14 +694,14 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       await repository.updateMembership(input);
       if (!mounted) return;
       ref.invalidate(usersListProvider);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Asignación actualizada')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Asignación actualizada')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo actualizar: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('No se pudo actualizar: $error')));
     }
   }
 
@@ -687,10 +749,26 @@ class _UsersKpis extends StatelessWidget {
     );
 
     final cards = [
-      KPICard(label: 'Usuarios', value: total.toString(), icon: Icons.people_outline_rounded),
-      KPICard(label: 'Activos', value: active.toString(), icon: Icons.check_circle_outline),
-      KPICard(label: 'Admins', value: admins.toString(), icon: Icons.admin_panel_settings_outlined),
-      KPICard(label: 'Asignaciones', value: assignments.toString(), icon: Icons.assignment_ind_outlined),
+      KPICard(
+        label: 'Usuarios',
+        value: total.toString(),
+        icon: Icons.people_outline_rounded,
+      ),
+      KPICard(
+        label: 'Activos',
+        value: active.toString(),
+        icon: Icons.check_circle_outline,
+      ),
+      KPICard(
+        label: 'Admins',
+        value: admins.toString(),
+        icon: Icons.admin_panel_settings_outlined,
+      ),
+      KPICard(
+        label: 'Asignaciones',
+        value: assignments.toString(),
+        icon: Icons.assignment_ind_outlined,
+      ),
     ];
 
     return LayoutBuilder(
@@ -700,10 +778,12 @@ class _UsersKpis extends StatelessWidget {
             spacing: AppTokens.s12,
             runSpacing: AppTokens.s12,
             children: cards
-                .map((card) => SizedBox(
-                      width: (constraints.maxWidth - AppTokens.s12) / 2,
-                      child: card,
-                    ))
+                .map(
+                  (card) => SizedBox(
+                    width: (constraints.maxWidth - AppTokens.s12) / 2,
+                    child: card,
+                  ),
+                )
                 .toList(),
           );
         }
@@ -753,10 +833,12 @@ class _EditUserDialogState extends State<_EditUserDialog> {
     _emailController = TextEditingController(text: widget.user.email ?? '');
     _passwordController = TextEditingController();
     _phoneController = TextEditingController(text: widget.user.phone ?? '');
-    _employeeCodeController =
-        TextEditingController(text: widget.user.employeeCode ?? '');
-    _jobTitleController =
-        TextEditingController(text: widget.user.jobTitle ?? '');
+    _employeeCodeController = TextEditingController(
+      text: widget.user.employeeCode ?? '',
+    );
+    _jobTitleController = TextEditingController(
+      text: widget.user.jobTitle ?? '',
+    );
     _notesController = TextEditingController(text: widget.user.notes ?? '');
     _role = widget.user.role;
     _isActive = widget.user.isActive;
@@ -790,8 +872,8 @@ class _EditUserDialogState extends State<_EditUserDialog> {
     final hireDateLabel = _hireDate == null
         ? 'Sin fecha'
         : '${_hireDate!.day.toString().padLeft(2, '0')}/'
-            '${_hireDate!.month.toString().padLeft(2, '0')}/'
-            '${_hireDate!.year}';
+              '${_hireDate!.month.toString().padLeft(2, '0')}/'
+              '${_hireDate!.year}';
 
     return AlertDialog(
       title: const Text('Editar usuario'),
@@ -807,7 +889,9 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                 _sectionHeader('Cuenta'),
                 TextFormField(
                   controller: _nameController,
-                  decoration: const InputDecoration(labelText: 'Nombre completo'),
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre completo',
+                  ),
                   validator: (value) =>
                       (value ?? '').trim().isEmpty ? 'Campo requerido' : null,
                 ),
@@ -837,8 +921,8 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                             : Icons.visibility_off_outlined,
                         size: 20,
                       ),
-                      onPressed: () => setState(
-                          () => _obscurePassword = !_obscurePassword),
+                      onPressed: () =>
+                          setState(() => _obscurePassword = !_obscurePassword),
                     ),
                   ),
                   validator: (value) {
@@ -880,13 +964,16 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                 _sectionHeader('Empleado'),
                 TextFormField(
                   controller: _employeeCodeController,
-                  decoration:
-                      const InputDecoration(labelText: 'Código de empleado'),
+                  decoration: const InputDecoration(
+                    labelText: 'Código de empleado',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _jobTitleController,
-                  decoration: const InputDecoration(labelText: 'Cargo / Puesto'),
+                  decoration: const InputDecoration(
+                    labelText: 'Cargo / Puesto',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -921,7 +1008,9 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _notesController,
-                  decoration: const InputDecoration(labelText: 'Notas internas'),
+                  decoration: const InputDecoration(
+                    labelText: 'Notas internas',
+                  ),
                   maxLines: 3,
                   minLines: 2,
                 ),
@@ -1002,8 +1091,7 @@ class _UserPermissionsPanel extends ConsumerStatefulWidget {
       _UserPermissionsPanelState();
 }
 
-class _UserPermissionsPanelState
-    extends ConsumerState<_UserPermissionsPanel> {
+class _UserPermissionsPanelState extends ConsumerState<_UserPermissionsPanel> {
   String? _selectedBranchId;
   final _searchController = TextEditingController();
   String _searchQuery = '';
@@ -1041,9 +1129,8 @@ class _UserPermissionsPanelState
   Widget build(BuildContext context) {
     final user = widget.selectedUser;
 
-    final activeBranches = user?.branches
-            .where((b) => b.isActive)
-            .toList(growable: false) ??
+    final activeBranches =
+        user?.branches.where((b) => b.isActive).toList(growable: false) ??
         const [];
 
     if (_selectedBranchId == null && activeBranches.isNotEmpty) {
@@ -1052,9 +1139,10 @@ class _UserPermissionsPanelState
 
     final permissionsAsync = (user != null && _selectedBranchId != null)
         ? ref.watch(
-            effectivePermissionsProvider(
-              (userId: user.id, branchId: _selectedBranchId!),
-            ),
+            effectivePermissionsProvider((
+              userId: user.id,
+              branchId: _selectedBranchId!,
+            )),
           )
         : null;
 
@@ -1107,22 +1195,17 @@ class _UserPermissionsPanelState
                         .map(
                           (b) => DropdownMenuItem<String>(
                             value: b.branchId,
-                            child: Text(
-                              '${b.branchCode} - ${b.branchName}',
-                            ),
+                            child: Text('${b.branchCode} - ${b.branchName}'),
                           ),
                         )
                         .toList(growable: false),
                     onChanged: _resettingAll
                         ? null
-                        : (value) =>
-                            setState(() => _selectedBranchId = value),
+                        : (value) => setState(() => _selectedBranchId = value),
                   ),
                   const Spacer(),
                   if (permissionsAsync?.valueOrNull != null)
-                    _OverrideCountChip(
-                      perms: permissionsAsync!.valueOrNull!,
-                    ),
+                    _OverrideCountChip(perms: permissionsAsync!.valueOrNull!),
                   const SizedBox(width: AppTokens.s8),
                   OutlinedButton.icon(
                     onPressed: _resettingAll
@@ -1179,11 +1262,13 @@ class _UserPermissionsPanelState
     final filtered = q.isEmpty
         ? perms
         : perms
-            .where((p) =>
-                p.permissionName.toLowerCase().contains(q) ||
-                p.permissionCode.toLowerCase().contains(q) ||
-                (p.module ?? '').toLowerCase().contains(q))
-            .toList(growable: false);
+              .where(
+                (p) =>
+                    p.permissionName.toLowerCase().contains(q) ||
+                    p.permissionCode.toLowerCase().contains(q) ||
+                    (p.module ?? '').toLowerCase().contains(q),
+              )
+              .toList(growable: false);
 
     final grouped = <String, List<EffectivePermission>>{};
     for (final p in filtered) {
@@ -1201,7 +1286,11 @@ class _UserPermissionsPanelState
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-          AppTokens.s20, 0, AppTokens.s20, AppTokens.s16),
+        AppTokens.s20,
+        0,
+        AppTokens.s20,
+        AppTokens.s16,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1213,13 +1302,11 @@ class _UserPermissionsPanelState
                   controller: _searchController,
                   decoration: InputDecoration(
                     hintText: 'Buscar permiso, módulo o código…',
-                    prefixIcon:
-                        const Icon(Icons.search, size: 18),
+                    prefixIcon: const Icon(Icons.search, size: 18),
                     isDense: true,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide:
-                          const BorderSide(color: AppTokens.border),
+                      borderSide: const BorderSide(color: AppTokens.border),
                     ),
                     suffixIcon: _searchQuery.isEmpty
                         ? null
@@ -1280,10 +1367,9 @@ class _UserPermissionsPanelState
           else
             ...orderedKeys.map((module) {
               final items = grouped[module]!;
-              final grantedCount =
-                  items.where((p) => p.effectiveGrant).length;
-              final isExpanded = _expandedModules.contains(module) ||
-                  _searchQuery.isNotEmpty;
+              final grantedCount = items.where((p) => p.effectiveGrant).length;
+              final isExpanded =
+                  _expandedModules.contains(module) || _searchQuery.isNotEmpty;
               return _ModulePermissionsCard(
                 module: module,
                 granted: grantedCount,
@@ -1296,9 +1382,7 @@ class _UserPermissionsPanelState
                     _expandedModules.add(module);
                   }
                 }),
-                children: [
-                  for (final p in items) _permissionRowTile(p, user),
-                ],
+                children: [for (final p in items) _permissionRowTile(p, user)],
               );
             }),
         ],
@@ -1308,22 +1392,24 @@ class _UserPermissionsPanelState
 
   Widget _permissionRowTile(EffectivePermission p, UserEntity user) {
     final effective = p.effectiveGrant;
-    final statusColor =
-        effective ? AppTokens.success : AppTokens.destructive;
+    final statusColor = effective ? AppTokens.success : AppTokens.destructive;
     final statusLabel = effective ? 'Permitido' : 'Denegado';
-    final statusIcon =
-        effective ? Icons.check_circle : Icons.cancel_outlined;
+    final statusIcon = effective ? Icons.check_circle : Icons.cancel_outlined;
 
     String sourceLabel;
     if (p.hasOverride) {
-      sourceLabel = p.userOverride! ? 'Override: permitido' : 'Override: denegado';
+      sourceLabel = p.userOverride!
+          ? 'Override: permitido'
+          : 'Override: denegado';
     } else {
       sourceLabel = p.roleGrant ? 'Heredado del rol' : 'Sin permiso del rol';
     }
 
     return Container(
       padding: const EdgeInsets.symmetric(
-          horizontal: AppTokens.s16, vertical: AppTokens.s10),
+        horizontal: AppTokens.s16,
+        vertical: AppTokens.s10,
+      ),
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: AppTokens.border)),
       ),
@@ -1331,8 +1417,7 @@ class _UserPermissionsPanelState
         children: [
           // Status pill
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: statusColor.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(6),
@@ -1381,7 +1466,8 @@ class _UserPermissionsPanelState
           if (p.hasOverride)
             IconButton(
               tooltip: 'Quitar override (volver al rol)',
-              onPressed: _savingCodes.contains(p.permissionCode) || _resettingAll
+              onPressed:
+                  _savingCodes.contains(p.permissionCode) || _resettingAll
                   ? null
                   : () => _removeOverride(p, user),
               icon: const Icon(Icons.undo, size: 16),
@@ -1424,9 +1510,10 @@ class _UserPermissionsPanelState
         granted: granted,
       );
       ref.invalidate(
-        effectivePermissionsProvider(
-          (userId: user.id, branchId: _selectedBranchId!),
-        ),
+        effectivePermissionsProvider((
+          userId: user.id,
+          branchId: _selectedBranchId!,
+        )),
       );
       if (!mounted) return;
       AppSnackBar.success(
@@ -1455,9 +1542,10 @@ class _UserPermissionsPanelState
         permissionCode: p.permissionCode,
       );
       ref.invalidate(
-        effectivePermissionsProvider(
-          (userId: user.id, branchId: _selectedBranchId!),
-        ),
+        effectivePermissionsProvider((
+          userId: user.id,
+          branchId: _selectedBranchId!,
+        )),
       );
       if (!mounted) return;
       AppSnackBar.success(
@@ -1510,9 +1598,7 @@ class _UserPermissionsPanelState
         branchId: branchId,
       );
       ref.invalidate(
-        effectivePermissionsProvider(
-          (userId: user.id, branchId: branchId),
-        ),
+        effectivePermissionsProvider((userId: user.id, branchId: branchId)),
       );
       if (!mounted) return;
       AppSnackBar.success(
@@ -1731,10 +1817,12 @@ class _EditMembershipDialogState extends State<_EditMembershipDialog> {
     _roleOverride = widget.branch.roleOverride ?? '';
     _canOpenCash = widget.branch.canOpenCash;
     _canCloseCash = widget.branch.canCloseCash;
-    _pinController =
-        TextEditingController(text: widget.branch.posPinOverride ?? '');
-    _notesController =
-        TextEditingController(text: widget.branch.membershipNotes ?? '');
+    _pinController = TextEditingController(
+      text: widget.branch.posPinOverride ?? '',
+    );
+    _notesController = TextEditingController(
+      text: widget.branch.membershipNotes ?? '',
+    );
   }
 
   @override
@@ -1762,16 +1850,23 @@ class _EditMembershipDialogState extends State<_EditMembershipDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _roleOverride,
                 decoration: const InputDecoration(
-                    labelText: 'Rol override (opcional)'),
+                  labelText: 'Rol override (opcional)',
+                ),
                 items: const [
                   DropdownMenuItem(value: '', child: Text('Sin override')),
                   DropdownMenuItem(
-                      value: 'admin', child: Text('Administrador')),
+                    value: 'admin',
+                    child: Text('Administrador'),
+                  ),
                   DropdownMenuItem(
-                      value: 'supervisor', child: Text('Supervisor')),
+                    value: 'supervisor',
+                    child: Text('Supervisor'),
+                  ),
                   DropdownMenuItem(value: 'cashier', child: Text('Cajero')),
                   DropdownMenuItem(
-                      value: 'accountant', child: Text('Contador')),
+                    value: 'accountant',
+                    child: Text('Contador'),
+                  ),
                 ],
                 onChanged: (v) => setState(() => _roleOverride = v ?? ''),
               ),
@@ -1807,8 +1902,9 @@ class _EditMembershipDialogState extends State<_EditMembershipDialog> {
               ),
               TextFormField(
                 controller: _notesController,
-                decoration:
-                    const InputDecoration(labelText: 'Notas de asignación'),
+                decoration: const InputDecoration(
+                  labelText: 'Notas de asignación',
+                ),
                 maxLines: 2,
                 minLines: 1,
               ),
@@ -1891,7 +1987,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                 _sectionHeader('Cuenta'),
                 TextFormField(
                   controller: _nameController,
-                  decoration: const InputDecoration(labelText: 'Nombre completo'),
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre completo',
+                  ),
                   textCapitalization: TextCapitalization.words,
                   validator: (v) =>
                       (v ?? '').trim().isEmpty ? 'Campo requerido' : null,
@@ -1906,8 +2004,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                   keyboardType: TextInputType.emailAddress,
                   validator: (v) {
                     if ((v ?? '').trim().isEmpty) return 'Campo requerido';
-                    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                        .hasMatch(v!.trim())) {
+                    if (!RegExp(
+                      r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
+                    ).hasMatch(v!.trim())) {
                       return 'Correo inválido';
                     }
                     return null;
@@ -1916,7 +2015,9 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _phoneController,
-                  decoration: const InputDecoration(labelText: 'Teléfono (opcional)'),
+                  decoration: const InputDecoration(
+                    labelText: 'Teléfono (opcional)',
+                  ),
                   keyboardType: TextInputType.phone,
                 ),
                 const SizedBox(height: 12),
@@ -1924,10 +2025,12 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                   initialValue: _role,
                   decoration: const InputDecoration(labelText: 'Rol'),
                   items: _roles.entries
-                      .map((e) => DropdownMenuItem<String>(
-                            value: e.key,
-                            child: Text(e.value),
-                          ))
+                      .map(
+                        (e) => DropdownMenuItem<String>(
+                          value: e.key,
+                          child: Text(e.value),
+                        ),
+                      )
                       .toList(growable: false),
                   onChanged: (v) => setState(() => _role = v ?? 'cashier'),
                 ),
@@ -1939,9 +2042,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                     labelText: 'Contraseña',
                     hintText: 'Mínimo 8 caracteres',
                     suffixIcon: IconButton(
-                      icon: Icon(_obscurePassword
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined),
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
                       onPressed: () =>
                           setState(() => _obscurePassword = !_obscurePassword),
                     ),
@@ -1959,9 +2064,11 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                   decoration: InputDecoration(
                     labelText: 'Confirmar contraseña',
                     suffixIcon: IconButton(
-                      icon: Icon(_obscureConfirm
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined),
+                      icon: Icon(
+                        _obscureConfirm
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
                       onPressed: () =>
                           setState(() => _obscureConfirm = !_obscureConfirm),
                     ),
@@ -1979,20 +2086,23 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
                 _sectionHeader('Empleado (opcional)'),
                 TextFormField(
                   controller: _codeController,
-                  decoration:
-                      const InputDecoration(labelText: 'Código de empleado'),
+                  decoration: const InputDecoration(
+                    labelText: 'Código de empleado',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _titleController,
-                  decoration:
-                      const InputDecoration(labelText: 'Cargo / Puesto'),
+                  decoration: const InputDecoration(
+                    labelText: 'Cargo / Puesto',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _notesController,
-                  decoration:
-                      const InputDecoration(labelText: 'Notas internas'),
+                  decoration: const InputDecoration(
+                    labelText: 'Notas internas',
+                  ),
                   maxLines: 3,
                   minLines: 2,
                 ),
@@ -2006,10 +2116,7 @@ class _CreateUserDialogState extends State<_CreateUserDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancelar'),
         ),
-        FilledButton(
-          onPressed: _onSave,
-          child: const Text('Crear usuario'),
-        ),
+        FilledButton(onPressed: _onSave, child: const Text('Crear usuario')),
       ],
     );
   }
@@ -2071,8 +2178,8 @@ class _ModulePermissionsCard extends StatelessWidget {
     final badgeColor = allGranted
         ? AppTokens.success
         : noneGranted
-            ? AppTokens.destructive
-            : AppTokens.primary;
+        ? AppTokens.destructive
+        : AppTokens.primary;
 
     return Container(
       margin: const EdgeInsets.only(bottom: AppTokens.s10),
@@ -2092,7 +2199,9 @@ class _ModulePermissionsCard extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(
-                  horizontal: AppTokens.s16, vertical: AppTokens.s12),
+                horizontal: AppTokens.s16,
+                vertical: AppTokens.s12,
+              ),
               child: Row(
                 children: [
                   Container(
@@ -2129,7 +2238,9 @@ class _ModulePermissionsCard extends StatelessWidget {
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: badgeColor.withValues(alpha: 0.10),
                       borderRadius: BorderRadius.circular(20),

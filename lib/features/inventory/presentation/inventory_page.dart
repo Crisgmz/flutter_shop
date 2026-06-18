@@ -1208,8 +1208,12 @@ class _ProductRowHeader extends StatelessWidget {
               flex: 2,
               child:
                   _ColumnLabel('Stock', align: TextAlign.right)),
+          const SizedBox(width: AppTokens.s16),
           Expanded(flex: 2, child: _ColumnLabel('Estado')),
-          SizedBox(width: 140, child: _ColumnLabel('Acciones')),
+          const SizedBox(
+            width: 180,
+            child: _ColumnLabel('Acciones', align: TextAlign.center),
+          ),
         ],
       ),
     );
@@ -1358,11 +1362,15 @@ class _ProductRow extends StatelessWidget {
               ),
             ),
           ),
+          const SizedBox(width: AppTokens.s16),
           Expanded(
             flex: 2,
-            child: StatusBadge(
-              label: product.isActive ? 'Activo' : 'Inactivo',
-              status: product.isActive ? 'active' : 'inactive',
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: StatusBadge(
+                label: product.isActive ? 'Activo' : 'Inactivo',
+                status: product.isActive ? 'active' : 'inactive',
+              ),
             ),
           ),
           SizedBox(
@@ -1668,6 +1676,8 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   late final TextEditingController _modelController;
   late final TextEditingController _notesController;
   late final TextEditingController _imageUrlController;
+  final TextEditingController _imeiController = TextEditingController();
+  final List<String> _imeis = [];
   /// Controllers de los 10 tiers de precio. Cada índice 0..9 corresponde al
   /// tier 1..10. Si el tier no está nombrado en app_settings.sale_price_types,
   /// el `_PriceTierFields` no renderiza ese input.
@@ -1721,6 +1731,19 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _isService = product?.isService ?? false;
     _isTaxExempt = product?.isTaxExempt ?? false;
     _trackInventory = product?.trackInventory ?? true;
+    _imeis.addAll(product?.imeis ?? const <String>[]);
+  }
+
+  void _addImei() {
+    final value = _imeiController.text.trim();
+    if (value.isEmpty || _imeis.contains(value)) {
+      _imeiController.clear();
+      return;
+    }
+    setState(() {
+      _imeis.add(value);
+      _imeiController.clear();
+    });
   }
 
   @override
@@ -1739,6 +1762,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _modelController.dispose();
     _notesController.dispose();
     _imageUrlController.dispose();
+    _imeiController.dispose();
     for (final ctrl in _priceTierControllers) {
       ctrl.dispose();
     }
@@ -1809,6 +1833,51 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   controller: _internalCodeController,
                   decoration: const InputDecoration(labelText: 'Código interno'),
                 ),
+                const SizedBox(height: 10),
+                // IMEI: agregar uno o varios (para celulares/dispositivos).
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _imeiController,
+                        decoration: InputDecoration(
+                          labelText: _imeis.isEmpty
+                              ? 'IMEI'
+                              : 'IMEI (${_imeis.length} agregado'
+                                  '${_imeis.length == 1 ? '' : 's'})',
+                          hintText: 'Escribe un IMEI y presiona +',
+                        ),
+                        onSubmitted: (_) => _addImei(),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: 'Agregar IMEI',
+                      icon: const Icon(Icons.add_circle, color: AppTokens.primary),
+                      onPressed: _addImei,
+                    ),
+                  ],
+                ),
+                if (_imeis.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final imei in _imeis)
+                        Chip(
+                          label: Text(imei,
+                              style: const TextStyle(fontSize: 12)),
+                          onDeleted: () => setState(() => _imeis.remove(imei)),
+                          deleteIcon: const Icon(Icons.close, size: 16),
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
                   initialValue: _categoryId ?? '',
@@ -2039,6 +2108,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       isService: _isService,
       isTaxExempt: _isTaxExempt,
       trackInventory: _trackInventory,
+      imeis: List<String>.from(_imeis),
       priceTier1: _parseTier(_priceTierControllers[0].text),
       priceTier2: _parseTier(_priceTierControllers[1].text),
       priceTier3: _parseTier(_priceTierControllers[2].text),

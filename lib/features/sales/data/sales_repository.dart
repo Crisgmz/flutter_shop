@@ -30,6 +30,7 @@ class SalesProduct {
     this.priceTier9,
     this.priceTier10,
     this.imageUrl,
+    this.imeis = const <String>[],
   });
 
   final String id;
@@ -54,6 +55,12 @@ class SalesProduct {
   final double? priceTier9;
   final double? priceTier10;
   final String? imageUrl;
+
+  /// IMEIs disponibles del producto (celulares/dispositivos serializados).
+  final List<String> imeis;
+
+  /// Si el producto maneja IMEI (tiene al menos uno registrado).
+  bool get hasImeis => imeis.isNotEmpty;
 
   /// Devuelve el precio efectivo según el tier del cliente.
   /// `tier`: 'retail' | 'tier_1'..'tier_10' | null.
@@ -121,6 +128,12 @@ class SalesProduct {
       priceTier9: optionalDouble(map['price_tier_9']),
       priceTier10: optionalDouble(map['price_tier_10']),
       imageUrl: map['image_url']?.toString(),
+      imeis: map['imeis'] is List
+          ? (map['imeis'] as List)
+              .map((e) => e.toString())
+              .where((e) => e.trim().isNotEmpty)
+              .toList(growable: false)
+          : const <String>[],
     );
   }
 }
@@ -167,6 +180,7 @@ class SaleCartItem {
     required this.quantity,
     double? unitPrice,
     this.discountPct = 0,
+    this.imeis = const <String>[],
   }) : unitPrice = unitPrice ?? product.price;
 
   final SalesProduct product;
@@ -178,6 +192,10 @@ class SaleCartItem {
 
   /// Descuento porcentual aplicado a esta línea (0-100). 0 = sin descuento.
   final double discountPct;
+
+  /// IMEIs seleccionados para esta línea (celulares). Si no está vacío, la
+  /// cantidad de la línea corresponde a la cantidad de IMEIs.
+  final List<String> imeis;
 
   /// Subtotal antes de descuento: cantidad × precio unitario.
   double get lineGross => _round2(quantity * unitPrice);
@@ -331,7 +349,7 @@ class SalesRepository {
             'id, name, sku, barcode, category_id, price, cost, tax_rate, stock, '
             'is_active, price_tier_1, price_tier_2, price_tier_3, '
             'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
-            'price_tier_8, price_tier_9, price_tier_10, image_url',
+            'price_tier_8, price_tier_9, price_tier_10, image_url, imeis',
           )
           .eq('branch_id', branchId)
           .eq('is_active', true)
@@ -394,6 +412,7 @@ class SalesRepository {
                   isActive: item.product.isActive,
                 ),
                 quantity: item.quantity,
+                imeis: item.imeis,
               ),
             )
             .toList(growable: false),
@@ -472,7 +491,7 @@ class SalesRepository {
         .select(
           'id, branch_id, sale_number, sale_date, receipt_type, status, ncf, notes, '
           'subtotal, discount_amount, tax_amount, total_amount, paid_amount, balance_due, '
-          'service_charge_amount, taxable_amount, exempt_amount, '
+          'change_amount, service_charge_amount, taxable_amount, exempt_amount, '
           'client_id, cashier_id, cash_session_id',
         )
         .eq('id', saleId)
@@ -573,7 +592,7 @@ class SalesRepository {
         .from('sale_items')
         .select(
           'description, quantity, unit_price, line_subtotal, line_tax, line_total, '
-          'sku_snapshot, unit_name',
+          'sku_snapshot, unit_name, imeis',
         )
         .eq('sale_id', saleId)
         .order('created_at');
@@ -615,7 +634,18 @@ class SalesRepository {
           .map((row) => Map<String, dynamic>.from(row as Map))
           .map(
             (item) => SalePrintItemSource(
-              description: (item['description'] ?? '').toString(),
+              description: () {
+                final base = (item['description'] ?? '').toString();
+                final imeis = item['imeis'] is List
+                    ? (item['imeis'] as List)
+                        .map((e) => e.toString())
+                        .where((e) => e.trim().isNotEmpty)
+                        .toList()
+                    : const <String>[];
+                return imeis.isEmpty
+                    ? base
+                    : '$base\nIMEI: ${imeis.join(", ")}';
+              }(),
               quantity: _toDouble(item['quantity']),
               unitPrice: _toDouble(item['unit_price']),
               lineSubtotal: _toDouble(item['line_subtotal']),
@@ -644,9 +674,12 @@ class SalesRepository {
       paidAmount: _toDouble(sale['paid_amount']),
       balanceDue: _toDouble(sale['balance_due']),
       changeAmount: () {
+        // Cambio devuelto: lo guarda el backend en change_amount (sobrepago).
+        final stored = _toDouble(sale['change_amount']);
+        if (stored > 0) return stored;
         final paid = _toDouble(sale['paid_amount']);
         final total = _toDouble(sale['total_amount']);
-        return paid >= total ? paid - total : null;
+        return paid > total ? paid - total : null;
       }(),
     );
 

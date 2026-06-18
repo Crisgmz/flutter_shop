@@ -1080,6 +1080,15 @@ class _InventorySection extends StatelessWidget {
           onSave: onSave,
         ),
         _BoolRow(
+          label: 'Trabajar con IMEI / números de serie',
+          column: 'inv_imei_mode',
+          value: settings.invImeiMode,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+          helper: 'Para negocios de celulares: al vender un producto con '
+              'IMEI registrados, se eligen cuáles equipos salen.',
+        ),
+        _BoolRow(
           label: 'No permitir venta de artículos sin stock',
           column: 'inv_disallow_no_stock',
           value: settings.invDisallowNoStock,

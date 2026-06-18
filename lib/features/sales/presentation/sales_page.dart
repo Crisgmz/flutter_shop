@@ -10,6 +10,7 @@ import '../../../shared/widgets/ncf_stock_banner.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
+import '../../clients/presentation/clients_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/sales_repository.dart';
 import 'sales_providers.dart';
@@ -218,8 +219,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                   child: TextField(
                     controller: _searchController,
                     onChanged: (v) => ref.read(salesSearchProvider.notifier).state = v,
+                    // La pistola de código de barras "escribe" el código y
+                    // manda Enter → lo agregamos directo al carrito.
+                    onSubmitted: _onScanSubmitted,
+                    textInputAction: TextInputAction.search,
                     decoration: const InputDecoration(
-                      hintText: 'Buscar producto...',
+                      hintText: 'Buscar o escanear producto...',
                       border: InputBorder.none,
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
@@ -367,10 +372,24 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                 ),
                 const SizedBox(height: 12),
                 clientsAsync.when(
-                  data: (clients) => _ClientSearchField(
-                    currentId: _clientId,
-                    clients: clients,
-                    onChanged: _onClientChanged,
+                  data: (clients) => Row(
+                    children: [
+                      Expanded(
+                        child: _ClientSearchField(
+                          currentId: _clientId,
+                          clients: clients,
+                          onChanged: _onClientChanged,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      IconButton(
+                        tooltip: 'Nuevo cliente',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.person_add_alt_1,
+                            color: AppTokens.primary),
+                        onPressed: _onCreateClientInline,
+                      ),
+                    ],
                   ),
                   loading: () => const LinearProgressIndicator(),
                   error: (_, _) => const Text('Error al cargar clientes'),
@@ -559,7 +578,16 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   bool get _belowCostEnforced =>
       ref.read(appSettingsProvider).valueOrNull?.invDisallowBelowCost ?? false;
 
+  bool get _imeiModeEnabled =>
+      ref.read(appSettingsProvider).valueOrNull?.invImeiMode ?? false;
+
   void _addProductToCart(SalesProduct product) {
+    // Modo IMEI: si el producto maneja IMEIs y el toggle está activo, hay que
+    // elegir cuáles equipos salen (cada IMEI = 1 unidad).
+    if (_imeiModeEnabled && product.hasImeis) {
+      _pickImeisAndAdd(product);
+      return;
+    }
     final index = _cart.indexWhere((item) => item.product.id == product.id);
     if (_stockEnforced &&
         index != -1 &&
@@ -583,6 +611,102 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           quantity: current.quantity + 1,
           unitPrice: current.unitPrice,
           discountPct: current.discountPct,
+          imeis: current.imeis,
+        );
+      }
+    });
+    _persistDraft();
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+    ref.read(salesSearchProvider.notifier).state = '';
+  }
+
+  /// La pistola escaneó un código (o el cajero presionó Enter). Si coincide con
+  /// un IMEI → agrega ese equipo directo. Si coincide con código de barras/SKU
+  /// → agrega el producto. Si no, deja el texto como filtro de búsqueda.
+  void _onScanSubmitted(String raw) {
+    final code = raw.trim();
+    if (code.isEmpty) return;
+    final products = ref.read(salesProductsProvider).valueOrNull ?? const [];
+
+    // 1) ¿Es un IMEI? → agrega ese equipo directo (sin diálogo).
+    for (final p in products) {
+      if (p.imeis.contains(code)) {
+        if (_selectedImeisFor(p.id).contains(code)) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Ese IMEI ya está en el carrito.')));
+        } else {
+          _addImeiToCart(p, [code]);
+        }
+        _clearSearch();
+        return;
+      }
+    }
+
+    // 2) ¿Código de barras o SKU exacto? → agrega el producto.
+    for (final p in products) {
+      if ((p.barcode != null && p.barcode == code) ||
+          (p.sku != null && p.sku == code)) {
+        _addProductToCart(p);
+        _clearSearch();
+        return;
+      }
+    }
+    // 3) Sin coincidencia exacta: se queda como filtro de búsqueda normal.
+  }
+
+  /// IMEIs que ya están en el carrito para este producto.
+  Set<String> _selectedImeisFor(String productId) {
+    for (final it in _cart) {
+      if (it.product.id == productId) return it.imeis.toSet();
+    }
+    return const {};
+  }
+
+  /// Abre el selector de IMEIs (los que aún no están en el carrito) y agrega
+  /// los elegidos. Cada IMEI suma 1 a la cantidad de la línea.
+  Future<void> _pickImeisAndAdd(SalesProduct product) async {
+    final already = _selectedImeisFor(product.id);
+    final available =
+        product.imeis.where((i) => !already.contains(i)).toList(growable: false);
+    if (available.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Todos los IMEIs de este producto ya están en el carrito.')));
+      return;
+    }
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (_) =>
+          _ImeiPickerDialog(productName: product.name, imeis: available),
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    _addImeiToCart(product, selected);
+  }
+
+  /// Agrega (o mezcla) una línea de producto con IMEIs seleccionados.
+  void _addImeiToCart(SalesProduct product, List<String> imeis) {
+    final tier = _currentClientTier();
+    final price = product.priceFor(tier);
+    setState(() {
+      final index = _cart.indexWhere((it) => it.product.id == product.id);
+      if (index == -1) {
+        _cart.add(SaleCartItem(
+          product: product,
+          quantity: imeis.length.toDouble(),
+          unitPrice: price,
+          imeis: List<String>.from(imeis),
+        ));
+      } else {
+        final cur = _cart[index];
+        final merged = [...cur.imeis, ...imeis];
+        _cart[index] = SaleCartItem(
+          product: cur.product,
+          quantity: merged.length.toDouble(),
+          unitPrice: cur.unitPrice,
+          discountPct: cur.discountPct,
+          imeis: merged,
         );
       }
     });
@@ -608,6 +732,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           quantity: value,
           unitPrice: item.unitPrice,
           discountPct: item.discountPct,
+          imeis: item.imeis,
         ));
     _persistDraft();
   }
@@ -630,6 +755,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           quantity: item.quantity,
           unitPrice: value,
           discountPct: item.discountPct,
+          imeis: item.imeis,
         ));
     _persistDraft();
   }
@@ -643,6 +769,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           discountPct: clamped,
+          imeis: item.imeis,
         ));
     _persistDraft();
   }
@@ -664,10 +791,39 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           quantity: item.quantity,
           unitPrice: item.product.priceFor(tier),
           discountPct: item.discountPct,
+          imeis: item.imeis,
         );
       }
     });
     _persistDraft();
+  }
+
+  /// Crea un cliente rápido sin salir de la venta y lo selecciona.
+  Future<void> _onCreateClientInline() async {
+    final result = await showDialog<_QuickClientData>(
+      context: context,
+      builder: (_) => const _QuickClientDialog(),
+    );
+    if (result == null || !mounted) return;
+    try {
+      final id = await ref.read(clientsRepositoryProvider).createQuickClient(
+            fullName: result.name,
+            phone: result.phone,
+            documentNumber: result.document,
+          );
+      ref.invalidate(salesClientsProvider);
+      await ref.read(salesClientsProvider.future);
+      if (!mounted) return;
+      _onClientChanged(id);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cliente creado y seleccionado.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo crear el cliente: $e')),
+      );
+    }
   }
 
   void _removeItem(int index) {
@@ -1048,6 +1204,172 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   }
 }
 
+/// Datos del cliente rápido creado desde Ventas.
+class _QuickClientData {
+  const _QuickClientData({
+    required this.name,
+    required this.phone,
+    required this.document,
+  });
+
+  final String name;
+  final String phone;
+  final String document;
+}
+
+/// Diálogo compacto para crear un cliente sin salir de la venta.
+class _QuickClientDialog extends StatefulWidget {
+  const _QuickClientDialog();
+
+  @override
+  State<_QuickClientDialog> createState() => _QuickClientDialogState();
+}
+
+class _QuickClientDialogState extends State<_QuickClientDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _phone = TextEditingController();
+  final _doc = TextEditingController();
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    _doc.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Nuevo cliente'),
+      content: SizedBox(
+        width: 360,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _name,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                decoration:
+                    const InputDecoration(labelText: 'Nombre completo'),
+                validator: (v) =>
+                    (v ?? '').trim().isEmpty ? 'Campo requerido' : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _phone,
+                keyboardType: TextInputType.phone,
+                decoration:
+                    const InputDecoration(labelText: 'Teléfono (opcional)'),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _doc,
+                decoration: const InputDecoration(
+                    labelText: 'Cédula / RNC (opcional)'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            Navigator.of(context).pop(_QuickClientData(
+              name: _name.text.trim(),
+              phone: _phone.text.trim(),
+              document: _doc.text.trim(),
+            ));
+          },
+          child: const Text('Crear'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Selector de IMEIs al vender un producto serializado. Devuelve la lista de
+/// IMEIs marcados, o null si se cancela.
+class _ImeiPickerDialog extends StatefulWidget {
+  const _ImeiPickerDialog({required this.productName, required this.imeis});
+
+  final String productName;
+  final List<String> imeis;
+
+  @override
+  State<_ImeiPickerDialog> createState() => _ImeiPickerDialogState();
+}
+
+class _ImeiPickerDialogState extends State<_ImeiPickerDialog> {
+  final Set<String> _selected = {};
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('IMEI · ${widget.productName}'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Selecciona los equipos que salen a la venta:',
+                style: TextStyle(fontSize: 13, color: Color(0xFF64748B))),
+            const SizedBox(height: 8),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final imei in widget.imeis)
+                      CheckboxListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: _selected.contains(imei),
+                        title: Text('IMEI  $imei',
+                            style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 14)),
+                        onChanged: (v) => setState(() {
+                          if (v == true) {
+                            _selected.add(imei);
+                          } else {
+                            _selected.remove(imei);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(_selected.toList()),
+          icon: const Icon(Icons.check_circle_outline, size: 18),
+          label: Text('Confirmar (${_selected.length})'),
+        ),
+      ],
+    );
+  }
+}
+
 /// Una línea de pago en el carrito (pago dividido): método + monto editable.
 class _PayLine {
   _PayLine({required this.method}) : amount = TextEditingController();
@@ -1083,8 +1405,6 @@ class _PaymentDialog extends StatefulWidget {
 
 class _PaymentDialogState extends State<_PaymentDialog> {
   final List<_PayLine> _lines = [];
-  // "¿Con cuánto paga el cliente?" — para calcular el cambio a devolver.
-  final TextEditingController _paidWith = TextEditingController();
   bool _touched = false;
 
   static const List<MapEntry<String, String>> _methods = [
@@ -1102,7 +1422,6 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       ..add(_PayLine(method: 'cash'))
       ..add(_PayLine(method: 'cash'));
     _sync();
-    _paidWith.text = _fmt(widget.total);
   }
 
   @override
@@ -1110,15 +1429,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     for (final line in _lines) {
       line.amount.dispose();
     }
-    _paidWith.dispose();
     super.dispose();
   }
 
-  /// Cambio a devolver = lo que paga el cliente − el total (nunca negativo).
+  /// Cambio a devolver = lo que paga de más (suma de pagos − total).
   double get _change {
-    final paid =
-        double.tryParse(_paidWith.text.trim().replaceAll(',', '')) ?? 0;
-    final diff = paid - widget.total;
+    final diff = _sum - widget.total;
     return diff > 0 ? diff : 0;
   }
 
@@ -1139,8 +1455,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 
   double get _sum => _lines.fold<double>(0, (s, l) => s + l.value);
-  bool get _valid =>
-      widget.total > 0 && (_sum - widget.total).abs() < 0.01;
+  // Válido cuando los pagos cubren el total (pueden pagar de más → cambio).
+  bool get _valid => widget.total > 0 && _sum + 0.01 >= widget.total;
   bool get _anyCredit =>
       _lines.any((l) => l.method == 'credit' && l.value > 0);
 
@@ -1288,46 +1604,27 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                       fontSize: 12,
                       fontWeight: FontWeight.w600))
             else if (!_valid && widget.total > 0)
-              Text('Los pagos exceden el total por ${money(_sum - widget.total)}',
+              Text('Falta ${money(widget.total - _sum)} para cubrir el total',
                   style: const TextStyle(
                       color: Color(0xFFEF4444),
                       fontSize: 12,
                       fontWeight: FontWeight.w600)),
-            // Calculadora de cambio (no aplica en crédito).
+            // Valor a devolver = lo que pagó de más (cambio en efectivo).
             if (!_anyCredit) ...[
               const Divider(height: 20),
-              const Text('¿Con cuánto paga el cliente?',
-                  style: TextStyle(fontSize: 13, color: Color(0xFF64748B))),
-              const SizedBox(height: 4),
-              SizedBox(
-                height: 40,
-                child: TextField(
-                  controller: _paidWith,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  style: const TextStyle(fontSize: 14),
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    contentPadding: contentPad,
-                    prefixText: 'RD\$ ',
-                    border: border(),
-                    enabledBorder: border(),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('Valor a devolver',
+                  const Text('Valor a devolver (cambio)',
                       style: TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w600)),
                   Text(money(_change),
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w900,
-                          color: Color(0xFF2563EB))),
+                          color: _change > 0
+                              ? const Color(0xFF2563EB)
+                              : const Color(0xFF64748B))),
                 ],
               ),
             ],
@@ -1789,6 +2086,33 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                         color: Color(0xFF94A3B8),
                       ),
                     ),
+                    if (item.imeis.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Wrap(
+                          spacing: 4,
+                          runSpacing: 4,
+                          children: [
+                            for (final imei in item.imeis)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEFF6FF),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  'IMEI $imei',
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 10,
+                                    color: Color(0xFF2563EB),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),

@@ -72,6 +72,7 @@ String _encodeSaleDraft(SaleDraft d) => jsonEncode({
             'quantity': it.quantity,
             'unitPrice': it.unitPrice,
             'discountPct': it.discountPct,
+            'imeis': it.imeis,
           },
       ],
     });
@@ -89,6 +90,10 @@ SaleDraft? _decodeSaleDraft(String? raw) {
             quantity: (e['quantity'] as num).toDouble(),
             unitPrice: (e['unitPrice'] as num?)?.toDouble(),
             discountPct: (e['discountPct'] as num?)?.toDouble() ?? 0,
+            imeis: (e['imeis'] as List?)
+                    ?.map((x) => x.toString())
+                    .toList(growable: false) ??
+                const <String>[],
           ),
     ];
     return SaleDraft(
@@ -127,6 +132,7 @@ Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
       'price_tier_9': p.priceTier9,
       'price_tier_10': p.priceTier10,
       'image_url': p.imageUrl,
+      'imeis': p.imeis,
     };
 
 SalesProduct _salesProductFromJson(Map<String, dynamic> m) {

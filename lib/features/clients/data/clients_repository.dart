@@ -327,6 +327,37 @@ class ClientsRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Crea un cliente rápido (desde la pantalla de Ventas) con lo mínimo y
+  /// devuelve su id para seleccionarlo de inmediato en la venta.
+  Future<String> createQuickClient({
+    required String fullName,
+    String? phone,
+    String? documentNumber,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+    if (fullName.trim().isEmpty) {
+      throw Exception('El nombre del cliente es requerido.');
+    }
+    final row = await _client
+        .from('clients')
+        .insert({
+          'branch_id': branchId,
+          'full_name': fullName.trim(),
+          'entity_type': 'person',
+          'phone': _nullIfEmpty(phone),
+          'document_number': _nullIfEmpty(documentNumber),
+          'is_active': true,
+          'price_tier': 'retail',
+          'charge_itbis': true,
+        })
+        .select('id')
+        .single();
+    return (row['id'] ?? '').toString();
+  }
+
   /// Crea o actualiza múltiples clientes en bloque. Devuelve los conteos.
   Future<ClientsBulkUpsertResult> bulkUpsertClients(
     List<ClientInput> inputs,

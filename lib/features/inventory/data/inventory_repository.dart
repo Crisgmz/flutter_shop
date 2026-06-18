@@ -60,6 +60,7 @@ class InventoryProduct {
     this.reorderLevel = 0,
     this.maxStock = 0,
     this.allowNegativeStock = false,
+    this.imeis = const <String>[],
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
@@ -100,6 +101,10 @@ class InventoryProduct {
   final double reorderLevel;
   final double maxStock;
   final bool allowNegativeStock;
+
+  /// IMEIs registrados del producto (celulares/dispositivos serializados).
+  final List<String> imeis;
+
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
@@ -176,6 +181,12 @@ class InventoryProduct {
       reorderLevel: _toDouble(map['reorder_level']),
       maxStock: _toDouble(map['max_stock']),
       allowNegativeStock: map['allow_negative_stock'] == true,
+      imeis: map['imeis'] is List
+          ? (map['imeis'] as List)
+              .map((e) => e.toString())
+              .where((e) => e.trim().isNotEmpty)
+              .toList(growable: false)
+          : const <String>[],
       priceTier1: map['price_tier_1'] == null ? null : _toDouble(map['price_tier_1']),
       priceTier2: map['price_tier_2'] == null ? null : _toDouble(map['price_tier_2']),
       priceTier3: map['price_tier_3'] == null ? null : _toDouble(map['price_tier_3']),
@@ -218,6 +229,7 @@ class InventoryProductInput {
     this.reorderLevel = 0,
     this.maxStock = 0,
     this.allowNegativeStock = false,
+    this.imeis = const <String>[],
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
@@ -256,6 +268,10 @@ class InventoryProductInput {
   final double reorderLevel;
   final double maxStock;
   final bool allowNegativeStock;
+
+  /// IMEIs del producto (celulares/dispositivos serializados).
+  final List<String> imeis;
+
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
@@ -488,7 +504,7 @@ class InventoryRepository {
             'reorder_level, max_stock, allow_negative_stock, '
             'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
             'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
-            'price_tier_9, price_tier_10',
+            'price_tier_9, price_tier_10, imeis',
           )
           .eq('branch_id', branchId)
           .order('name')
@@ -621,6 +637,8 @@ class InventoryRepository {
             ? existingBySku[sku]
             : null;
         final payload = _buildProductPayload(input);
+        // El import no maneja IMEIs: no tocar la columna para no borrarlos.
+        payload.remove('imeis');
         if (existingId == null) {
           payload['branch_id'] = branchId;
           await _client.from('products').insert(payload);
@@ -680,6 +698,7 @@ class InventoryRepository {
       'is_service': input.isService,
       'is_tax_exempt': input.isTaxExempt,
       'track_inventory': input.trackInventory,
+      'imeis': input.imeis,
       'price_tier_1': input.priceTier1 ?? input.price,
       'price_tier_2': input.priceTier2,
       'price_tier_3': input.priceTier3,

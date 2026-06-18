@@ -12,6 +12,7 @@ import '../features/cash_register/presentation/cash_register_page.dart';
 import '../features/clients/presentation/clients_page.dart';
 import '../features/cobros/presentation/cobros_page.dart';
 import '../features/dashboard/presentation/closeout_page.dart';
+import '../features/expenses/presentation/expenses_page.dart';
 import '../features/dashboard/presentation/dashboard_page.dart';
 import '../features/petty_cash/presentation/petty_cash_page.dart';
 import '../features/fiscal_documents/presentation/fiscal_documents_page.dart';
@@ -106,12 +107,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
           _page('/cobros', const CobrosPage()),
-          // Los gastos se manejan en Caja Chica. /gastos redirige allí para
-          // no romper enlaces/marcadores viejos.
-          GoRoute(
-            path: '/gastos',
-            redirect: (_, _) => '/caja-chica',
-          ),
+          _page('/gastos', const ExpensesPage()),
           _page('/inventario', const InventoryPage()),
           _page('/compras', const PurchasesPage()),
           _page('/clientes', const ClientsPage()),
