@@ -37,6 +37,11 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   String _paymentMethod = 'cash';
   String? _clientId;
 
+  /// Id de la cuenta GUARDADA (venta `pending`) reabierta en este carrito. Si
+  /// no es null, al completar/guardar el POS descarta esa pendiente para
+  /// devolver su stock reservado y no duplicarla. Viaja en el draft.
+  String? _reopenedHeldSaleId;
+
   int get _cartLines => _cart.length;
   double get _cartSubtotal => _cart.fold<double>(0, (sum, item) => sum + item.lineSubtotal);
   double get _cartTax => _cart.fold<double>(0, (sum, item) => sum + item.lineTax);
@@ -55,6 +60,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _paymentMethod = 'cash';
     _clientId = draft.clientId;
     _notesController.text = draft.notes;
+    _reopenedHeldSaleId = draft.heldSaleId;
   }
 
   @override
@@ -77,6 +83,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       paymentMethod: _paymentMethod,
       clientId: _clientId,
       notes: _notesController.text,
+      heldSaleId: _reopenedHeldSaleId,
     );
     ref.read(saleDraftProvider.notifier).state = draft;
     // Persistir también a localStorage (web) para sobrevivir recargas.
@@ -518,6 +525,32 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                           ),
                         ),
                       ),
+                      // Guardar la cuenta como pendiente (cuenta abierta): la
+                      // manda al historial en gris y libera el POS para el
+                      // siguiente cliente. Solo en modo venta.
+                      if (!isReturn) ...[
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          height: 50,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 14),
+                              foregroundColor: const Color(0xFF6B7280),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  side: const BorderSide(
+                                      color: Color(0xFFCBD5E1))),
+                            ),
+                            onPressed: !enabled ? null : _holdSale,
+                            icon: const Icon(Icons.save_outlined, size: 18),
+                            label: const Text('Guardar',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ],
                       const SizedBox(width: 8),
                       SizedBox(
                         height: 50,
@@ -837,10 +870,51 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _notesController.clear();
       _clientId = null;
       _paymentMethod = 'cash';
+      _reopenedHeldSaleId = null;
       _searchController.clear();
       ref.read(salesSearchProvider.notifier).state = '';
     });
     _persistDraft();
+  }
+
+  /// Guarda el carrito como una cuenta PENDIENTE (cuenta abierta). Reserva el
+  /// stock, la deja en el historial en gris y limpia el POS para atender al
+  /// siguiente cliente. No cobra ni entra al cierre de caja hasta completarla.
+  Future<void> _holdSale() async {
+    if (_cart.isEmpty) return;
+    setState(() => _isSubmitting = true);
+    try {
+      final repo = ref.read(salesRepositoryProvider);
+      final settings = ref.read(appSettingsProvider).valueOrNull;
+      // Si esta cuenta venía reabierta, el backend reemplaza la pendiente
+      // anterior conservando su MISMO número y liberando su stock, en una sola
+      // operación. Así una cuenta abierta mantiene su número aunque se le sigan
+      // agregando productos. _clearCart() limpia _reopenedHeldSaleId en éxito.
+      final result = await repo.holdSale(HeldSaleInput(
+        items: List.from(_cart),
+        receiptType: _receiptType,
+        clientId: _clientId,
+        notes: _notesController.text.trim(),
+        disallowNoStock: settings?.invDisallowNoStock ?? false,
+        customerRequiredForSale: settings?.customerRequiredForSale ?? false,
+        replaceHoldSaleId: _reopenedHeldSaleId,
+      ));
+      ref.invalidate(salesProductsProvider);
+      if (!mounted) return;
+      _clearCart();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF16A34A),
+        content: Text('Cuenta guardada como pendiente (${result.saleNumber}).'),
+      ));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: Colors.red,
+        content: Text('No se pudo guardar la cuenta: $error'),
+      ));
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
   }
 
   /// Abre la página 2 (diálogo de cobro con métodos divididos). Según el
@@ -981,12 +1055,18 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       final pays = asCredit ? const <SalePaymentLine>[] : payments;
       // Para pago único, el método representativo es el de la línea efectiva.
       final repMethod = pays.isNotEmpty ? pays.first.method : 'cash';
+      // Sobrepago = lo que el cliente pagó de más. Ese exceso se devuelve en
+      // efectivo (sale de la caja), sin importar el método facturado, así que
+      // lo mandamos para que el backend lo registre como cambio.
+      final paySum = pays.fold<double>(0, (s, p) => s + p.amount);
+      final change = paySum - _cartTotal;
       final result = await repo.checkoutSale(SaleCheckoutInput(
         items: List.from(_cart),
         receiptType: _receiptType,
         asCredit: asCredit,
         paymentMethod: asCredit ? null : repMethod,
         payments: pays,
+        changeAmount: change > 0.005 ? change : 0,
         clientId: _clientId,
         notes: _notesController.text.trim(),
         disallowNoStock: settings?.invDisallowNoStock ?? false,
@@ -995,6 +1075,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         creditAllowSales: settings?.creditAllowSales ?? true,
         creditDueDays: creditDueDays,
         cashSessionId: ref.read(activeCashSessionIdProvider),
+        // Si esta venta viene de una cuenta GUARDADA reabierta, el backend la
+        // absorbe: conserva su mismo número y libera su stock reservado. En
+        // éxito, _clearCart() limpia _reopenedHeldSaleId.
+        holdSaleIdToComplete: _reopenedHeldSaleId,
       ));
 
       _clearCart();

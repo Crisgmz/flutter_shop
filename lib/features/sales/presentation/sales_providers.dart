@@ -27,6 +27,7 @@ class SaleDraft {
     this.paymentMethod,
     this.clientId,
     this.notes = '',
+    this.heldSaleId,
   });
 
   final List<SaleCartItem> items;
@@ -34,6 +35,13 @@ class SaleDraft {
   final String? paymentMethod;
   final String? clientId;
   final String notes;
+
+  /// Id de la cuenta GUARDADA (venta `pending`) que se reabrió en el POS. Se
+  /// setea desde el historial al "Reabrir" y viaja con el draft (sobrevive
+  /// recargas en web). Al completar la venta, el POS descarta esa pendiente
+  /// (devuelve su stock reservado) antes de registrar la venta real, para no
+  /// duplicar la cuenta ni el stock. Null en una venta nueva normal.
+  final String? heldSaleId;
 
   bool get isEmpty => items.isEmpty;
 }
@@ -53,7 +61,8 @@ void saveSaleDraftToStore(SaleDraft draft) {
   if (draft.items.isEmpty &&
       draft.notes.isEmpty &&
       draft.clientId == null &&
-      draft.paymentMethod == null) {
+      draft.paymentMethod == null &&
+      draft.heldSaleId == null) {
     kvRemove(_saleDraftKey);
   } else {
     kvWrite(_saleDraftKey, _encodeSaleDraft(draft));
@@ -65,6 +74,7 @@ String _encodeSaleDraft(SaleDraft d) => jsonEncode({
       'paymentMethod': d.paymentMethod,
       'clientId': d.clientId,
       'notes': d.notes,
+      'heldSaleId': d.heldSaleId,
       'items': [
         for (final it in d.items)
           {
@@ -102,6 +112,7 @@ SaleDraft? _decodeSaleDraft(String? raw) {
       paymentMethod: map['paymentMethod']?.toString(),
       clientId: map['clientId']?.toString(),
       notes: map['notes']?.toString() ?? '',
+      heldSaleId: map['heldSaleId']?.toString(),
     );
   } catch (_) {
     // JSON corrupto o de una versión vieja del modelo: empezar limpio.
