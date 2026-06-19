@@ -157,6 +157,8 @@ class SalesClient {
     required this.id,
     required this.fullName,
     this.priceTier = 'retail',
+    this.documentNumber,
+    this.legalName,
   });
 
   final String id;
@@ -165,11 +167,32 @@ class SalesClient {
   /// 'retail' | 'tier_1' | 'tier_2' | 'tier_3'.
   final String priceTier;
 
+  /// RNC/cédula del cliente. Requerido para comprobantes fiscales
+  /// (≠ consumidor final). Null/vacío si no se registró.
+  final String? documentNumber;
+
+  /// Razón social. Cae a [fullName] cuando se usa para fines fiscales.
+  final String? legalName;
+
+  /// Tiene los datos mínimos para emitir un comprobante fiscal (crédito
+  /// fiscal, gubernamental, etc.): RNC/cédula presente. El nombre siempre
+  /// existe vía [fullName]. Refleja la regla del trigger SQL
+  /// `tg_sales_assert_fiscal_client`.
+  bool get hasFiscalData =>
+      (documentNumber != null && documentNumber!.trim().isNotEmpty);
+
   factory SalesClient.fromMap(Map<String, dynamic> map) {
+    String? nz(dynamic v) {
+      final s = v?.toString().trim() ?? '';
+      return s.isEmpty ? null : s;
+    }
+
     return SalesClient(
       id: (map['id'] ?? '').toString(),
       fullName: (map['full_name'] ?? '').toString(),
       priceTier: (map['price_tier'] ?? 'retail').toString(),
+      documentNumber: nz(map['document_number']),
+      legalName: nz(map['legal_name']),
     );
   }
 }
@@ -297,6 +320,7 @@ class SaleCheckoutResult {
     required this.balanceDue,
     required this.itemsCount,
     this.cashSessionId,
+    this.ncf,
     this.preparedPrintJob,
   });
 
@@ -311,6 +335,11 @@ class SaleCheckoutResult {
   final double balanceDue;
   final int itemsCount;
   final String? cashSessionId;
+
+  /// NCF asignado a la venta (lo pone el trigger SQL al emitirla). Null si la
+  /// venta no llevó comprobante (p. ej. faltó secuencia) o no aplica.
+  final String? ncf;
+
   final PreparedPrintJobData? preparedPrintJob;
 }
 
@@ -389,7 +418,7 @@ class SalesRepository {
 
     final rows = await _client
         .from('clients')
-        .select('id, full_name, price_tier')
+        .select('id, full_name, legal_name, document_number, price_tier')
         .eq('branch_id', branchId)
         .eq('is_active', true)
         .order('full_name');
@@ -500,6 +529,10 @@ class SalesRepository {
       balanceDue: _toDouble(payload['balance_due']),
       itemsCount: _toInt(payload['items_count']),
       cashSessionId: _nullIfEmpty(payload['cash_session_id']?.toString()),
+      // El NCF lo asigna el trigger durante el INSERT; lo recuperamos de la
+      // venta que el preparador del recibo ya volvió a consultar (sin query
+      // extra). El checkout RPC no lo devuelve en su payload.
+      ncf: _nullIfEmpty(preparedPrintJob?.document.ncf),
       preparedPrintJob: preparedPrintJob,
     );
   }
