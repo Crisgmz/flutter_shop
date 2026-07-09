@@ -39,7 +39,47 @@ class AppShell extends ConsumerWidget {
     final showSidebar = context.showDesktopSidebar;
 
     Future<void> signOut() async {
-      await authRepository.signOut();
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Cerrar sesión'),
+          content: const Text(
+            '¿Seguro que querés cerrar la sesión? Si tenés una venta o '
+            'cotización a medias sin guardar, se perderá.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTokens.destructive,
+              ),
+              icon: const Icon(Icons.logout_rounded, size: 18),
+              label: const Text('Cerrar sesión'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+
+      try {
+        await authRepository.signOut();
+        // En WEB: hard reload (limpia caches + service workers) para que el
+        // próximo usuario arranque con un ProviderContainer 100% limpio. Sin
+        // esto, providers sin autoDispose (dashboard, appSettings, etc.) podían
+        // conservar los datos del usuario anterior — es caché del cliente, no
+        // RLS. En nativo es no-op: ahí limpia el listener de authStateChanges.
+        await clearWebCachesAndReload();
+      } catch (error) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No se pudo cerrar sesión: $error')),
+          );
+        }
+      }
     }
 
     Future<void> selectBranch(String branchId) async {
@@ -518,30 +558,31 @@ class _DesktopSidebarState extends State<_DesktopSidebar> {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-        AppTokens.s22,
+        AppTokens.s16,
         AppTokens.s12,
         AppTokens.s8,
         AppTokens.s12,
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.storefront_outlined,
-            color: Colors.white,
-            size: AppTokens.iconSizeL,
-          ),
-          const SizedBox(width: AppTokens.s10),
           const Expanded(
-            child: Text(
-              'Busi Pos Web',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Busi Pos Web',
+                maxLines: 1,
+                softWrap: false,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.2,
+                ),
               ),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: AppTokens.s8),
           toggleButton,
         ],
       ),
@@ -580,18 +621,20 @@ class _MobileMenuDrawer extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.storefront_outlined, color: Colors.white),
-                    const SizedBox(width: AppTokens.s8),
-                    const Expanded(
+                    const Flexible(
                       child: Text(
                         'Busi Pos Web',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 20,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.5,
                         ),
                       ),
                     ),
+                    const Spacer(),
                     IconButton(
                       tooltip: 'Cerrar menú',
                       onPressed: () => Navigator.of(context).pop(),
@@ -729,7 +772,7 @@ class _LoginCreditAlertState extends ConsumerState<_LoginCreditAlert> {
           action: SnackBarAction(
             label: 'Ver',
             textColor: Colors.white,
-            onPressed: () => context.go('/cobros'),
+            onPressed: () => context.go('/cuentas-por-cobrar'),
           ),
           content: Text(
             count == 1

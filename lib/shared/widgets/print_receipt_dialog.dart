@@ -40,6 +40,8 @@ class _PrintReceiptDialogState extends State<PrintReceiptDialog> {
         PrintDocumentType.quote => 'Cotización',
         PrintDocumentType.fiscalInvoice => 'Factura Fiscal',
         PrintDocumentType.purchaseOrder => 'Orden de compra',
+        PrintDocumentType.paymentReceipt => 'Recibo de abono',
+        PrintDocumentType.expenseVoucher => 'Comprobante de gasto',
         _ => 'Recibo de venta',
       };
 

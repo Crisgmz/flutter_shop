@@ -13,9 +13,11 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
+import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../inventory/data/file_io_helper.dart';
 import '../data/quotations_excel_service.dart';
 import '../data/quotations_models.dart';
+import 'convert_payment_dialog.dart';
 import 'quotations_providers.dart';
 
 class QuotationsPage extends ConsumerStatefulWidget {
@@ -652,31 +654,22 @@ class _QuotesDataTable extends ConsumerWidget {
     WidgetRef ref,
     QuoteListItem quote,
   ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Convertir a venta'),
-        content: Text(
-          '¿Deseas convertir la cotización ${quote.code} en una venta pendiente? Esto trasladará cliente, líneas y montos.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Confirmar'),
-          ),
-        ],
-      ),
+    final method = await showConvertPaymentDialog(
+      context,
+      quoteCode: quote.code,
     );
 
-    if (confirmed == true) {
+    if (method == null) return;
+
+    {
       try {
         final result = await ref
             .read(quotationsRepositoryProvider)
-            .convertToSale(quote.id);
+            .convertToSale(
+              quote.id,
+              paymentMethod: method,
+              cashSessionId: ref.read(activeCashSessionIdProvider),
+            );
         ref.invalidate(quotationsFoundationProvider);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

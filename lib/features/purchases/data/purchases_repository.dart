@@ -145,20 +145,31 @@ class PurchaseCreateInput {
     required this.purchaseDate,
     required this.items,
     this.invoiceNumber,
+    this.ncf,
     this.notes,
     this.paymentStatus = 'pending',
     this.purchaseCategory,
     this.expectedAt,
+    this.paidAmount,
   });
 
   final String supplierId;
   final DateTime purchaseDate;
   final List<PurchaseLineInput> items;
   final String? invoiceNumber;
+
+  /// NCF del comprobante de compra (para el reporte DGII 606). Se escribe a
+  /// mano; queda separado del número de factura del proveedor.
+  final String? ncf;
   final String? notes;
   final String paymentStatus;
   final String? purchaseCategory;
   final DateTime? expectedAt;
+
+  /// Monto pagado al proveedor al momento de crear la compra. Solo se usa
+  /// cuando `paymentStatus == 'partial'`. Para 'paid' se paga el total y para
+  /// 'pending' se paga 0 (queda como cuenta por pagar).
+  final double? paidAmount;
 }
 
 class PurchaseItemDetail {
@@ -201,6 +212,7 @@ class PurchaseDetail {
     required this.items,
     this.purchaseNumber,
     this.invoiceNumber,
+    this.ncf,
     this.purchaseCategory,
     this.expectedAt,
     this.notes,
@@ -211,6 +223,7 @@ class PurchaseDetail {
   final String supplierName;
   final String? purchaseNumber;
   final String? invoiceNumber;
+  final String? ncf;
   final DateTime purchaseDate;
   final String status;
   final String paymentStatus;
@@ -307,6 +320,38 @@ class PurchasesRepository {
     );
     final totalAmount = _round2(subtotal + taxAmount);
 
+    // Monto pagado ahora → saldo (cuenta por pagar) según el estado de pago:
+    //   paid    → paga el total (no queda saldo).
+    //   pending → paga 0 (queda todo como cuenta por pagar).
+    //   partial → paga input.paidAmount (acotado a [0, total]).
+    final double paidNow;
+    switch (input.paymentStatus) {
+      case 'paid':
+        paidNow = totalAmount;
+        break;
+      case 'partial':
+        paidNow = _round2(
+          (input.paidAmount ?? 0).clamp(0, totalAmount).toDouble(),
+        );
+        break;
+      default: // 'pending'
+        paidNow = 0;
+    }
+    final balanceDue = _round2(totalAmount - paidNow);
+
+    // Fecha de vencimiento: si queda saldo, la deriva de los días de crédito
+    // del proveedor (payment_terms_days). Si no tiene términos, vence el mismo
+    // día de la compra.
+    String? dueDate;
+    if (balanceDue > 0) {
+      final termsDays = await _supplierPaymentTermsDays(branchId, input.supplierId);
+      dueDate = input.purchaseDate
+          .add(Duration(days: termsDays))
+          .toIso8601String()
+          .split('T')
+          .first;
+    }
+
     final purchaseNumber = _buildPurchaseNumber();
 
     final createdPurchase = await _client
@@ -316,6 +361,7 @@ class PurchasesRepository {
           'supplier_id': input.supplierId,
           'purchase_number': purchaseNumber,
           'invoice_number': _nullIfEmpty(input.invoiceNumber),
+          'ncf': _nullIfEmpty(input.ncf),
           'status': 'posted',
           'payment_status': input.paymentStatus,
           'purchase_category': _nullIfEmpty(input.purchaseCategory),
@@ -326,6 +372,9 @@ class PurchasesRepository {
           'discount_amount': 0,
           'tax_amount': taxAmount,
           'total_amount': totalAmount,
+          'paid_amount': paidNow,
+          'balance_due': balanceDue,
+          'due_date': dueDate,
         })
         .select('id')
         .single();
@@ -361,11 +410,24 @@ class PurchasesRepository {
     );
     final totalAmount = _round2(subtotal + taxAmount);
 
+    // Conservar lo ya pagado (abonos reales al proveedor) y recalcular el saldo
+    // contra el nuevo total, para que Cuentas por Pagar quede consistente.
+    final existing = await _client
+        .from('purchases')
+        .select('paid_amount')
+        .eq('id', purchaseId)
+        .eq('branch_id', branchId)
+        .single();
+    final paid = _round2(_toDouble(existing['paid_amount']));
+    final balanceDue =
+        _round2((totalAmount - paid).clamp(0, totalAmount).toDouble());
+
     final updated = await _client
         .from('purchases')
         .update({
           'supplier_id': input.supplierId,
           'invoice_number': _nullIfEmpty(input.invoiceNumber),
+          'ncf': _nullIfEmpty(input.ncf),
           'payment_status': input.paymentStatus,
           'purchase_category': _nullIfEmpty(input.purchaseCategory),
           'purchase_date':
@@ -376,6 +438,7 @@ class PurchasesRepository {
           'discount_amount': 0,
           'tax_amount': taxAmount,
           'total_amount': totalAmount,
+          'balance_due': balanceDue,
         })
         .eq('id', purchaseId)
         .eq('branch_id', branchId)
@@ -419,7 +482,7 @@ class PurchasesRepository {
     final rows = await _client
         .from('purchases')
         .select(
-          'id, supplier_id, purchase_number, invoice_number, purchase_date, '
+          'id, supplier_id, purchase_number, invoice_number, ncf, purchase_date, '
           'status, payment_status, purchase_category, expected_at, notes, '
           'subtotal, tax_amount, total_amount',
         )
@@ -479,6 +542,7 @@ class PurchasesRepository {
       supplierName: supplierName,
       purchaseNumber: p['purchase_number']?.toString(),
       invoiceNumber: p['invoice_number']?.toString(),
+      ncf: p['ncf']?.toString(),
       purchaseDate:
           DateTime.tryParse((p['purchase_date'] ?? '').toString()) ??
               DateTime.now(),
@@ -534,6 +598,7 @@ class PurchasesRepository {
       ),
       customer: PrintParty(name: detail.supplierName),
       referenceNumber: detail.invoiceNumber,
+      ncf: detail.ncf,
       receiptTypeLabel: 'Compra',
       notes: detail.notes,
       showBarcode: false,
@@ -620,6 +685,27 @@ class PurchasesRepository {
           .update(update)
           .eq('id', line.product.id)
           .eq('branch_id', branchId);
+    }
+  }
+
+  /// Días de crédito configurados para el proveedor (0 si no tiene o falla).
+  Future<int> _supplierPaymentTermsDays(
+    String branchId,
+    String supplierId,
+  ) async {
+    try {
+      final rows = await _client
+          .from('suppliers')
+          .select('payment_terms_days')
+          .eq('id', supplierId)
+          .eq('branch_id', branchId)
+          .limit(1);
+      if (rows.isEmpty) return 0;
+      final value = (rows.first as Map)['payment_terms_days'];
+      if (value is int) return value;
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    } catch (_) {
+      return 0;
     }
   }
 

@@ -707,8 +707,10 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   final _formKey = GlobalKey<FormState>();
 
   final _invoiceController = TextEditingController();
+  final _ncfController = TextEditingController();
   final _notesController = TextEditingController();
   final _categoryController = TextEditingController();
+  final _paidAmountController = TextEditingController(text: '0');
   final _qtyController = TextEditingController(text: '1');
   final _costController = TextEditingController(text: '0');
   final _taxController = TextEditingController(text: '0');
@@ -718,6 +720,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   DateTime _purchaseDate = DateTime.now();
   DateTime? _expectedAt;
   String _paymentStatus = 'paid';
+  bool _assignNcf = false;
 
   String? _lineProductId;
   final List<PurchaseLineInput> _lines = [];
@@ -730,6 +733,11 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
     if (initial != null) {
       _supplierId = initial.supplierId;
       _invoiceController.text = initial.invoiceNumber ?? '';
+      final initialNcf = initial.ncf?.trim() ?? '';
+      if (initialNcf.isNotEmpty) {
+        _assignNcf = true;
+        _ncfController.text = initialNcf;
+      }
       _categoryController.text = initial.purchaseCategory ?? '';
       _notesController.text = initial.notes ?? '';
       _purchaseDate = initial.purchaseDate;
@@ -765,7 +773,9 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   @override
   void dispose() {
     _invoiceController.dispose();
+    _ncfController.dispose();
     _notesController.dispose();
+    _paidAmountController.dispose();
     _categoryController.dispose();
     _qtyController.dispose();
     _costController.dispose();
@@ -844,6 +854,55 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                   ],
                 ),
                 const SizedBox(height: 10),
+                // NCF del comprobante de compra (para el reporte DGII 606).
+                // Se escribe a mano y queda separado del número de factura.
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppTokens.background,
+                    borderRadius: BorderRadius.circular(AppTokens.radius),
+                    border: Border.all(color: AppTokens.border),
+                  ),
+                  padding: const EdgeInsets.fromLTRB(4, 0, 12, 0),
+                  child: Column(
+                    children: [
+                      CheckboxListTile(
+                        value: _assignNcf,
+                        onChanged: (value) => setState(() {
+                          _assignNcf = value ?? false;
+                          if (!_assignNcf) _ncfController.clear();
+                        }),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: const Text('Asignar NCF comprobante de compra'),
+                      ),
+                      if (_assignNcf)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 0, 0, 12),
+                          child: TextFormField(
+                            controller: _ncfController,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: const InputDecoration(
+                              labelText: 'No.',
+                              hintText: 'Ej: B0100000123',
+                            ),
+                            validator: (value) {
+                              // Opcional: si se deja vacío no pasa nada (se
+                              // guarda sin NCF). Si se escribe algo, debe tener
+                              // formato válido para que sirva en el 606.
+                              final ncf = (value ?? '').trim();
+                              if (ncf.isEmpty) return null;
+                              if (!_isValidNcf(ncf)) {
+                                return 'NCF inválido (ej: B0100000123)';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
                 Row(
                   children: [
                     Expanded(
@@ -859,11 +918,25 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    Expanded(
-                      child: TextFormField(
-                        readOnly: true,
-                        decoration: InputDecoration(
-                          labelText: 'Fecha esperada (opcional)',
+                    if (_paymentStatus == 'partial')
+                      Expanded(
+                        child: TextFormField(
+                          controller: _paidAmountController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: 'Monto pagado ahora',
+                            helperText: 'El resto queda como cuenta por pagar',
+                          ),
+                        ),
+                      )
+                    else
+                      Expanded(
+                        child: TextFormField(
+                          readOnly: true,
+                          decoration: InputDecoration(
+                            labelText: 'Fecha esperada (opcional)',
                           hintText: _expectedAt == null ? 'Sin fecha' : formatDate(_expectedAt!),
                           suffixIcon: IconButton(
                             onPressed: _pickExpectedDate,
@@ -1215,8 +1288,10 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
         purchaseDate: _purchaseDate,
         items: List<PurchaseLineInput>.from(_lines),
         invoiceNumber: _invoiceController.text,
+        ncf: _assignNcf ? _ncfController.text.trim() : null,
         notes: _notesController.text,
         paymentStatus: _paymentStatus,
+        paidAmount: double.tryParse(_paidAmountController.text.trim()),
         purchaseCategory: _categoryController.text,
         expectedAt: _expectedAt,
       ),
@@ -1422,6 +1497,8 @@ class _PurchaseDetailDialog extends StatelessWidget {
               if (detail.invoiceNumber != null &&
                   detail.invoiceNumber!.isNotEmpty)
                 _kv('Factura', detail.invoiceNumber!),
+              if (detail.ncf != null && detail.ncf!.isNotEmpty)
+                _kv('NCF', detail.ncf!),
               if (detail.purchaseCategory != null &&
                   detail.purchaseCategory!.isNotEmpty)
                 _kv('Categoría', detail.purchaseCategory!),
@@ -1811,6 +1888,13 @@ String _paymentStatusKey(String value) {
 }
 
 double _round2(double value) => (value * 100).roundToDouble() / 100;
+
+/// Valida el formato de un NCF físico dominicano. Debe coincidir con el
+/// `is_valid_ncf` de la base de datos (regex `^[BAE][0-9]{2}-?[0-9]{8,10}$`)
+/// para que lo que pasa la validación local también sirva en el reporte 606.
+final _ncfPattern = RegExp(r'^[BAE][0-9]{2}-?[0-9]{8,10}$');
+
+bool _isValidNcf(String value) => _ncfPattern.hasMatch(value.trim());
 
 class _ReceiptProgress extends StatelessWidget {
   const _ReceiptProgress({required this.purchase});

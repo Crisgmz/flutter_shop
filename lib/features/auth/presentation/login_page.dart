@@ -73,28 +73,22 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFDCE9FF),
-                              borderRadius: BorderRadius.circular(10),
+                      Text(
+                        'Busi Pos Web',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: const Color(0xFF0D5BD7),
+                              letterSpacing: 0.5,
                             ),
-                            child: const Icon(Icons.storefront_outlined),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Busi Pos Web',
-                            style: Theme.of(context).textTheme.headlineSmall
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                          ),
-                        ],
                       ),
                       const SizedBox(height: 8),
                       Text(
                         'Inicia sesión para continuar',
+                        textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 24),

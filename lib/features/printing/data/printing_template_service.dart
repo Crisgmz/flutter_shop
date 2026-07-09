@@ -171,6 +171,10 @@ String _thermalTitle(PrintDocumentType type) {
       return 'ORDEN DE COMPRA';
     case PrintDocumentType.creditNote:
       return 'NOTA DE CREDITO';
+    case PrintDocumentType.paymentReceipt:
+      return 'RECIBO DE ABONO';
+    case PrintDocumentType.expenseVoucher:
+      return 'COMPROBANTE DE GASTO';
   }
 }
 
@@ -188,6 +192,10 @@ String _a4Title(PrintDocumentType type) {
       return 'Orden de compra';
     case PrintDocumentType.creditNote:
       return 'Nota de credito';
+    case PrintDocumentType.paymentReceipt:
+      return 'Recibo de abono';
+    case PrintDocumentType.expenseVoucher:
+      return 'Comprobante de gasto';
   }
 }
 

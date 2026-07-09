@@ -55,6 +55,11 @@ final saleDraftProvider = StateProvider<SaleDraft>(
 
 const _saleDraftKey = 'bpw.sale_draft.v1';
 
+/// Borra el borrador persistido (store global). Usar al cambiar de usuario:
+/// la clave NO es por-usuario, así que sin esto el carrito del usuario anterior
+/// reaparece para el siguiente. El caller debe invalidar `saleDraftProvider`.
+void clearSaleDraftStore() => kvRemove(_saleDraftKey);
+
 /// Persiste el borrador en el store. Llamar tras cada cambio del carrito.
 /// Si el carrito quedó vacío y sin datos de cabecera, borra la entrada.
 void saveSaleDraftToStore(SaleDraft draft) {

@@ -709,10 +709,10 @@ class SalesRepository {
 
     // app_settings (multi-tenant: la RLS filtra a la fila de la empresa
     // del usuario). RNC, logo, ocultar barcode.
-    final settingsRows = await _client
-        .from('app_settings')
-        .select('company_tax_id, company_logo_url, receipt_hide_barcode')
-        .limit(1);
+    // Se piden todas las columnas (no una lista explícita) para que la venta
+    // NO se rompa si la migración de campos del emisor (company_address, etc.)
+    // todavía no se aplicó: las columnas ausentes simplemente vienen nulas.
+    final settingsRows = await _client.from('app_settings').select().limit(1);
     final settings = settingsRows.isEmpty
         ? const <String, dynamic>{}
         : Map<String, dynamic>.from(settingsRows.first as Map);
@@ -720,6 +720,9 @@ class SalesRepository {
     final logoUrl = settings['company_logo_url']?.toString();
     debugPrint('Logo URL en app_settings: $logoUrl');
     final logoBytes = await _downloadBytes(logoUrl);
+
+    // QR del pie: descarga en runtime (como el logo).
+    final qrBytes = await _downloadBytes(settings['company_qr_url']?.toString());
     debugPrint('Logo bytes descargados: ${logoBytes?.length ?? 0}');
 
     // Cash session → nombre legible para "Caja registradora".
@@ -800,12 +803,25 @@ class SalesRepository {
           DateTime.now(),
       receiptType: (sale['receipt_type'] ?? '').toString(),
       branchName: (branch['name'] ?? 'Sucursal').toString(),
-      branchAddress: branch['address']?.toString(),
-      branchPhone: branch['phone']?.toString(),
+      branchAddress: _firstNonEmpty([
+        settings['company_address'],
+        branch['address'],
+      ]),
+      branchPhone: _firstNonEmpty([
+        settings['company_phone'],
+        branch['phone'],
+      ]),
+      branchEmail: _firstNonEmpty([settings['company_email']]),
       branchTaxId: settings['company_tax_id']?.toString(),
       branchLogoBytes: logoBytes,
+      qrBytes: qrBytes,
+      bankInfo: _firstNonEmpty([settings['company_bank_info']]),
+      signatoryName: _firstNonEmpty([settings['company_signatory_name']]),
+      signatoryTitle: _firstNonEmpty([settings['company_signatory_title']]),
+      observation: _firstNonEmpty([settings['invoice_observation']]),
       cashRegisterName: cashRegisterName,
       showBarcode: settings['receipt_hide_barcode'] != true,
+      showItbis: settings['invoice_show_itbis'] != false,
       clientName: client['full_name']?.toString(),
       clientDocument: _buildClientDocumentLabel(
         documentType: client['document_type']?.toString(),
@@ -1259,6 +1275,16 @@ String? _nullIfEmpty(String? value) {
   if (value == null) return null;
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+/// Primer valor no vacío de la lista (tras trim), o null. Para preferir un
+/// campo de configuración sobre el de la sucursal.
+String? _firstNonEmpty(List<dynamic> values) {
+  for (final v in values) {
+    final s = v?.toString().trim();
+    if (s != null && s.isNotEmpty) return s;
+  }
+  return null;
 }
 
 String? _buildClientDocumentLabel({
