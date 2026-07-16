@@ -41,6 +41,7 @@ class SalePrintSource {
     this.showBarcode = true,
     this.showItbis = true,
     this.qrBytes,
+    this.ecf,
   });
 
   final String saleId;
@@ -95,6 +96,10 @@ class SalePrintSource {
 
   /// Bytes del QR (descargado de company_qr_url). Null → fallback al asset.
   final List<int>? qrBytes;
+
+  /// Datos e-CF (QR DGII, código de seguridad, firma digital). Solo cuando la
+  /// venta lleva NCF electrónico (serie E).
+  final PrintEcfData? ecf;
 }
 
 class SalePrintItemSource {
@@ -166,6 +171,7 @@ class SalePrintDocumentAdapter {
           source.receiptType != 'none' &&
           source.items.any((i) => i.lineTax > 0.0049),
       qrBytes: source.qrBytes,
+      ecf: source.ecf,
       observation: _nullIfBlank(source.observation),
       ncf: _nullIfBlank(source.ncf),
       notes: _nullIfBlank(source.notes),

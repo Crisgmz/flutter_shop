@@ -18,3 +18,11 @@ final businessProfileProvider =
   final repository = ref.watch(settingsRepositoryProvider);
   return repository.fetchBusinessProfile();
 });
+
+/// Config e-CF (facturación electrónica) de la empresa actual. Null si la
+/// empresa nunca la ha configurado (modalidad física por defecto).
+final companyEcfSettingsProvider =
+    FutureProvider<CompanyEcfSettings?>((ref) async {
+  final repository = ref.watch(settingsRepositoryProvider);
+  return repository.fetchCompanyEcfSettings();
+});

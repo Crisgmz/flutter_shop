@@ -202,6 +202,30 @@ class PrintTotals {
   final double balance;
 }
 
+/// Datos de facturación electrónica (e-CF DGII) para la representación
+/// impresa. La Norma 01-2020 exige QR + código de seguridad + fecha de firma
+/// digital en el comprobante que recibe el cliente.
+class PrintEcfData {
+  const PrintEcfData({
+    this.qrUrl,
+    this.securityCode,
+    this.signedAt,
+    this.statusMessage,
+  });
+
+  /// Contenido del QR: `public_url` de Alanube o la URL DGII construida
+  /// localmente (ConsultaTimbreFC). Null si aún no hay datos para el QR.
+  final String? qrUrl;
+  final String? securityCode;
+  final DateTime? signedAt;
+
+  /// Mensaje a imprimir cuando todavía no hay QR ("En proceso DGII…",
+  /// "Rechazado DGII: …"). Null cuando hasQr es true o no aplica.
+  final String? statusMessage;
+
+  bool get hasQr => qrUrl != null && qrUrl!.trim().isNotEmpty;
+}
+
 class PrintDocumentData {
   const PrintDocumentData({
     required this.documentType,
@@ -227,6 +251,7 @@ class PrintDocumentData {
     this.observation,
     this.showTax = true,
     this.qrBytes,
+    this.ecf,
   });
 
   final PrintDocumentType documentType;
@@ -271,6 +296,10 @@ class PrintDocumentData {
   /// Bytes del código QR para el pie del A4 (descargado de `company_qr_url`).
   /// Si es null, el builder usa el asset `assets/QR.png` como fallback.
   final List<int>? qrBytes;
+
+  /// Datos e-CF (QR DGII, código de seguridad, firma). Null en documentos
+  /// físicos (serie B) o ventas sin comprobante.
+  final PrintEcfData? ecf;
 }
 
 class ThermalTicketRow {

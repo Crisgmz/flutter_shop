@@ -32,6 +32,21 @@ const _statusColors = <String, Color>{
   'rejected': Color(0xFFEF4444),
 };
 
+/// Estados del documento electrónico (e-CF vía Alanube/DGII).
+const _ecfStatusLabels = <String, String>{
+  'pending': 'e-CF pendiente',
+  'sent': 'e-CF en proceso',
+  'accepted': 'e-CF aceptado',
+  'rejected': 'e-CF rechazado',
+};
+
+const _ecfStatusColors = <String, Color>{
+  'pending': Color(0xFFF59E0B),
+  'sent': Color(0xFF3B82F6),
+  'accepted': Color(0xFF22C55E),
+  'rejected': Color(0xFFEF4444),
+};
+
 const _receiptTypes = <String>[
   'consumer_final',
   'fiscal_credit',
@@ -278,23 +293,51 @@ class _DocsList extends ConsumerWidget {
         ),
         DataCell(Text(receiptLabel, style: const TextStyle(fontSize: 13))),
         DataCell(
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppTokens.s8,
-              vertical: 3,
-            ),
-            decoration: BoxDecoration(
-              color: statusColor.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(AppTokens.radiusS),
-            ),
-            child: Text(
-              statusLabel,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: statusColor,
+          Wrap(
+            spacing: 4,
+            runSpacing: 2,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppTokens.s8,
+                  vertical: 3,
+                ),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(AppTokens.radiusS),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: statusColor,
+                  ),
+                ),
               ),
-            ),
+              if (doc.isElectronic && doc.ecfStatus != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppTokens.s8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: (_ecfStatusColors[doc.ecfStatus] ??
+                            AppTokens.mutedForeground)
+                        .withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(AppTokens.radiusS),
+                  ),
+                  child: Text(
+                    _ecfStatusLabels[doc.ecfStatus] ?? doc.ecfStatus!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: _ecfStatusColors[doc.ecfStatus] ??
+                          AppTokens.mutedForeground,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
         DataCell(Text(
@@ -337,6 +380,33 @@ class _FiscalDocDetailDialog extends ConsumerStatefulWidget {
 class _FiscalDocDetailDialogState
     extends ConsumerState<_FiscalDocDetailDialog> {
   bool _voiding = false;
+  bool _emitting = false;
+
+  /// Re-dispara la emisión del e-CF (Edge Function `emit-document`). Útil
+  /// cuando quedó pendiente (proveedor caído, empresa sin registrar) o para
+  /// refrescar el estado tras corregir la causa de un rechazo.
+  Future<void> _onEmit() async {
+    setState(() => _emitting = true);
+    try {
+      final repo = ref.read(fiscalDocumentsRepositoryProvider);
+      final updated = await repo.emitElectronicDocument(widget.doc.id);
+      if (!mounted) return;
+      widget.listRef.invalidate(fiscalDocumentsProvider);
+      Navigator.of(context).pop();
+      final status = updated?.ecfStatus;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            status == null
+                ? 'Emisión disparada; el estado se actualizará en breve.'
+                : 'Estado e-CF: ${_ecfStatusLabels[status] ?? status}',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _emitting = false);
+    }
+  }
 
   Future<void> _onVoid() async {
     final reasonController = TextEditingController();
@@ -510,6 +580,35 @@ class _FiscalDocDetailDialogState
                   ],
                 ),
               ],
+              if (doc.isElectronic) ...[
+                const SizedBox(height: AppTokens.s16),
+                _DetailSection(
+                  title: 'Facturación electrónica (DGII)',
+                  rows: [
+                    _DetailRow(
+                      'Estado',
+                      _ecfStatusLabels[doc.ecfStatus] ??
+                          doc.ecfStatus ??
+                          'Sin emitir',
+                    ),
+                    if (doc.ecfTrackingNumber != null)
+                      _DetailRow('Track ID', doc.ecfTrackingNumber!),
+                    if (doc.ecfSecurityCode != null)
+                      _DetailRow('Código seguridad', doc.ecfSecurityCode!),
+                    if (doc.ecfSignedAt != null)
+                      _DetailRow(
+                        'Firma digital',
+                        formatDateTime(doc.ecfSignedAt),
+                      ),
+                    if (doc.submittedAt != null)
+                      _DetailRow('Enviado', formatDateTime(doc.submittedAt)),
+                    if (doc.acceptedAt != null)
+                      _DetailRow('Aceptado', formatDateTime(doc.acceptedAt)),
+                    if (doc.lastError != null && doc.lastError!.isNotEmpty)
+                      _DetailRow('Último error', doc.lastError!),
+                  ],
+                ),
+              ],
               const SizedBox(height: AppTokens.s16),
               _DetailSection(
                 title: 'Montos',
@@ -532,6 +631,20 @@ class _FiscalDocDetailDialogState
         ),
       ),
       actions: [
+        if (doc.isElectronic &&
+            !doc.isVoided &&
+            (doc.ecfStatus == 'pending' || doc.ecfStatus == 'rejected'))
+          TextButton.icon(
+            onPressed: _emitting ? null : _onEmit,
+            icon: _emitting
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.send_outlined, size: 16),
+            label: const Text('Emitir a DGII'),
+          ),
         if (canVoid)
           TextButton.icon(
             onPressed: _voiding ? null : _onVoid,

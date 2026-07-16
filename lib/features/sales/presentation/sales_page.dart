@@ -14,6 +14,8 @@ import '../../../shared/widgets/role_gate.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../clients/presentation/clients_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
+import '../../settings/presentation/settings_providers.dart'
+    show companyEcfSettingsProvider;
 import '../data/sales_repository.dart';
 import 'sales_providers.dart';
 
@@ -381,28 +383,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                             fontWeight: FontWeight.w600,
                             color: Color(0xFF475569),
                           ),
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'consumer_final',
-                              child: Text('Consumidor Final (B02)'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'fiscal_credit',
-                              child: Text('Crédito Fiscal (B01)'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'governmental',
-                              child: Text('Gubernamental (B15)'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'special',
-                              child: Text('Régimen Especial (B14)'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'export',
-                              child: Text('Exportación (B16)'),
-                            ),
-                          ],
+                          items: _receiptTypeItems(),
                           onChanged: (v) {
                             setState(() => _receiptType = v!);
                             _persistDraft();
@@ -1041,6 +1022,44 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
+  }
+
+  /// Opciones del selector de comprobante. El código mostrado depende de la
+  /// modalidad e-CF de la empresa: física → serie B (B02…), electrónica o
+  /// híbrida → serie E (E32…), que es la que `assign_next_ncf` consumirá.
+  List<DropdownMenuItem<String>> _receiptTypeItems() {
+    final ecf = ref.watch(companyEcfSettingsProvider).valueOrNull;
+    final electronic = ecf?.electronicEnabled ?? false;
+    const labels = <String, String>{
+      'consumer_final': 'Consumidor Final',
+      'fiscal_credit': 'Crédito Fiscal',
+      'governmental': 'Gubernamental',
+      'special': 'Régimen Especial',
+      'export': 'Exportación',
+    };
+    const bCodes = <String, String>{
+      'consumer_final': 'B02',
+      'fiscal_credit': 'B01',
+      'governmental': 'B15',
+      'special': 'B14',
+      'export': 'B16',
+    };
+    const eCodes = <String, String>{
+      'consumer_final': 'E32',
+      'fiscal_credit': 'E31',
+      'governmental': 'E45',
+      'special': 'E44',
+      'export': 'E46',
+    };
+    final codes = electronic ? eCodes : bCodes;
+    return labels.entries
+        .map(
+          (entry) => DropdownMenuItem(
+            value: entry.key,
+            child: Text('${entry.value} (${codes[entry.key]})'),
+          ),
+        )
+        .toList(growable: false);
   }
 
   /// Abre la página 2 (diálogo de cobro con métodos divididos). Según el
