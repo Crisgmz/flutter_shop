@@ -46,6 +46,15 @@ class SaleDraft {
   bool get isEmpty => items.isEmpty;
 }
 
+/// Señal de recarga del draft para un POS YA montado.
+///
+/// Con StatefulShellRoute, `/ventas/historial` es ruta hija de `/ventas`: el
+/// POS queda vivo debajo en el stack y su `initState` (donde se hidrata el
+/// carrito) no vuelve a correr al regresar con `go('/ventas')`. Quien escriba
+/// [saleDraftProvider] desde fuera del POS (p. ej. "Reabrir" en el historial)
+/// debe incrementar este tick; el POS lo escucha y re-hidrata su carrito.
+final saleDraftReloadTickProvider = StateProvider<int>((ref) => 0);
+
 /// El provider se hidrata del store al crearse: en web lee de localStorage,
 /// así el carrito sobrevive una recarga de página (F5 / banner "Actualizar"),
 /// no solo la navegación entre secciones.

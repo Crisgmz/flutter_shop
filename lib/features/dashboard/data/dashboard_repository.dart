@@ -430,9 +430,24 @@ class DashboardRepository {
     return DashboardKpisV2.fromMap(map);
   }
 
-  /// Lee `dashboard_kpis_by_branch` filtrando por la sucursal actual del
-  /// usuario. Devuelve los montos de hoy/mes y contadores activos.
+  /// KPIs del panel. Preferimos el RPC `dashboard_hero_kpis` (migración 65):
+  /// SECURITY DEFINER que valida el acceso una vez y consulta por índices —
+  /// la vista `dashboard_kpis_by_branch` ejecutaba la RLS fila por fila y en
+  /// instalaciones con datos cancelaba por statement_timeout (57014). Si el
+  /// RPC aún no existe en la BD, caemos a la vista como antes.
   Future<DashboardHeroKpis> fetchHeroKpis() async {
+    try {
+      final result = await _client.rpc('dashboard_hero_kpis');
+      if (result is Map) {
+        final map = Map<String, dynamic>.from(result);
+        if (map.isEmpty) return DashboardHeroKpis.empty;
+        return DashboardHeroKpis.fromMap(map);
+      }
+    } on PostgrestException catch (error) {
+      // PGRST202 = función no encontrada (migración 65 sin correr): fallback.
+      if (error.code != 'PGRST202' && error.code != '42883') rethrow;
+    }
+
     final branchIdResult = await _client.rpc('current_branch_id');
     final branchId = branchIdResult?.toString();
     if (branchId == null || branchId.isEmpty) {

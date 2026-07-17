@@ -549,6 +549,9 @@ class _RowActions extends ConsumerWidget {
       );
       ref.read(saleDraftProvider.notifier).state = saleDraft;
       saveSaleDraftToStore(saleDraft);
+      // El POS puede seguir montado debajo en el stack del shell (historial
+      // es ruta hija de /ventas): avisarle que re-hidrate el carrito.
+      ref.read(saleDraftReloadTickProvider.notifier).state++;
       if (!context.mounted) return;
       context.go('/ventas');
     } catch (error) {

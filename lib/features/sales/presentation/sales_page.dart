@@ -58,8 +58,17 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     super.initState();
     // Restaurar el carrito en curso si el cajero venía armando una venta y
     // navegó a otra sección. Ver [saleDraftProvider].
+    _hydrateFromDraft();
+  }
+
+  /// Carga el carrito + cabecera desde [saleDraftProvider]. Se usa en
+  /// `initState` y cuando otra pantalla pide recargar el draft con el POS ya
+  /// montado (ver [saleDraftReloadTickProvider]).
+  void _hydrateFromDraft() {
     final draft = ref.read(saleDraftProvider);
-    _cart.addAll(draft.items);
+    _cart
+      ..clear()
+      ..addAll(draft.items);
     _receiptType = draft.receiptType;
     // El método primario SIEMPRE arranca en Efectivo; solo es a crédito si el
     // cajero elige "Crédito" como método.
@@ -98,6 +107,16 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Re-hidratar cuando otra pantalla escribió el draft con el POS ya
+    // montado (p. ej. "Reabrir" una cuenta guardada desde el historial: el
+    // POS vive debajo en el stack del shell y su initState no vuelve a
+    // correr al regresar).
+    ref.listen<int>(saleDraftReloadTickProvider, (previous, next) {
+      if (previous != next) {
+        setState(_hydrateFromDraft);
+      }
+    });
+
     final productsAsync = ref.watch(salesProductsProvider);
     final categoriesAsync = ref.watch(salesCategoriesProvider);
     final clientsAsync = ref.watch(salesClientsProvider);
