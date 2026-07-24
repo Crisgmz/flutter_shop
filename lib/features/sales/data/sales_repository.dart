@@ -31,6 +31,7 @@ class SalesProduct {
     this.priceTier9,
     this.priceTier10,
     this.imageUrl,
+    this.priceIncludesTax = false,
     this.imeis = const <String>[],
   });
 
@@ -45,6 +46,11 @@ class SalesProduct {
   final double taxRate;
   final double stock;
   final bool isActive;
+
+  /// Si true, `price` YA trae el ITBIS adentro: al vender, el total de línea
+  /// es exacto (precio × cantidad) y el impuesto se EXTRAE con
+  /// `total × tasa/(100+tasa)`. Si false (histórico), el impuesto va encima.
+  final bool priceIncludesTax;
   final double? priceTier1;
   final double? priceTier2;
   final double? priceTier3;
@@ -129,6 +135,7 @@ class SalesProduct {
       priceTier9: optionalDouble(map['price_tier_9']),
       priceTier10: optionalDouble(map['price_tier_10']),
       imageUrl: map['image_url']?.toString(),
+      priceIncludesTax: map['price_includes_tax'] == true,
       imeis: map['imeis'] is List
           ? (map['imeis'] as List)
               .map((e) => e.toString())
@@ -221,17 +228,32 @@ class SaleCartItem {
   /// cantidad de la línea corresponde a la cantidad de IMEIs.
   final List<String> imeis;
 
-  /// Subtotal antes de descuento: cantidad × precio unitario.
+  /// Monto bruto antes de descuento: cantidad × precio unitario.
   double get lineGross => _round2(quantity * unitPrice);
 
   /// Monto del descuento aplicado.
   double get lineDiscount => _round2(lineGross * (discountPct / 100));
 
-  /// Subtotal después de descuento (base imponible).
-  double get lineSubtotal => _round2(lineGross - lineDiscount);
+  /// Bruto después de descuento. Con precio exclusivo es la base imponible;
+  /// con precio ITBIS-incluido es el TOTAL a cobrar de la línea.
+  double get _lineNet => _round2(lineGross - lineDiscount);
 
-  double get lineTax => _round2(lineSubtotal * (product.taxRate / 100));
-  double get lineTotal => _round2(lineSubtotal + lineTax);
+  bool get _taxIncluded =>
+      product.priceIncludesTax && product.taxRate > 0;
+
+  /// ITBIS de la línea. Exclusivo: se agrega encima (base × t/100).
+  /// Incluido: se EXTRAE del monto cobrado (neto × t/(100+t)), así el total
+  /// queda exacto (100.00 sigue siendo 100.00).
+  double get lineTax => _taxIncluded
+      ? _round2(_lineNet * product.taxRate / (100 + product.taxRate))
+      : _round2(_lineNet * (product.taxRate / 100));
+
+  /// Base imponible de la línea (lo que factura sin ITBIS).
+  double get lineSubtotal =>
+      _taxIncluded ? _round2(_lineNet - lineTax) : _lineNet;
+
+  double get lineTotal =>
+      _taxIncluded ? _lineNet : _round2(lineSubtotal + lineTax);
 }
 
 /// Una línea de pago para ventas con pago mixto (varios métodos que suman el
@@ -392,7 +414,7 @@ class SalesRepository {
           .from('products')
           .select(
             'id, name, sku, barcode, category_id, price, cost, tax_rate, stock, '
-            'is_active, price_tier_1, price_tier_2, price_tier_3, '
+            'is_active, price_includes_tax, price_tier_1, price_tier_2, price_tier_3, '
             'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
             'price_tier_8, price_tier_9, price_tier_10, image_url, imeis',
           )
@@ -455,6 +477,7 @@ class SalesRepository {
                   taxRate: item.product.taxRate,
                   stock: item.product.stock,
                   isActive: item.product.isActive,
+                  priceIncludesTax: item.product.priceIncludesTax,
                 ),
                 quantity: item.quantity,
                 imeis: item.imeis,

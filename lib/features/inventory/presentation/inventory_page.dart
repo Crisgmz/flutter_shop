@@ -1687,6 +1687,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   bool _isActive = true;
   bool _isService = false;
   bool _isTaxExempt = false;
+  bool _priceIncludesTax = false;
   bool _trackInventory = true;
   bool _uploadingImage = false;
 
@@ -1730,6 +1731,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _isActive = product?.isActive ?? true;
     _isService = product?.isService ?? false;
     _isTaxExempt = product?.isTaxExempt ?? false;
+    _priceIncludesTax = product?.priceIncludesTax ?? false;
     _trackInventory = product?.trackInventory ?? true;
     _imeis.addAll(product?.imeis ?? const <String>[]);
   }
@@ -2014,6 +2016,30 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   ),
                 ]),
                 const SizedBox(height: 10),
+                DropdownButtonFormField<bool>(
+                  initialValue: _priceIncludesTax,
+                  decoration: const InputDecoration(
+                    labelText: 'ITBIS en el precio de venta',
+                    helperText:
+                        'Aparte: 100 → se cobra 118. Incluido: se cobra 100 '
+                        'exacto y la factura desglosa base + ITBIS.',
+                    helperMaxLines: 2,
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: false,
+                      child: Text('ITBIS aparte (se suma encima del precio)'),
+                    ),
+                    DropdownMenuItem(
+                      value: true,
+                      child: Text('ITBIS incluido en el precio'),
+                    ),
+                  ],
+                  onChanged: (value) => setState(
+                    () => _priceIncludesTax = value ?? false,
+                  ),
+                ),
+                const SizedBox(height: 10),
                 _ProductImagePicker(
                   controller: _imageUrlController,
                   uploading: _uploadingImage,
@@ -2107,6 +2133,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       imageUrl: _imageUrlController.text,
       isService: _isService,
       isTaxExempt: _isTaxExempt,
+      priceIncludesTax: _priceIncludesTax,
       trackInventory: _trackInventory,
       imeis: List<String>.from(_imeis),
       priceTier1: _parseTier(_priceTierControllers[0].text),

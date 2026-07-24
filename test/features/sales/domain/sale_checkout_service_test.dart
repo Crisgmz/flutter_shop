@@ -11,6 +11,7 @@ void main() {
     double taxRate = 18,
     double stock = 10,
     bool isActive = true,
+    bool priceIncludesTax = false,
   }) {
     return SaleCheckoutSourceProduct(
       id: id,
@@ -19,6 +20,7 @@ void main() {
       taxRate: taxRate,
       stock: stock,
       isActive: isActive,
+      priceIncludesTax: priceIncludesTax,
     );
   }
 
@@ -67,6 +69,51 @@ void main() {
       expect(result.saleStatus, 'completed');
       expect(result.paidAmount, 354);
       expect(result.balanceDue, 0);
+    });
+
+    test('con ITBIS incluido extrae el impuesto y el total queda exacto', () {
+      // 100 con ITBIS 18% adentro: total 100.00 exacto,
+      // ITBIS = 100 × 18/118 = 15.25, base = 84.75.
+      final result = service.normalize(
+        SaleCheckoutServiceInput(
+          items: [
+            SaleCheckoutSourceItem(
+              product: buildProduct(priceIncludesTax: true),
+              quantity: 1,
+            ),
+          ],
+          receiptType: 'consumer_final',
+          asCredit: false,
+          paymentMethod: 'cash',
+        ),
+      );
+
+      expect(result.items.first.lineTotal, 100.00);
+      expect(result.items.first.lineTax, 15.25);
+      expect(result.items.first.lineSubtotal, 84.75);
+      expect(result.subtotal, 84.75);
+      expect(result.taxAmount, 15.25);
+      expect(result.total, 100.00);
+    });
+
+    test('con ITBIS incluido y tasa 0 se comporta como exclusivo', () {
+      final result = service.normalize(
+        SaleCheckoutServiceInput(
+          items: [
+            SaleCheckoutSourceItem(
+              product: buildProduct(priceIncludesTax: true, taxRate: 0),
+              quantity: 2,
+            ),
+          ],
+          receiptType: 'consumer_final',
+          asCredit: false,
+          paymentMethod: 'cash',
+        ),
+      );
+
+      expect(result.subtotal, 200);
+      expect(result.taxAmount, 0);
+      expect(result.total, 200);
     });
 
     test('exige cliente para crédito y para comprobantes fiscales', () {

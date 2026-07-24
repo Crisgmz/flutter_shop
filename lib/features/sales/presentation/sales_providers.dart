@@ -146,6 +146,7 @@ Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
       'tax_rate': p.taxRate,
       'stock': p.stock,
       'is_active': p.isActive,
+      'price_includes_tax': p.priceIncludesTax,
       'price_tier_1': p.priceTier1,
       'price_tier_2': p.priceTier2,
       'price_tier_3': p.priceTier3,

@@ -53,6 +53,7 @@ class InventoryProduct {
     this.notes,
     this.isService = false,
     this.isTaxExempt = false,
+    this.priceIncludesTax = false,
     this.trackInventory = true,
     this.sizeLabel,
     this.variantName,
@@ -94,6 +95,11 @@ class InventoryProduct {
   final String? notes;
   final bool isService;
   final bool isTaxExempt;
+
+  /// Si true, el precio de venta YA incluye el ITBIS (se extrae al vender).
+  /// Si false (histórico), el ITBIS se agrega encima del precio.
+  final bool priceIncludesTax;
+
   final bool trackInventory;
   final String? sizeLabel;
   final String? variantName;
@@ -174,6 +180,7 @@ class InventoryProduct {
       notes: map['notes']?.toString(),
       isService: map['is_service'] == true,
       isTaxExempt: map['is_tax_exempt'] == true,
+      priceIncludesTax: map['price_includes_tax'] == true,
       trackInventory: map['track_inventory'] != false,
       sizeLabel: map['size_label']?.toString(),
       variantName: map['variant_name']?.toString(),
@@ -222,6 +229,7 @@ class InventoryProductInput {
     this.notes,
     this.isService = false,
     this.isTaxExempt = false,
+    this.priceIncludesTax = false,
     this.trackInventory = true,
     this.sizeLabel,
     this.variantName,
@@ -261,6 +269,10 @@ class InventoryProductInput {
   final String? notes;
   final bool isService;
   final bool isTaxExempt;
+
+  /// Espeja `products.price_includes_tax` (ITBIS incluido en el precio).
+  final bool priceIncludesTax;
+
   final bool trackInventory;
   final String? sizeLabel;
   final String? variantName;
@@ -499,7 +511,7 @@ class InventoryRepository {
             'id, name, sku, barcode, category_id, unit, sale_unit, cost, price, '
             'tax_rate, stock, min_stock, is_active, '
             'internal_code, brand, model, image_url, notes, '
-            'is_service, is_tax_exempt, track_inventory, '
+            'is_service, is_tax_exempt, price_includes_tax, track_inventory, '
             'size_label, variant_name, purchase_unit, '
             'reorder_level, max_stock, allow_negative_stock, '
             'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
@@ -697,6 +709,7 @@ class InventoryRepository {
       'notes': _nullIfEmpty(input.notes),
       'is_service': input.isService,
       'is_tax_exempt': input.isTaxExempt,
+      'price_includes_tax': input.priceIncludesTax,
       'track_inventory': input.trackInventory,
       'imeis': input.imeis,
       'price_tier_1': input.priceTier1 ?? input.price,

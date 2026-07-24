@@ -51,6 +51,7 @@ class SaleCheckoutService {
           availableStock: product.stock,
           unitPrice: round2(product.price),
           taxRate: round2(product.taxRate),
+          priceIncludesTax: product.priceIncludesTax,
           imeis: item.imeis,
         );
       } else {
@@ -72,9 +73,22 @@ class SaleCheckoutService {
             );
           }
 
-          final lineSubtotal = round2(line.quantity * line.unitPrice);
-          final lineTax = round2(lineSubtotal * (line.taxRate / 100));
-          final lineTotal = round2(lineSubtotal + lineTax);
+          // Misma fórmula que el RPC: exclusivo agrega el ITBIS encima;
+          // ITBIS-incluido lo EXTRAE del monto cobrado (total exacto).
+          final gross = round2(line.quantity * line.unitPrice);
+          final inclusive = line.priceIncludesTax && line.taxRate > 0;
+          final double lineSubtotal;
+          final double lineTax;
+          final double lineTotal;
+          if (inclusive) {
+            lineTotal = gross;
+            lineTax = round2(gross * line.taxRate / (100 + line.taxRate));
+            lineSubtotal = round2(lineTotal - lineTax);
+          } else {
+            lineSubtotal = gross;
+            lineTax = round2(lineSubtotal * (line.taxRate / 100));
+            lineTotal = round2(lineSubtotal + lineTax);
+          }
 
           return NormalizedSaleCheckoutItem(
             productId: line.productId,
@@ -195,6 +209,7 @@ class SaleCheckoutSourceProduct {
     required this.taxRate,
     required this.stock,
     required this.isActive,
+    this.priceIncludesTax = false,
   });
 
   final String id;
@@ -203,6 +218,11 @@ class SaleCheckoutSourceProduct {
   final double taxRate;
   final double stock;
   final bool isActive;
+
+  /// Si true, `price` trae el ITBIS adentro: el impuesto se extrae del total
+  /// (total × t/(100+t)) en vez de agregarse encima. Espeja
+  /// `products.price_includes_tax`; el RPC aplica la misma fórmula.
+  final bool priceIncludesTax;
 }
 
 class NormalizedSaleCheckout {
@@ -293,6 +313,7 @@ class _MutableSaleLine {
     required this.availableStock,
     required this.unitPrice,
     required this.taxRate,
+    this.priceIncludesTax = false,
     List<String>? imeis,
   }) : imeis = [...?imeis];
 
@@ -302,6 +323,7 @@ class _MutableSaleLine {
   final double availableStock;
   final double unitPrice;
   final double taxRate;
+  final bool priceIncludesTax;
   final List<String> imeis;
 }
 
