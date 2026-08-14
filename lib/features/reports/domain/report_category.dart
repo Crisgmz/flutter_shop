@@ -17,7 +17,7 @@ enum ReportCategory {
   liquidacion,
   cobros,
   pagos,
-  ventasSuspendidas,
+  ventasGuardadas,
   // Empleados
   empleados,
   comision,
@@ -58,8 +58,8 @@ enum ReportCategory {
         return 'Cobros';
       case ReportCategory.pagos:
         return 'Pagos';
-      case ReportCategory.ventasSuspendidas:
-        return 'Ventas suspendidas';
+      case ReportCategory.ventasGuardadas:
+        return 'Ventas guardadas';
       case ReportCategory.empleados:
         return 'Empleados';
       case ReportCategory.comision:
@@ -117,8 +117,8 @@ enum ReportCategory {
         return 'Pagos recibidos agrupados por método.';
       case ReportCategory.pagos:
         return 'Pagos a proveedores y gastos del período.';
-      case ReportCategory.ventasSuspendidas:
-        return 'Cuentas abiertas y ventas pendientes.';
+      case ReportCategory.ventasGuardadas:
+        return 'Cuentas guardadas desde el POS, pendientes de cobrar.';
       case ReportCategory.empleados:
         return 'Productividad por empleado.';
       case ReportCategory.comision:
@@ -176,8 +176,8 @@ enum ReportCategory {
         return Icons.payments_outlined;
       case ReportCategory.pagos:
         return Icons.outbox_outlined;
-      case ReportCategory.ventasSuspendidas:
-        return Icons.pause_circle_outline;
+      case ReportCategory.ventasGuardadas:
+        return Icons.save_outlined;
       case ReportCategory.empleados:
         return Icons.badge_outlined;
       case ReportCategory.comision:
@@ -231,7 +231,7 @@ enum ReportCategory {
       case ReportCategory.liquidacion:
       case ReportCategory.cobros:
       case ReportCategory.pagos:
-      case ReportCategory.ventasSuspendidas:
+      case ReportCategory.ventasGuardadas:
         return ReportCategoryGroup.operativo;
       case ReportCategory.empleados:
       case ReportCategory.comision:

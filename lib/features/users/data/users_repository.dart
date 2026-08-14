@@ -283,6 +283,17 @@ class UsersRepository {
         'usuario o no pertenece a tu empresa.',
       );
     }
+
+    // El rol efectivo sale de `users_branches.role_override` cuando existe
+    // (ver shellAccessProfileProvider), y `create_employee_user` siempre lo
+    // escribe. Sin re-alinearlo, cambiar el rol del perfil no surte efecto.
+    // Solo se tocan los overrides ya existentes: no se inventan nuevos.
+    await _client
+        .from('users_branches')
+        .update({'role_override': input.role})
+        .eq('user_id', input.id)
+        .not('role_override', 'is', null)
+        .select('id');
   }
 
   /// Cambia el correo de un empleado vía RPC (toca auth.users con privilegios).
@@ -349,7 +360,7 @@ class UsersRepository {
   }
 
   Future<void> updateMembership(MembershipUpdateInput input) async {
-    await _client
+    final rows = await _client
         .from('users_branches')
         .update({
           'role_override': _nullIfEmpty(input.roleOverride),
@@ -358,35 +369,62 @@ class UsersRepository {
           'pos_pin_override': _nullIfEmpty(input.posPinOverride),
           'notes': _nullIfEmpty(input.notes),
         })
-        .eq('id', input.membershipId);
+        .eq('id', input.membershipId)
+        .select('id');
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'No se guardaron los cambios. No tienes permiso para modificar esta '
+        'asignación o no pertenece a tu empresa.',
+      );
+    }
   }
 
   Future<void> setMembershipActive({
     required String membershipId,
     required bool isActive,
   }) async {
-    await _client
+    final rows = await _client
         .from('users_branches')
         .update({'is_active': isActive})
-        .eq('id', membershipId);
+        .eq('id', membershipId)
+        .select('id');
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'No se pudo cambiar el estado. No tienes permiso para modificar esta '
+        'asignación o no pertenece a tu empresa.',
+      );
+    }
   }
 
   Future<void> setDefaultBranch({
     required String userId,
     required String branchId,
   }) async {
+    // Limpiar la marca anterior puede afectar 0 filas legítimamente (si el
+    // usuario aún no tenía sucursal por defecto), así que no se valida.
     await _client
         .from('users_branches')
         .update({'is_default': false})
         .eq('user_id', userId)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .select('id');
 
-    await _client
+    final rows = await _client
         .from('users_branches')
         .update({'is_default': true})
         .eq('user_id', userId)
         .eq('branch_id', branchId)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .select('id');
+
+    if (rows.isEmpty) {
+      throw Exception(
+        'No se pudo fijar la sucursal por defecto. No tienes permiso para '
+        'modificar esta asignación o no está activa.',
+      );
+    }
   }
 
   /// Invites a new employee via the `invite-employee` Supabase Edge Function.

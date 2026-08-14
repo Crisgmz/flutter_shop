@@ -33,7 +33,9 @@ class SalePrintSource {
     this.clientEmail,
     this.cashierName,
     this.ncf,
+    this.ncfValidUntil,
     this.notes,
+    this.invoiceFooterNote,
     this.payments = const <SalePrintPaymentSource>[],
     this.cashRegisterName,
     this.priceTierLabel,
@@ -67,7 +69,14 @@ class SalePrintSource {
   final String? clientEmail;
   final String? cashierName;
   final String? ncf;
+
+  /// Vencimiento de la secuencia NCF (se imprime bajo el NCF en el A4).
+  final DateTime? ncfValidUntil;
   final String? notes;
+
+  /// Nota legal al pie de la factura (junto a los totales, abajo a la
+  /// izquierda). Configurable por negocio.
+  final String? invoiceFooterNote;
   final List<SalePrintItemSource> items;
   final List<SalePrintPaymentSource> payments;
   final double subtotal;
@@ -113,6 +122,7 @@ class SalePrintItemSource {
     this.sku,
     this.unitLabel,
     this.notes,
+    this.lineDiscount = 0,
   });
 
   final String description;
@@ -124,6 +134,9 @@ class SalePrintItemSource {
   final String? sku;
   final String? unitLabel;
   final String? notes;
+
+  /// Descuento aplicado a la línea (monto). 0 = sin descuento.
+  final double lineDiscount;
 }
 
 class SalePrintPaymentSource {
@@ -142,6 +155,25 @@ class SalePrintDocumentAdapter {
   const SalePrintDocumentAdapter();
 
   PrintDocumentData toDocumentData(SalePrintSource source) {
+    // Una cuenta guardada se imprime sin NCF y sin pagos, con balance 0: hay
+    // que rotularla como tal para que no se confunda con una factura cobrada.
+    final isPending = source.status.trim().toLowerCase() == 'pending';
+
+    // Descuento del documento. Se prefiere la SUMA de los descuentos de línea
+    // (`sale_items.discount_amount`), que es el dato que siempre existe;
+    // `sales.discount_amount` solo lo trae desde las migraciones 76 y 77 y se
+    // usa como respaldo para documentos cuyas líneas no lo detallan.
+    final lineDiscounts = _round2(
+      source.items.fold<double>(0, (sum, item) => sum + item.lineDiscount),
+    );
+    final discount =
+        lineDiscounts > 0.0049 ? lineDiscounts : source.discountAmount;
+    // `subtotal` viene NETO de descuento (subtotal + ITBIS = total), así que
+    // imprimirlo junto a la fila "Descuento" descontaría dos veces en el
+    // papel. Se imprime el subtotal BRUTO para que el recibo cuadre:
+    // bruto − descuento + ITBIS = total.
+    final grossSubtotal = _round2(source.subtotal + discount);
+
     return PrintDocumentData(
       documentType: _documentTypeForSale(source),
       documentNumber: source.saleNumber,
@@ -158,13 +190,16 @@ class SalePrintDocumentAdapter {
         signatoryTitle: _nullIfBlank(source.signatoryTitle),
       ),
       customer: _customerForSale(source),
+      isPendingAccount: isPending,
       cashierName: _nullIfBlank(source.cashierName),
       cashRegisterName: _nullIfBlank(source.cashRegisterName),
       priceTierLabel: _nullIfBlank(source.priceTierLabel),
       changeAmount: source.changeAmount,
       showBarcode: source.showBarcode,
       receiptTypeLabel: _receiptTypeLabel(source.receiptType),
-      paymentTermsLabel: source.balanceDue > 0.0049 ? 'CRÉDITO' : 'CONTADO',
+      paymentTermsLabel: isPending
+          ? 'CUENTA GUARDADA'
+          : (source.balanceDue > 0.0049 ? 'CRÉDITO' : 'CONTADO'),
       // ITBIS solo si: el toggle de config está activo, NO es venta sin
       // comprobante, y al menos un ítem realmente lleva impuesto.
       showTax: source.showItbis &&
@@ -174,8 +209,12 @@ class SalePrintDocumentAdapter {
       ecf: source.ecf,
       observation: _nullIfBlank(source.observation),
       ncf: _nullIfBlank(source.ncf),
+      ncfValidUntil: source.ncfValidUntil,
       notes: _nullIfBlank(source.notes),
-      footerMessage: 'Gracias por su compra',
+      legalFooterText: _nullIfBlank(source.invoiceFooterNote),
+      footerMessage: isPending
+          ? 'Documento no fiscal — cuenta pendiente de cobro'
+          : 'Gracias por su compra',
       items: source.items
           .map(
             (item) => PrintDocumentItem(
@@ -185,6 +224,7 @@ class SalePrintDocumentAdapter {
               lineSubtotal: item.lineSubtotal,
               lineTax: item.lineTax,
               lineTotal: item.lineTotal,
+              lineDiscount: item.lineDiscount,
               sku: _nullIfBlank(item.sku),
               unitLabel: _nullIfBlank(item.unitLabel),
               notes: _nullIfBlank(item.notes),
@@ -201,8 +241,8 @@ class SalePrintDocumentAdapter {
           )
           .toList(growable: false),
       totals: PrintTotals(
-        subtotal: source.subtotal,
-        discount: source.discountAmount,
+        subtotal: grossSubtotal,
+        discount: discount,
         serviceCharge: source.serviceChargeAmount,
         tax: source.taxAmount,
         total: source.totalAmount,
@@ -285,3 +325,5 @@ String? _nullIfBlank(String? value) {
 }
 
 bool _hasText(String? value) => value != null && value.trim().isNotEmpty;
+
+double _round2(double value) => (value * 100).roundToDouble() / 100;

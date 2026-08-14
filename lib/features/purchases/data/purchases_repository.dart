@@ -151,6 +151,7 @@ class PurchaseCreateInput {
     this.purchaseCategory,
     this.expectedAt,
     this.paidAmount,
+    this.dueDate,
   });
 
   final String supplierId;
@@ -170,6 +171,10 @@ class PurchaseCreateInput {
   /// cuando `paymentStatus == 'partial'`. Para 'paid' se paga el total y para
   /// 'pending' se paga 0 (queda como cuenta por pagar).
   final double? paidAmount;
+
+  /// Fecha de vencimiento del saldo. Si queda en null y el proveedor no tiene
+  /// días de crédito pactados, la compra queda SIN fecha de vencimiento.
+  final DateTime? dueDate;
 }
 
 class PurchaseItemDetail {
@@ -216,6 +221,7 @@ class PurchaseDetail {
     this.purchaseCategory,
     this.expectedAt,
     this.notes,
+    this.dueDate,
   });
 
   final String id;
@@ -230,6 +236,9 @@ class PurchaseDetail {
   final String? purchaseCategory;
   final DateTime? expectedAt;
   final String? notes;
+
+  /// Vencimiento del saldo. `null` = sin fecha pactada.
+  final DateTime? dueDate;
   final double subtotal;
   final double taxAmount;
   final double totalAmount;
@@ -339,17 +348,21 @@ class PurchasesRepository {
     }
     final balanceDue = _round2(totalAmount - paidNow);
 
-    // Fecha de vencimiento: si queda saldo, la deriva de los días de crédito
-    // del proveedor (payment_terms_days). Si no tiene términos, vence el mismo
-    // día de la compra.
+    // Fecha de vencimiento: manda la que se eligió a mano; si no, se deriva de
+    // los días de crédito del proveedor (payment_terms_days). Si el proveedor
+    // no tiene plazo pactado, la compra queda SIN fecha de vencimiento — no se
+    // inventa la fecha de hoy, porque haría ver el saldo como "Vence hoy".
     String? dueDate;
     if (balanceDue > 0) {
-      final termsDays = await _supplierPaymentTermsDays(branchId, input.supplierId);
-      dueDate = input.purchaseDate
-          .add(Duration(days: termsDays))
-          .toIso8601String()
-          .split('T')
-          .first;
+      if (input.dueDate != null) {
+        dueDate = _dateOnly(input.dueDate!);
+      } else {
+        final termsDays =
+            await _supplierPaymentTermsDays(branchId, input.supplierId);
+        if (termsDays > 0) {
+          dueDate = _dateOnly(input.purchaseDate.add(Duration(days: termsDays)));
+        }
+      }
     }
 
     final purchaseNumber = _buildPurchaseNumber();
@@ -439,6 +452,12 @@ class PurchasesRepository {
           'tax_amount': taxAmount,
           'total_amount': totalAmount,
           'balance_due': balanceDue,
+          // Sin saldo no hay vencimiento; con saldo manda lo que se eligió a
+          // mano (null = sin fecha).
+          'due_date':
+              balanceDue <= 0 || input.dueDate == null
+                  ? null
+                  : _dateOnly(input.dueDate!),
         })
         .eq('id', purchaseId)
         .eq('branch_id', branchId)
@@ -484,7 +503,7 @@ class PurchasesRepository {
         .select(
           'id, supplier_id, purchase_number, invoice_number, ncf, purchase_date, '
           'status, payment_status, purchase_category, expected_at, notes, '
-          'subtotal, tax_amount, total_amount',
+          'subtotal, tax_amount, total_amount, due_date',
         )
         .eq('id', purchaseId)
         .eq('branch_id', branchId)
@@ -552,6 +571,9 @@ class PurchasesRepository {
       expectedAt: p['expected_at'] == null
           ? null
           : DateTime.tryParse(p['expected_at'].toString()),
+      dueDate: p['due_date'] == null
+          ? null
+          : DateTime.tryParse(p['due_date'].toString()),
       notes: p['notes']?.toString(),
       subtotal: _toDouble(p['subtotal']),
       taxAmount: _toDouble(p['tax_amount']),
@@ -687,6 +709,10 @@ class PurchasesRepository {
           .eq('branch_id', branchId);
     }
   }
+
+  /// `yyyy-MM-dd` para columnas `date` de Postgres.
+  String _dateOnly(DateTime value) =>
+      value.toIso8601String().split('T').first;
 
   /// Días de crédito configurados para el proveedor (0 si no tiene o falla).
   Future<int> _supplierPaymentTermsDays(

@@ -437,7 +437,7 @@ class _DueDateLabel extends StatelessWidget {
     final due = purchase.dueDate;
     if (due == null) {
       return const Text(
-        'Sin plazo',
+        'Sin fecha',
         style: TextStyle(color: AppTokens.mutedForeground, fontSize: 12),
       );
     }
@@ -512,8 +512,12 @@ class _PayableViewerDialog extends StatelessWidget {
               _kv('Fecha', formatDate(purchase.purchaseDate)),
               if (purchase.invoiceNumber != null)
                 _kv('Factura', purchase.invoiceNumber!),
-              if (purchase.dueDate != null)
-                _kv('Vence', formatDate(purchase.dueDate!)),
+              _kv(
+                'Vence',
+                purchase.dueDate == null
+                    ? 'Sin fecha'
+                    : formatDate(purchase.dueDate!),
+              ),
               _kv('Total', money(purchase.totalAmount), highlight: true),
               _kv('Pagado', money(purchase.paidAmount)),
               _kv('Saldo', money(purchase.balanceDue), danger: true),

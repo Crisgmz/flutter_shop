@@ -7,6 +7,7 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../data/sales_history_repository.dart';
 import 'sales_history_providers.dart';
@@ -46,11 +47,13 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
     final filter = ref.watch(salesHistoryFilterProvider);
     final pageIndex = ref.watch(salesHistoryPageIndexProvider);
     final pageAsync = ref.watch(salesHistoryPageProvider);
+    // La ganancia es información gerencial: el cajero NO la ve.
+    final canViewProfit = ref.watch(canViewProfitProvider);
 
     return ModulePage(
       title: 'Historial de ventas',
       description:
-          'Buscar, ver detalle, reimprimir o editar ventas anteriores.',
+          'Buscar, ver detalle, reimprimir o editar ventas y devoluciones.',
       actions: [
         OutlinedButton.icon(
           onPressed: () {
@@ -83,30 +86,50 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
               children: [
                 DataTableShell(
                   scrollable: false,
-                  title: 'Ventas',
+                  title: 'Ventas y devoluciones',
                   child: page.rows.isEmpty
                       ? const Padding(
                           padding: EdgeInsets.all(AppTokens.s20),
                           child: Text(
-                            'No hay ventas con esos filtros.',
+                            'No hay documentos con esos filtros.',
                             style: TextStyle(
                               color: AppTokens.mutedForeground,
                             ),
                           ),
                         )
                       : FlexTable(
-                          columns: const [
-                            FlexTableColumn(label: 'Fecha'),
-                            FlexTableColumn(label: 'Número', flex: 2),
-                            FlexTableColumn(label: 'Cliente', flex: 2),
-                            FlexTableColumn(label: 'NCF'),
-                            FlexTableColumn(label: 'Estado'),
-                            FlexTableColumn(label: 'Caja', flex: 2),
-                            FlexTableColumn(label: 'Cobro', flex: 2),
-                            FlexTableColumn(label: 'Total', numeric: true),
-                            FlexTableColumn(label: 'Ganancia', numeric: true),
-                            FlexTableColumn(label: 'Acción', flex: 2),
+                          // La columna Ganancia y su celda se agregan/quitan
+                          // JUNTAS: FlexTable exige el mismo conteo.
+                          columns: [
+                            const FlexTableColumn(label: 'Fecha'),
+                            const FlexTableColumn(label: 'Número', flex: 2),
+                            const FlexTableColumn(label: 'Cliente', flex: 2),
+                            const FlexTableColumn(label: 'NCF'),
+                            const FlexTableColumn(label: 'Estado'),
+                            const FlexTableColumn(label: 'Caja', flex: 2),
+                            const FlexTableColumn(label: 'Cobro', flex: 2),
+                            const FlexTableColumn(
+                              label: 'Total',
+                              numeric: true,
+                            ),
+                            if (canViewProfit)
+                              const FlexTableColumn(
+                                label: 'Ganancia',
+                                numeric: true,
+                              ),
+                            const FlexTableColumn(label: 'Acción', flex: 2),
                           ],
+                          // Las devoluciones se pintan con un rojo muy suave
+                          // para distinguirlas de un vistazo.
+                          rowColors: page.rows
+                              .map<Color?>(
+                                (row) => row.isReturn
+                                    ? AppTokens.destructive.withValues(
+                                        alpha: 0.06,
+                                      )
+                                    : null,
+                              )
+                              .toList(growable: false),
                           rows: page.rows
                               .map((row) => [
                                     Text(formatDate(row.saleDate)),
@@ -131,19 +154,23 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                         row.paymentMethod, row.status),
                                     Text(
                                       money(row.totalAmount),
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    Text(
-                                      money(row.profit),
                                       style: TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                        color: row.profit < 0
+                                        fontWeight: FontWeight.w700,
+                                        color: row.totalAmount < 0
                                             ? AppTokens.destructive
-                                            : AppTokens.success,
+                                            : null,
                                       ),
                                     ),
+                                    if (canViewProfit)
+                                      Text(
+                                        money(row.profit),
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          color: row.profit < 0
+                                              ? AppTokens.destructive
+                                              : AppTokens.success,
+                                        ),
+                                      ),
                                     _RowActions(row: row),
                                   ])
                               .toList(growable: false),
@@ -179,6 +206,8 @@ String _singleMethodLabel(String method) {
       return 'Otro';
     case 'credit':
       return 'Crédito';
+    case 'credit_note':
+      return 'Nota de crédito';
     case 'mixed':
       return 'Mixto';
     default:
@@ -237,7 +266,7 @@ class _FiltersBar extends StatelessWidget {
             onSubmitted: (v) => onChanged((f) => f.copyWith(search: v)),
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search, size: 18),
-              hintText: 'Número de venta o NCF',
+              hintText: 'Número de venta, NCF o IMEI',
               isDense: true,
               border: const OutlineInputBorder(),
               suffixIcon: filter.search.isEmpty
@@ -315,6 +344,7 @@ class _StatusFilter extends StatelessWidget {
     'completed': 'Pagadas',
     'credit': 'A crédito',
     'pending': 'Pendientes',
+    'returned': 'Devoluciones',
   };
 
   @override
@@ -410,6 +440,7 @@ class _StatusChip extends StatelessWidget {
       'credit' => ('Crédito', const Color(0xFFF59E0B)),
       'pending' => ('Pendiente', const Color(0xFF6B7280)),
       'voided' => ('Anulada', const Color(0xFFEF4444)),
+      'returned' => ('Devolución', AppTokens.destructive),
       _ => (status, AppTokens.mutedForeground),
     };
     return Container(
@@ -441,9 +472,21 @@ class _RowActions extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Cuentas GUARDADAS (pendientes): acciones propias — reabrir para cobrar o
-    // descartar (devuelve el stock reservado). No aplica reimprimir/editar/
-    // anular porque todavía no es una venta real.
+    // Devoluciones: no se editan ni se anulan (para revertirlas hay que hacer
+    // una venta nueva). Solo se puede ver el detalle. Tampoco se reimprimen:
+    // el preparador de impresión solo entiende la tabla `sales`.
+    if (row.isReturn) {
+      return IconButton(
+        tooltip: 'Ver detalle de la devolución',
+        icon: const Icon(Icons.visibility_outlined, size: 18),
+        visualDensity: VisualDensity.compact,
+        onPressed: () => _showDetail(context, ref, row),
+      );
+    }
+
+    // Cuentas GUARDADAS (pendientes): acciones propias — reabrir para cobrar,
+    // imprimir la cuenta o descartarla (devuelve el stock reservado). No
+    // aplica editar/anular porque todavía no es una venta real.
     if (row.status == 'pending') {
       return Wrap(
         spacing: 4,
@@ -452,7 +495,13 @@ class _RowActions extends ConsumerWidget {
             tooltip: 'Ver detalle',
             icon: const Icon(Icons.visibility_outlined, size: 18),
             visualDensity: VisualDensity.compact,
-            onPressed: () => _showDetail(context, ref, row.id),
+            onPressed: () => _showDetail(context, ref, row),
+          ),
+          IconButton(
+            tooltip: 'Imprimir cuenta guardada',
+            icon: const Icon(Icons.print_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _reprint(context, ref, row.id, allowPending: true),
           ),
           FilledButton.icon(
             style: FilledButton.styleFrom(
@@ -485,7 +534,7 @@ class _RowActions extends ConsumerWidget {
           tooltip: 'Ver detalle',
           icon: const Icon(Icons.visibility_outlined, size: 18),
           visualDensity: VisualDensity.compact,
-          onPressed: () => _showDetail(context, ref, row.id),
+          onPressed: () => _showDetail(context, ref, row),
         ),
         IconButton(
           tooltip: 'Reimprimir',
@@ -661,23 +710,26 @@ class _RowActions extends ConsumerWidget {
   Future<void> _showDetail(
     BuildContext context,
     WidgetRef ref,
-    String saleId,
+    SalesHistoryRow row,
   ) async {
     await showDialog(
       context: context,
-      builder: (_) => _SaleDetailDialog(saleId: saleId),
+      builder: (_) =>
+          _SaleDetailDialog(docId: row.id, isReturn: row.isReturn),
     );
   }
 
   Future<void> _reprint(
     BuildContext context,
     WidgetRef ref,
-    String saleId,
-  ) async {
+    String saleId, {
+    bool allowPending = false,
+  }) async {
     try {
       final salesRepo = ref.read(salesRepositoryProvider);
       final job = await salesRepo.prepareCompletedSalePrintJob(
         saleId: saleId,
+        allowPending: allowPending,
       );
       if (!context.mounted) return;
       if (job == null) {
@@ -732,15 +784,18 @@ class _RowActions extends ConsumerWidget {
 // ─────────────────────────────────────────────────────────────────────────
 
 class _SaleDetailDialog extends ConsumerWidget {
-  const _SaleDetailDialog({required this.saleId});
+  const _SaleDetailDialog({required this.docId, this.isReturn = false});
 
-  final String saleId;
+  final String docId;
+  final bool isReturn;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(salesHistoryDetailProvider(saleId));
+    final detailAsync = ref.watch(
+      salesHistoryDetailProvider((id: docId, isReturn: isReturn)),
+    );
     return AlertDialog(
-      title: const Text('Detalle de venta'),
+      title: Text(isReturn ? 'Detalle de devolución' : 'Detalle de venta'),
       content: SizedBox(
         width: 640,
         child: detailAsync.when(
@@ -750,7 +805,13 @@ class _SaleDetailDialog extends ConsumerWidget {
           ),
           error: (e, _) => Text('Error: $e'),
           data: (detail) {
-            if (detail == null) return const Text('Venta no encontrada.');
+            if (detail == null) {
+              return Text(
+                isReturn
+                    ? 'Devolución no encontrada.'
+                    : 'Venta no encontrada.',
+              );
+            }
             return SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -763,6 +824,11 @@ class _SaleDetailDialog extends ConsumerWidget {
                   ),
                   if (detail.sale.ncf != null)
                     _DetailKv('NCF', detail.sale.ncf!),
+                  if (isReturn && detail.paymentMethod != null)
+                    _DetailKv(
+                      'Reembolso',
+                      _singleMethodLabel(detail.paymentMethod!),
+                    ),
                   if (detail.sale.notes != null)
                     _DetailKv('Notas', detail.sale.notes!),
                   const Divider(height: 24),
@@ -801,16 +867,21 @@ class _SaleDetailDialog extends ConsumerWidget {
                         Text('ITBIS: ${money(detail.taxAmount)}'),
                         const SizedBox(height: 4),
                         Text(
-                          'Total: ${money(detail.sale.totalAmount)}',
-                          style: const TextStyle(
+                          isReturn
+                              ? 'Total devuelto: '
+                                    '${money(detail.sale.totalAmount)}'
+                              : 'Total: ${money(detail.sale.totalAmount)}',
+                          style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w900,
+                            color: isReturn ? AppTokens.destructive : null,
                           ),
                         ),
-                        Text(
-                          'Pagado: ${money(detail.sale.paidAmount)}',
-                          style: const TextStyle(fontSize: 12),
-                        ),
+                        if (!isReturn)
+                          Text(
+                            'Pagado: ${money(detail.sale.paidAmount)}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
                         if (detail.sale.balanceDue > 0)
                           Text(
                             'Pendiente: ${money(detail.sale.balanceDue)}',

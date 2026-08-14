@@ -28,6 +28,10 @@ class QuotePrintSource {
     this.clientPhone,
     this.clientEmail,
     this.notes,
+    this.quoteTerms,
+    this.receiptTypeLabel,
+    this.ncf,
+    this.ncfValidUntil,
     this.showItbis = true,
     this.qrBytes,
   });
@@ -54,6 +58,16 @@ class QuotePrintSource {
   final String? clientPhone;
   final String? clientEmail;
   final String? notes;
+
+  /// Términos y condiciones de la cotización (texto legal al pie, junto a los
+  /// totales). Configurable por negocio.
+  final String? quoteTerms;
+
+  /// Etiqueta del comprobante cuando la cotización se emite con NCF
+  /// reservado. Si es null se imprime "Cotización".
+  final String? receiptTypeLabel;
+  final String? ncf;
+  final DateTime? ncfValidUntil;
   final bool showItbis;
   final List<int>? qrBytes;
   final List<QuotePrintItemSource> items;
@@ -71,6 +85,8 @@ class QuotePrintItemSource {
     required this.lineTax,
     required this.lineTotal,
     this.sku,
+    this.notes,
+    this.lineDiscount = 0,
   });
 
   final String description;
@@ -80,12 +96,27 @@ class QuotePrintItemSource {
   final double lineTax;
   final double lineTotal;
   final String? sku;
+
+  /// Nota libre de la línea (se imprime bajo la descripción).
+  final String? notes;
+
+  /// Descuento aplicado a la línea (monto). 0 = sin descuento.
+  final double lineDiscount;
 }
 
 class QuotePrintDocumentAdapter {
   const QuotePrintDocumentAdapter();
 
   PrintDocumentData toDocumentData(QuotePrintSource source) {
+    // Mismo criterio que el recibo de venta: `quotations.subtotal` es la suma
+    // de los `line_subtotal`, o sea que ya viene NETA de descuento. Para poder
+    // mostrar la fila "Descuento" sin restar dos veces se imprime el subtotal
+    // BRUTO: bruto − descuento + ITBIS = total.
+    final discount = _round2(
+      source.items.fold<double>(0, (sum, item) => sum + item.lineDiscount),
+    );
+    final grossSubtotal = _round2(source.subtotal + discount);
+
     return PrintDocumentData(
       documentType: PrintDocumentType.quote,
       documentNumber: source.quoteCode,
@@ -108,7 +139,9 @@ class QuotePrintDocumentAdapter {
         phone: _nullIfBlank(source.clientPhone),
         email: _nullIfBlank(source.clientEmail),
       ),
-      receiptTypeLabel: 'Cotización',
+      receiptTypeLabel: _nullIfBlank(source.receiptTypeLabel) ?? 'Cotización',
+      ncf: _nullIfBlank(source.ncf),
+      ncfValidUntil: source.ncfValidUntil,
       paymentTermsLabel: 'CONTADO',
       showTax: source.showItbis &&
           source.items.any((i) => i.lineTax > 0.0049),
@@ -116,6 +149,7 @@ class QuotePrintDocumentAdapter {
       observation: _nullIfBlank(source.observation),
       referenceNumber: 'Vigencia: ${_dateLabel(source.validUntil)}',
       notes: _nullIfBlank(source.notes),
+      legalFooterText: _nullIfBlank(source.quoteTerms),
       footerMessage: 'Gracias por su preferencia',
       items: source.items
           .map(
@@ -126,13 +160,16 @@ class QuotePrintDocumentAdapter {
               lineSubtotal: item.lineSubtotal,
               lineTax: item.lineTax,
               lineTotal: item.lineTotal,
+              lineDiscount: item.lineDiscount,
               sku: _nullIfBlank(item.sku),
+              notes: _nullIfBlank(item.notes),
             ),
           )
           .toList(growable: false),
       payments: const [],
       totals: PrintTotals(
-        subtotal: source.subtotal,
+        subtotal: grossSubtotal,
+        discount: discount,
         tax: source.taxAmount,
         total: source.totalAmount,
       ),
@@ -157,3 +194,5 @@ String? _nullIfBlank(String? value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+double _round2(double value) => (value * 100).roundToDouble() / 100;

@@ -136,7 +136,10 @@ function nextAttemptAt(attemptsAfterIncrement: number): string {
 // está denormalizado en sale_items (line_tax + tax_rate) y no existe un flag
 // por impuesto, así que TODO line_tax > 0 se considera ITBIS declarable
 // (simplificación: no hay propinas legales ni impuestos no-ITBIS por línea).
-// Base gravada por línea = line_subtotal - discount_amount.
+// Base gravada por línea = line_subtotal, que YA viene neto de descuento: el
+// RPC de checkout calcula neto = bruto - descuento y de ahí deriva
+// line_subtotal (ver migraciones 76 y 77). Restarle otra vez discount_amount
+// declararía a la DGII una base menor que la real.
 function computeEcfBreakdown(items: SaleItem[]): EcfTaxBreakdown | null {
   if (items.length === 0) return null
 
@@ -148,7 +151,7 @@ function computeEcfBreakdown(items: SaleItem[]): EcfTaxBreakdown | null {
   for (const it of items) {
     const tax = Number(it.line_tax ?? 0)
     if (tax <= 0) continue
-    const base = Math.max(0, Number(it.line_subtotal ?? 0) - Number(it.discount_amount ?? 0))
+    const base = Math.max(0, Number(it.line_subtotal ?? 0))
     const rate = Number(it.tax_rate ?? 0)
     itbisAmount += tax
     taxableAmount += base
@@ -219,9 +222,13 @@ function buildAlanubePayload(
         const qty = Number(it.quantity ?? 1)
         const unitPrice = Number(it.unit_price ?? 0)
         // itemAmount = base neta de descuento, para que la suma de líneas
-        // cuadre con totalTaxedAmount/exemptAmount del breakdown.
-        const gross = Number(it.line_subtotal ?? qty * unitPrice)
-        const itemAmount = Math.max(0, gross - Number(it.discount_amount ?? 0))
+        // cuadre con totalTaxedAmount/exemptAmount del breakdown. `line_subtotal`
+        // YA viene neto (el RPC descuenta antes de calcularlo): no se resta
+        // discount_amount otra vez.
+        const itemAmount = Math.max(
+          0,
+          Number(it.line_subtotal ?? qty * unitPrice - Number(it.discount_amount ?? 0)),
+        )
         return {
           lineNumber: idx + 1,
           billingIndicator: billingIndicatorFromTaxRate(it.tax_rate),

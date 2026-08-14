@@ -88,11 +88,21 @@ final outgoingPaymentsReportProvider =
   return repo.fetchOutgoingPayments(from: range.from, to: range.to);
 });
 
-final suspendedSalesReportProvider =
-    FutureProvider.autoDispose<List<SuspendedSaleRow>>((ref) async {
+/// ¿El reporte de ventas guardadas respeta el rango de fechas global?
+///
+/// Apagado por defecto: una cuenta guardada es un objeto abierto y la que se
+/// guardó el mes pasado y sigue sin cobrar es justo la que hay que ver.
+final savedSalesUseDateRangeProvider = StateProvider<bool>((ref) => false);
+
+final savedSalesReportProvider =
+    FutureProvider.autoDispose<SavedSalesResult>((ref) async {
   final repo = ref.watch(reportsRepositoryProvider);
+  final useRange = ref.watch(savedSalesUseDateRangeProvider);
+  if (!useRange) {
+    return repo.fetchSavedSales();
+  }
   final range = ref.watch(reportDateRangeProvider);
-  return repo.fetchSuspendedSales(from: range.from, to: range.to);
+  return repo.fetchSavedSales(from: range.from, to: range.to);
 });
 
 /// Liquidación operativa (reusa el closeout del dashboard para el último día

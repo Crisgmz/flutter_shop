@@ -12,6 +12,7 @@ class SalesHistoryRow {
     required this.paidAmount,
     required this.balanceDue,
     required this.itemsCount,
+    this.entryKind = 'sale',
     this.ncf,
     this.clientId,
     this.clientName,
@@ -33,6 +34,12 @@ class SalesHistoryRow {
   final double paidAmount;
   final double balanceDue;
   final int itemsCount;
+
+  /// `'sale'` o `'return'` — de qué tabla viene la fila en la vista
+  /// `public.sales_history_entries`. Las devoluciones traen los montos ya
+  /// negados desde la vista.
+  final String entryKind;
+
   final String? ncf;
   final String? clientId;
   final String? clientName;
@@ -43,14 +50,20 @@ class SalesHistoryRow {
   final String? notes;
   final DateTime? dueDate;
 
+  bool get isReturn => entryKind == 'return';
+
   factory SalesHistoryRow.fromMap(Map<String, dynamic> map) {
     final rawDue = map['due_date']?.toString();
+    // `doc_number`/`doc_date` vienen de la vista unificada; `sale_number`/
+    // `sale_date` de las consultas directas a `sales` (detalle).
+    final number = map['doc_number'] ?? map['sale_number'];
+    final date = map['doc_date'] ?? map['sale_date'];
     return SalesHistoryRow(
       id: (map['id'] ?? '').toString(),
       branchId: (map['branch_id'] ?? '').toString(),
-      saleNumber: (map['sale_number'] ?? '-').toString(),
+      saleNumber: (number ?? '-').toString(),
       saleDate:
-          DateTime.tryParse((map['sale_date'] ?? '').toString()) ??
+          DateTime.tryParse((date ?? '').toString()) ??
           DateTime.fromMillisecondsSinceEpoch(0),
       status: (map['status'] ?? '').toString(),
       receiptType: (map['receipt_type'] ?? '').toString(),
@@ -58,6 +71,7 @@ class SalesHistoryRow {
       paidAmount: _d(map['paid_amount']),
       balanceDue: _d(map['balance_due']),
       itemsCount: _i(map['items_count']),
+      entryKind: (map['entry_kind'] ?? 'sale').toString(),
       ncf: _s(map['ncf']),
       clientId: _s(map['client_id']),
       clientName: _s(map['client_name']),
@@ -121,7 +135,11 @@ class SalesHistoryRepository {
   /// Tamaño de página estándar para la lista de ventas anteriores.
   static const pageSize = 25;
 
-  /// Trae una página de ventas con filtros + cantidad de items por venta.
+  /// Trae una página del historial UNIFICADO (ventas + devoluciones) desde la
+  /// vista `public.sales_history_entries`, con filtros y enriquecimiento
+  /// (conteo de líneas, cliente, cajero, caja, ganancia, método de cobro).
+  ///
+  /// Las filas de devolución llegan con los montos ya NEGADOS desde la vista.
   Future<SalesHistoryPage> fetchPage({
     required int pageIndex,
     SalesHistoryFilter filter = const SalesHistoryFilter(),
@@ -138,18 +156,19 @@ class SalesHistoryRepository {
     final to = from + pageSize; // pedimos 1 extra para saber si hay más
 
     var query = _client
-        .from('sales')
+        .from('sales_history_entries')
         .select(
-          'id, branch_id, sale_number, sale_date, status, receipt_type, '
-          'ncf, subtotal, total_amount, paid_amount, balance_due, due_date, '
-          'client_id, cashier_id, cash_session_id, notes',
+          'entry_kind, id, branch_id, doc_number, doc_date, status, '
+          'receipt_type, ncf, subtotal, tax_amount, total_amount, '
+          'paid_amount, balance_due, due_date, client_id, cashier_id, '
+          'cash_session_id, notes, refund_method',
         )
         .eq('branch_id', branchId);
     // Nota: las ventas anuladas (voided) SÍ se incluyen — deben quedar en el
     // historial marcadas como "Anulada", no desaparecer.
 
     if (filter.from != null) {
-      query = query.gte('sale_date', filter.from!.toIso8601String());
+      query = query.gte('doc_date', filter.from!.toIso8601String());
     }
     if (filter.to != null) {
       // incluir todo el día
@@ -161,21 +180,30 @@ class SalesHistoryRepository {
         59,
         59,
       );
-      query = query.lte('sale_date', endOfDay.toIso8601String());
+      query = query.lte('doc_date', endOfDay.toIso8601String());
     }
     if (filter.statuses.isNotEmpty) {
       query = query.inFilter('status', filter.statuses);
     }
     final search = filter.search.trim();
     if (search.isNotEmpty) {
-      // sale_number o ncf
-      query = query.or(
-        'sale_number.ilike.%$search%,ncf.ilike.%$search%',
-      );
+      // Número de documento, NCF o IMEI. Si el texto parece un IMEI (6+
+      // caracteres) resolvemos primero IMEI → ids y los sumamos al OR.
+      final conditions = <String>[
+        'doc_number.ilike.%$search%',
+        'ncf.ilike.%$search%',
+      ];
+      if (search.length >= 6) {
+        final ids = await _resolveIdsByImei(branchId, search);
+        if (ids.isNotEmpty) {
+          conditions.add('id.in.(${ids.join(",")})');
+        }
+      }
+      query = query.or(conditions.join(','));
     }
 
     final rows = await query
-        .order('sale_date', ascending: false)
+        .order('doc_date', ascending: false)
         .range(from, to);
 
     final list = rows
@@ -185,11 +213,33 @@ class SalesHistoryRepository {
     final hasMore = list.length > pageSize;
     final page = hasMore ? list.sublist(0, pageSize) : list;
 
-    // Conteo de items por venta — una sola query con IN.
-    final saleIds = page.map((m) => (m['id'] ?? '').toString()).toList();
-    final itemsCount = await _loadItemsCount(branchId, saleIds);
+    bool isReturnRow(Map<String, dynamic> m) =>
+        (m['entry_kind'] ?? 'sale').toString() == 'return';
 
-    // Caja (registro) que hizo cada venta, ganancia y método de cobro.
+    final saleIds = page
+        .where((m) => !isReturnRow(m))
+        .map((m) => (m['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    final returnIds = page
+        .where(isReturnRow)
+        .map((m) => (m['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    // Conteo de líneas: las ventas viven en sale_items, las devoluciones en
+    // return_items. Una query por tabla.
+    final itemsCount = <String, int>{
+      ...await _loadLineCounts('sale_items', 'sale_id', branchId, saleIds),
+      ...await _loadLineCounts(
+        'return_items',
+        'return_id',
+        branchId,
+        returnIds,
+      ),
+    };
+
+    // Caja (registro) que hizo cada documento, ganancia y método de cobro.
     final sessionIds = page
         .map((m) => m['cash_session_id']?.toString())
         .whereType<String>()
@@ -197,11 +247,15 @@ class SalesHistoryRepository {
         .toSet()
         .toList(growable: false);
     final registerBySession = await _loadRegisterNames(sessionIds);
-    final cogsBySale = await _loadCogsBySale(branchId, saleIds);
+    final cogsById = <String, double>{
+      ...await _loadCogs('sale_items', 'sale_id', branchId, saleIds),
+      ...await _loadCogs('return_items', 'return_id', branchId, returnIds),
+    };
     final methodBySale = await _loadPaymentMethods(branchId, saleIds);
 
     final result = page.map((m) {
       final id = (m['id'] ?? '').toString();
+      final isReturn = isReturnRow(m);
       final clientId = m['client_id']?.toString();
       final cashierId = m['cashier_id']?.toString();
       final sessionId = m['cash_session_id']?.toString();
@@ -212,12 +266,47 @@ class SalesHistoryRepository {
           cashierId == null ? null : cashiersById[cashierId];
       m['cash_register_name'] =
           sessionId == null ? null : registerBySession[sessionId];
-      m['profit'] = _d(m['subtotal']) - (cogsBySale[id] ?? 0);
-      m['payment_method'] = methodBySale[id];
+      // Venta: ganancia = subtotal − COGS. Devolución: el subtotal ya viene
+      // NEGADO desde la vista, así que sumar el costo devuelto deja la
+      // ganancia en negativo (que es lo correcto: se revierte la utilidad).
+      final cogs = cogsById[id] ?? 0;
+      final subtotal = _d(m['subtotal']);
+      m['profit'] = isReturn ? subtotal + cogs : subtotal - cogs;
+      // En una devolución el "cobro" es por dónde salió el reembolso.
+      m['payment_method'] =
+          isReturn ? _s(m['refund_method']) : methodBySale[id];
       return SalesHistoryRow.fromMap(m);
     }).toList(growable: false);
 
     return SalesHistoryPage(rows: result, hasMore: hasMore);
+  }
+
+  /// Ids (de venta y de devolución) que contienen un IMEI dado. Usa los índices
+  /// GIN `sale_items_imeis_gin` / `return_items_imeis_gin`.
+  Future<List<String>> _resolveIdsByImei(String branchId, String imei) async {
+    final ids = <String>{};
+
+    final saleRows = await _client
+        .from('sale_items')
+        .select('sale_id')
+        .eq('branch_id', branchId)
+        .contains('imeis', [imei]);
+    for (final raw in saleRows) {
+      final id = (raw as Map)['sale_id']?.toString();
+      if (id != null && id.isNotEmpty) ids.add(id);
+    }
+
+    final returnRows = await _client
+        .from('return_items')
+        .select('return_id')
+        .eq('branch_id', branchId)
+        .contains('imeis', [imei]);
+    for (final raw in returnRows) {
+      final id = (raw as Map)['return_id']?.toString();
+      if (id != null && id.isNotEmpty) ids.add(id);
+    }
+
+    return ids.toList(growable: false);
   }
 
   /// Edita la venta completa: reemplaza items, ajusta stock y recalcula
@@ -225,7 +314,17 @@ class SalesHistoryRepository {
   /// sola transacción del backend.
   ///
   /// `items` debe ser una lista de mapas con: product_id, description,
-  /// quantity, unit_price, discount_pct.
+  /// quantity, unit_price, `discount_amount` e `imeis`.
+  ///
+  /// El descuento viaja en MONTO, igual que en checkout/hold (migraciones 76 y
+  /// 77). El RPC todavía acepta `discount_pct` como fallback, pero mandarlo
+  /// desde aquí perdía plata: en productos con ITBIS incluido el porcentaje
+  /// reconstruido leía el impuesto como descuento y bajaba el total al guardar.
+  ///
+  /// `imeis` NO es opcional en la práctica: el RPC devuelve al inventario los
+  /// IMEIs de las líneas viejas antes de borrarlas y solo los vuelve a sacar
+  /// si el payload nuevo los trae. Si se omiten, los equipos ya entregados
+  /// quedan disponibles y se pueden vender a un segundo cliente.
   Future<SalesEditResult> editSale({
     required String saleId,
     required List<Map<String, dynamic>> items,
@@ -320,7 +419,11 @@ class SalesHistoryRepository {
         .from('sale_items')
         .select(
           'id, product_id, description, quantity, unit_price, '
-          'discount_amount, tax_rate, line_subtotal, line_tax, line_total',
+          'discount_amount, tax_rate, line_subtotal, line_tax, line_total, '
+          // Los IMEIs de la línea son obligatorios al editar: el RPC los
+          // devuelve al inventario y solo los vuelve a sacar si el payload
+          // nuevo los trae. Sin esta columna la edición libera los equipos.
+          'imeis',
         )
         .eq('sale_id', saleId)
         .order('created_at');
@@ -369,6 +472,77 @@ class SalesHistoryRepository {
     );
   }
 
+  /// Detalle de una DEVOLUCIÓN con sus líneas, para el mismo visor del
+  /// historial. Los montos se devuelven en positivo (es lo que se reintegró);
+  /// la fila del listado es la que los muestra negados.
+  Future<SalesHistoryDetail?> fetchReturnDetail(String returnId) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return null;
+
+    final rows = await _client
+        .from('returns')
+        .select(
+          'id, branch_id, return_number, return_date, client_id, cashier_id, '
+          'notes, subtotal, tax_amount, total_amount, refund_method',
+        )
+        .eq('id', returnId)
+        .eq('branch_id', branchId)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    final ret = Map<String, dynamic>.from(rows.first as Map);
+
+    final itemRows = await _client
+        .from('return_items')
+        .select(
+          'id, product_id, description, quantity, unit_price, tax_rate, '
+          'line_subtotal, line_tax, line_total, imeis',
+        )
+        .eq('branch_id', branchId)
+        .eq('return_id', returnId)
+        .order('created_at');
+
+    final clientId = ret['client_id']?.toString();
+    String? clientName;
+    if (clientId != null && clientId.isNotEmpty) {
+      final clientRows = await _client
+          .from('clients')
+          .select('full_name')
+          .eq('id', clientId)
+          .limit(1);
+      if (clientRows.isNotEmpty) {
+        clientName = (clientRows.first as Map)['full_name']?.toString();
+      }
+    }
+
+    final total = _d(ret['total_amount']);
+    return SalesHistoryDetail(
+      sale: SalesHistoryRow.fromMap({
+        'entry_kind': 'return',
+        'id': ret['id'],
+        'branch_id': ret['branch_id'],
+        'doc_number': ret['return_number'],
+        'doc_date': ret['return_date'],
+        'status': 'returned',
+        'receipt_type': null,
+        'total_amount': total,
+        'paid_amount': total,
+        'balance_due': 0,
+        'client_id': clientId,
+        'client_name': clientName,
+        'notes': ret['notes'],
+        'items_count': itemRows.length,
+      }),
+      items: itemRows
+          .map((row) => SalesHistoryItem.fromMap(
+                Map<String, dynamic>.from(row as Map),
+              ))
+          .toList(growable: false),
+      subtotal: _d(ret['subtotal']),
+      taxAmount: _d(ret['tax_amount']),
+      paymentMethod: _s(ret['refund_method']),
+    );
+  }
+
   /// Cambia el método de pago de todos los `payments` de una venta.
   /// Llama al RPC `update_sale_payment_method` que valida acceso y rol.
   Future<int> updateSalePaymentMethod({
@@ -386,21 +560,26 @@ class SalesHistoryRepository {
     return int.tryParse(result?.toString() ?? '') ?? 0;
   }
 
-  Future<Map<String, int>> _loadItemsCount(
+  /// Cantidad de líneas por documento. Sirve igual para `sale_items`
+  /// (`sale_id`) que para `return_items` (`return_id`).
+  Future<Map<String, int>> _loadLineCounts(
+    String table,
+    String idColumn,
     String branchId,
-    List<String> saleIds,
+    List<String> ids,
   ) async {
-    if (saleIds.isEmpty) return const {};
+    if (ids.isEmpty) return const {};
     final rows = await _client
-        .from('sale_items')
-        .select('sale_id')
+        .from(table)
+        .select(idColumn)
         .eq('branch_id', branchId)
-        .inFilter('sale_id', saleIds);
+        .inFilter(idColumn, ids);
 
     final counts = <String, int>{};
     for (final row in rows) {
-      final sid = ((row as Map)['sale_id'] ?? '').toString();
-      counts[sid] = (counts[sid] ?? 0) + 1;
+      final key = ((row as Map)[idColumn] ?? '').toString();
+      if (key.isEmpty) continue;
+      counts[key] = (counts[key] ?? 0) + 1;
     }
     return counts;
   }
@@ -428,19 +607,22 @@ class SalesHistoryRepository {
     return result;
   }
 
-  /// COGS (costo de lo vendido) por venta = Σ(cantidad × costo del producto).
-  /// La ganancia se calcula luego como subtotal - COGS, igual que las vistas
-  /// de márgenes del sistema.
-  Future<Map<String, double>> _loadCogsBySale(
+  /// COGS (costo de lo vendido / devuelto) por documento =
+  /// Σ(cantidad × costo del producto). Sirve para `sale_items` (`sale_id`) y
+  /// para `return_items` (`return_id`). La ganancia se calcula luego como
+  /// subtotal − COGS, igual que las vistas de márgenes del sistema.
+  Future<Map<String, double>> _loadCogs(
+    String table,
+    String idColumn,
     String branchId,
-    List<String> saleIds,
+    List<String> ids,
   ) async {
-    if (saleIds.isEmpty) return const {};
+    if (ids.isEmpty) return const {};
     final items = await _client
-        .from('sale_items')
-        .select('sale_id, product_id, quantity')
+        .from(table)
+        .select('$idColumn, product_id, quantity')
         .eq('branch_id', branchId)
-        .inFilter('sale_id', saleIds);
+        .inFilter(idColumn, ids);
 
     final productIds = <String>{};
     for (final raw in items) {
@@ -464,11 +646,11 @@ class SalesHistoryRepository {
     final cogs = <String, double>{};
     for (final raw in items) {
       final row = Map<String, dynamic>.from(raw as Map);
-      final sid = row['sale_id']?.toString();
-      if (sid == null) continue;
+      final key = row[idColumn]?.toString();
+      if (key == null || key.isEmpty) continue;
       final qty = _d(row['quantity']);
       final cost = productCosts[row['product_id']?.toString()] ?? 0;
-      cogs[sid] = (cogs[sid] ?? 0) + qty * cost;
+      cogs[key] = (cogs[key] ?? 0) + qty * cost;
     }
     return cogs;
   }
@@ -581,6 +763,8 @@ class SalesHistoryItem {
     required this.lineSubtotal,
     required this.lineTax,
     required this.lineTotal,
+    this.discountAmount = 0,
+    this.imeis = const <String>[],
   });
 
   final String id;
@@ -589,9 +773,19 @@ class SalesHistoryItem {
   final double quantity;
   final double unitPrice;
   final double taxRate;
+
+  /// Descuento de la línea en MONTO (no porcentaje), tal como lo guardó el
+  /// backend. Es el dato que se reenvía al editar: reconstruir un porcentaje
+  /// desde `line_subtotal` leía el ITBIS incluido como si fuera descuento.
+  final double discountAmount;
+
   final double lineSubtotal;
   final double lineTax;
   final double lineTotal;
+
+  /// Equipos serializados que salieron en esta línea. Si no está vacío, la
+  /// cantidad de la línea equivale a la cantidad de IMEIs.
+  final List<String> imeis;
 
   factory SalesHistoryItem.fromMap(Map<String, dynamic> map) {
     return SalesHistoryItem(
@@ -601,11 +795,22 @@ class SalesHistoryItem {
       quantity: _d(map['quantity']),
       unitPrice: _d(map['unit_price']),
       taxRate: _d(map['tax_rate']),
+      discountAmount: _d(map['discount_amount']),
       lineSubtotal: _d(map['line_subtotal']),
       lineTax: _d(map['line_tax']),
       lineTotal: _d(map['line_total']),
+      imeis: _strList(map['imeis']),
     );
   }
+}
+
+/// Lista de textos no vacíos de una columna `text[]` de PostgREST.
+List<String> _strList(dynamic v) {
+  if (v is! List) return const <String>[];
+  return v
+      .map((e) => e.toString().trim())
+      .where((e) => e.isNotEmpty)
+      .toList(growable: false);
 }
 
 double _d(dynamic v) {

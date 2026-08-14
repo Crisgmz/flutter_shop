@@ -22,7 +22,6 @@ import '../features/purchases/presentation/purchases_page.dart';
 import '../features/quotations/presentation/quotation_create_page.dart';
 import '../features/quotations/presentation/quotations_page.dart';
 import '../features/reports/presentation/reports_page.dart';
-import '../features/returns/presentation/returns_page.dart';
 import '../features/sales/presentation/sales_edit_page.dart';
 import '../features/sales/presentation/sales_entry_page.dart';
 import '../features/sales/presentation/sales_history_page.dart';
@@ -127,7 +126,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               ),
             ],
           ),
-          _simpleBranch('/devoluciones', const ReturnsPage()),
           // Cotizaciones + nueva + edición
           StatefulShellBranch(
             routes: [

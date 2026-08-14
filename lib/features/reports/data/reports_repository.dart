@@ -272,6 +272,11 @@ class ReportsRepository {
 
   final SupabaseClient _client;
 
+  /// Techo de filas para "Ventas guardadas". Como el reporte por defecto no
+  /// filtra por fecha, este límite es el techo real: si se alcanza, la UI
+  /// avisa en vez de truncar en silencio.
+  static const int savedSalesLimit = 500;
+
   Future<ReportsData> fetchReports(ReportPeriod period) async {
     final branchId = await _currentBranchId();
 
@@ -606,34 +611,149 @@ class ReportsRepository {
     return out;
   }
 
-  /// Ventas suspendidas / cuentas abiertas en el rango.
-  Future<List<SuspendedSaleRow>> fetchSuspendedSales({
-    required DateTime from,
-    required DateTime to,
+  /// Cuentas guardadas desde el POS (status `pending`).
+  ///
+  /// `from`/`to` son OPCIONALES a propósito: una cuenta guardada es un objeto
+  /// abierto, y la que se guardó el mes pasado y sigue sin cobrar es
+  /// justamente la que hay que ver. Por defecto no se filtra por fecha.
+  ///
+  /// No usa el embed `clients(full_name)`: el FK sales→clients es compuesto
+  /// (client_id, branch_id) y PostgREST puede devolverlo como lista o fallar
+  /// con PGRST200. Los nombres se resuelven con consultas aparte.
+  Future<SavedSalesResult> fetchSavedSales({
+    DateTime? from,
+    DateTime? to,
+    int limit = savedSalesLimit,
   }) async {
     final branchId = await _currentBranchId();
-    if (branchId == null) return const [];
+    if (branchId == null) {
+      return SavedSalesResult(
+        rows: const [],
+        limit: limit,
+        limitReached: false,
+      );
+    }
 
-    final fromIso = _localStartOfDayUtcIso(from);
-    final toIso = _localEndOfDayUtcIso(to);
-
-    final rows = await _client
+    var query = _client
         .from('sales')
         .select(
-          'id, sale_number, client_id, status, sale_date, total_amount, '
-          'clients(full_name)',
+          'id, sale_number, client_id, cashier_id, status, sale_date, '
+          'total_amount, notes',
         )
         .eq('branch_id', branchId)
-        .or('status.eq.pending,status.eq.draft')
-        .gte('sale_date', fromIso)
-        .lte('sale_date', toIso)
-        .order('sale_date', ascending: false);
+        // El POS sólo crea 'pending' (hold_sale_transactional). Nunca 'draft'.
+        .eq('status', 'pending');
 
-    return rows
-        .map((item) => SuspendedSaleRow.fromMap(
-              Map<String, dynamic>.from(item as Map),
-            ))
+    if (from != null) {
+      query = query.gte('sale_date', _localStartOfDayUtcIso(from));
+    }
+    if (to != null) {
+      query = query.lte('sale_date', _localEndOfDayUtcIso(to));
+    }
+
+    final raw = await query.order('sale_date', ascending: false).limit(limit);
+
+    final maps = raw
+        .map((item) => Map<String, dynamic>.from(item as Map))
         .toList(growable: false);
+
+    final saleIds = maps
+        .map((m) => (m['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+
+    final clientsById = await _loadClientNames(
+      branchId,
+      maps
+          .map((m) => m['client_id']?.toString())
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .toSet(),
+    );
+    final cashiersById = await _loadProfileNames(
+      maps
+          .map((m) => m['cashier_id']?.toString())
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .toSet(),
+    );
+    final itemsCount = await _loadSaleItemsCount(branchId, saleIds);
+
+    final rows = maps.map((m) {
+      final id = (m['id'] ?? '').toString();
+      final clientId = m['client_id']?.toString();
+      final cashierId = m['cashier_id']?.toString();
+      return SavedSaleRow.fromMap(
+        m,
+        clientName: clientId == null ? null : clientsById[clientId],
+        cashierName: cashierId == null ? null : cashiersById[cashierId],
+        itemsCount: itemsCount[id] ?? 0,
+      );
+    }).toList(growable: false);
+
+    return SavedSalesResult(
+      rows: rows,
+      limit: limit,
+      limitReached: rows.length >= limit,
+    );
+  }
+
+  /// Nombres de clientes por id (sin embed, para evitar el FK compuesto).
+  Future<Map<String, String>> _loadClientNames(
+    String branchId,
+    Set<String> clientIds,
+  ) async {
+    if (clientIds.isEmpty) return const {};
+    final rows = await _client
+        .from('clients')
+        .select('id, full_name')
+        .eq('branch_id', branchId)
+        .inFilter('id', clientIds.toList(growable: false));
+    final result = <String, String>{};
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final id = row['id']?.toString();
+      final name = row['full_name']?.toString();
+      if (id != null && name != null && name.isNotEmpty) result[id] = name;
+    }
+    return result;
+  }
+
+  /// Nombres de perfiles (cajeros) por id.
+  Future<Map<String, String>> _loadProfileNames(Set<String> profileIds) async {
+    if (profileIds.isEmpty) return const {};
+    final rows = await _client
+        .from('profiles')
+        .select('id, full_name')
+        .inFilter('id', profileIds.toList(growable: false));
+    final result = <String, String>{};
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final id = row['id']?.toString();
+      final name = row['full_name']?.toString();
+      if (id != null && name != null && name.isNotEmpty) result[id] = name;
+    }
+    return result;
+  }
+
+  /// Cantidad de líneas por venta, en una sola query con IN.
+  Future<Map<String, int>> _loadSaleItemsCount(
+    String branchId,
+    List<String> saleIds,
+  ) async {
+    if (saleIds.isEmpty) return const {};
+    final rows = await _client
+        .from('sale_items')
+        .select('sale_id')
+        .eq('branch_id', branchId)
+        .inFilter('sale_id', saleIds);
+    final counts = <String, int>{};
+    for (final raw in rows) {
+      final sid = ((raw as Map)['sale_id'] ?? '').toString();
+      if (sid.isEmpty) continue;
+      counts[sid] = (counts[sid] ?? 0) + 1;
+    }
+    return counts;
   }
 
   /// Reusa el RPC del dashboard para liquidación operativa.
@@ -1372,28 +1492,38 @@ class OutgoingPaymentRow {
   final String? paymentMethod;
 }
 
-class SuspendedSaleRow {
-  SuspendedSaleRow({
+/// Una cuenta guardada desde el POS (venta con status `pending`).
+class SavedSaleRow {
+  SavedSaleRow({
     required this.saleId,
     required this.saleNumber,
     required this.status,
     required this.saleDate,
     required this.totalAmount,
+    required this.itemsCount,
     this.clientName,
+    this.cashierName,
+    this.notes,
   });
 
-  factory SuspendedSaleRow.fromMap(Map<String, dynamic> map) {
-    final clientMap = map['clients'];
-    final clientName =
-        clientMap is Map ? clientMap['full_name']?.toString() : null;
-    return SuspendedSaleRow(
+  factory SavedSaleRow.fromMap(
+    Map<String, dynamic> map, {
+    String? clientName,
+    String? cashierName,
+    int itemsCount = 0,
+  }) {
+    final rawNotes = map['notes']?.toString().trim();
+    return SavedSaleRow(
       saleId: (map['id'] ?? '').toString(),
       saleNumber: (map['sale_number'] ?? '').toString(),
       status: (map['status'] ?? '').toString(),
       saleDate: DateTime.tryParse(map['sale_date']?.toString() ?? '') ??
           DateTime.now(),
       totalAmount: _toDouble(map['total_amount']),
+      itemsCount: itemsCount,
       clientName: clientName,
+      cashierName: cashierName,
+      notes: (rawNotes == null || rawNotes.isEmpty) ? null : rawNotes,
     );
   }
 
@@ -1402,7 +1532,29 @@ class SuspendedSaleRow {
   final String status;
   final DateTime saleDate;
   final double totalAmount;
+  final int itemsCount;
   final String? clientName;
+  final String? cashierName;
+
+  /// Nota de la venta. Suele traer la mesa o el nombre de la persona, así que
+  /// entra en la búsqueda del reporte.
+  final String? notes;
+}
+
+/// Resultado de "Ventas guardadas": filas + si se tocó el techo del límite.
+class SavedSalesResult {
+  const SavedSalesResult({
+    required this.rows,
+    required this.limit,
+    required this.limitReached,
+  });
+
+  final List<SavedSaleRow> rows;
+  final int limit;
+
+  /// True si la consulta devolvió tantas filas como el límite: puede haber
+  /// más cuentas guardadas sin mostrar.
+  final bool limitReached;
 }
 
 class _MutablePaymentBucket {

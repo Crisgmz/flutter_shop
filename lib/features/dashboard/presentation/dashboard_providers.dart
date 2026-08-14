@@ -50,3 +50,11 @@ final dashboardPaymentBreakdownProvider =
   final repo = ref.watch(dashboardRepositoryProvider);
   return repo.fetchPaymentBreakdown(date);
 });
+
+/// Bloque "Venta por caja" del Cierre del día.
+final dashboardSalesByRegisterProvider =
+    FutureProvider<DashboardSalesByRegister>((ref) async {
+  final date = ref.watch(dashboardCloseoutDateProvider);
+  final repo = ref.watch(dashboardRepositoryProvider);
+  return repo.fetchSalesByCashRegister(date);
+});

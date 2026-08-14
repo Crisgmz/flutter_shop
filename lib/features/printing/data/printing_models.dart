@@ -161,17 +161,26 @@ class PrintDocumentItem {
     this.sku,
     this.unitLabel,
     this.notes,
+    this.lineDiscount = 0,
   });
 
   final String description;
   final double quantity;
   final double unitPrice;
+
+  /// Base imponible de la línea: precio × cantidad menos descuento, SIN ITBIS.
+  /// Así `lineTotal = lineSubtotal + lineTax` cuadra exacto en el A4.
   final double lineSubtotal;
   final double lineTax;
   final double lineTotal;
   final String? sku;
   final String? unitLabel;
+
+  /// Nota libre de la línea (se imprime bajo la descripción, en gris).
   final String? notes;
+
+  /// Descuento aplicado a la línea (monto, no porcentaje). 0 = sin descuento.
+  final double lineDiscount;
 }
 
 class PrintPaymentLine {
@@ -252,6 +261,9 @@ class PrintDocumentData {
     this.showTax = true,
     this.qrBytes,
     this.ecf,
+    this.ncfValidUntil,
+    this.legalFooterText,
+    this.isPendingAccount = false,
   });
 
   final PrintDocumentType documentType;
@@ -300,6 +312,20 @@ class PrintDocumentData {
   /// Datos e-CF (QR DGII, código de seguridad, firma). Null en documentos
   /// físicos (serie B) o ventas sin comprobante.
   final PrintEcfData? ecf;
+
+  /// Vencimiento de la secuencia NCF usada. Se imprime bajo el NCF en el
+  /// encabezado del A4 ("NCF válido hasta dd/MM/yyyy").
+  final DateTime? ncfValidUntil;
+
+  /// Texto legal al pie, junto al bloque de totales: nota de pie de factura o
+  /// términos y condiciones de la cotización. No confundir con
+  /// [footerMessage], que es el mensaje centrado de cortesía.
+  final String? legalFooterText;
+
+  /// Venta en estado `pending` (cuenta guardada): todavía no se cobró ni se
+  /// consumió NCF. El documento impreso debe rotularse como NO fiscal para
+  /// que nadie lo entregue como factura.
+  final bool isPendingAccount;
 }
 
 class ThermalTicketRow {

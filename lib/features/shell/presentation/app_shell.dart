@@ -121,16 +121,10 @@ class AppShell extends ConsumerWidget {
 
     // Visibilidad: admin nunca ve "Acceso restringido". Para los demás roles
     // un path es válido si coincide con (o desciende de) un nav item visible.
-    // `/devoluciones` es una sub-pantalla del POS — hereda el acceso de
-    // `/ventas`.
     final isCurrentPathVisible = isAdmin ||
         currentPath == '/panel' ||
         currentPath.startsWith('/panel/') ||
-        visibleNavItems.any((item) => pathMatches(item, currentPath)) ||
-        (currentPath == '/devoluciones' &&
-            visibleNavItems.any((item) => item.path == '/ventas')) ||
-        (currentPath.startsWith('/devoluciones/') &&
-            visibleNavItems.any((item) => item.path == '/ventas'));
+        visibleNavItems.any((item) => pathMatches(item, currentPath));
     final layoutMode = appPageLayoutModeForPath(currentPath);
 
     return Scaffold(

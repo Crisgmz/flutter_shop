@@ -186,12 +186,29 @@ class _DialogBody extends StatelessWidget {
                   _kv('Notas', session.notes!.trim()),
                 const SizedBox(height: 16),
                 _section('Montos'),
-                _kv('Monto apertura', money(session.openingAmount)),
-                _kv('Total cobros', money(metrics.totalPayments)),
-                _kv('  En efectivo', money(metrics.cashPayments)),
-                _kv('Total gastos', money(metrics.totalExpenses)),
+                // Orden acordado con el dueño: apertura → venta → desglose de
+                // cobro → gastos → salidas de efectivo → esperado.
+                _kv('Apertura', money(session.openingAmount)),
+                _kv('Total de venta', money(metrics.salesTotal)),
+                _kv('Ingreso efectivo', money(metrics.cashPayments)),
+                _kv('Transferencia', money(metrics.transferPayments)),
+                _kv('Tarjeta', money(metrics.cardPayments)),
+                _kv('Crédito', money(metrics.creditGenerated)),
+                _kv('Otro', money(metrics.otherPayments)),
+                _kv('Gastos', money(metrics.totalExpenses)),
                 _kv('  En efectivo', money(metrics.cashExpenses)),
                 const SizedBox(height: 12),
+                // Salidas de efectivo, para poder seguir el cuadre a mano.
+                _kv('Efectivo sacado de caja',
+                    money(metrics.cashWithdrawnForChange)),
+                _kv('Devoluciones', money(metrics.cashRefunds)),
+                // Movimientos manuales: entran al esperado (los depósitos
+                // suman, las sangrías restan). Se listan aquí para poder
+                // seguir el cuadre a mano.
+                _kv('Efectivo agregado', money(metrics.cashDeposits)),
+                _kv('Sangrías', money(metrics.cashWithdrawals)),
+                if (metrics.cashAdjustments != 0)
+                  _kv('Ajustes de caja', money(metrics.cashAdjustments)),
                 _kv('Esperado en caja', money(expectedCash), bold: true),
                 if (session.closingAmount != null)
                   _kv('Conteo cierre', money(session.closingAmount!),

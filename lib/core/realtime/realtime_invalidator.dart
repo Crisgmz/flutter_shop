@@ -176,6 +176,7 @@ class RealtimeInvalidator {
       dashboardKpisProvider,
       dashboardChartProvider,
       dashboardCloseoutProvider,
+      dashboardSalesByRegisterProvider,
       cobrosReceivablesProvider,
     ],
     'payments': [
@@ -183,10 +184,13 @@ class RealtimeInvalidator {
       cobrosReceivablesProvider,
       cashRegisterDataProvider,
       dashboardCloseoutProvider,
+      dashboardPaymentBreakdownProvider,
     ],
     'cash_sessions': [
       cashRegisterDataProvider,
       dashboardCloseoutProvider,
+      // Una sesión nueva cambia a qué caja pertenecen las ventas del día.
+      dashboardSalesByRegisterProvider,
     ],
     'cash_register_movements': [
       cashRegisterDataProvider,
@@ -199,6 +203,11 @@ class RealtimeInvalidator {
     'returns': [
       salesHistoryPageProvider,
       dashboardCloseoutProvider,
+      // El reembolso en efectivo baja el "Esperado en caja"…
+      cashRegisterDataProvider,
+      // …y el trigger de return_items devuelve el stock (y el IMEI) al producto.
+      salesProductsProvider,
+      inventoryProductsProvider,
     ],
   };
 }

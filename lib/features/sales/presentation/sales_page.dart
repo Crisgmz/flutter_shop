@@ -6,17 +6,20 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
-import '../../../shared/services/dgii_lookup_service.dart';
 import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/ncf_stock_banner.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
+import '../../clients/data/clients_repository.dart';
+import '../../clients/presentation/client_form_dialog.dart';
 import '../../clients/presentation/clients_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
 import '../data/sales_repository.dart';
+import '../domain/sale_checkout_service.dart' show fromCents;
+import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
 class SalesPage extends ConsumerStatefulWidget {
@@ -26,10 +29,28 @@ class SalesPage extends ConsumerStatefulWidget {
   ConsumerState<SalesPage> createState() => _SalesPageState();
 }
 
+/// Qué hacer cuando el cliente que se está creando ya parece existir.
+enum _DuplicateClientChoice { useExisting, createAnyway }
+
+/// Métodos de reembolso de una devolución. Solo `cash` saca dinero de la
+/// gaveta; los demás no afectan el efectivo esperado en caja.
+const _refundMethods = <MapEntry<String, String>>[
+  MapEntry('cash', 'Efectivo'),
+  MapEntry('card', 'Tarjeta'),
+  MapEntry('transfer', 'Transferencia'),
+  MapEntry('credit_note', 'Nota de crédito'),
+];
+
 class _SalesPageState extends ConsumerState<SalesPage> {
   final _searchController = TextEditingController();
   final _notesController = TextEditingController();
   final _saleNumberController = TextEditingController();
+
+  /// Foco del buscador. La pistola de código de barras "teclea" donde esté el
+  /// foco: lo devolvemos al buscador después de agregar al carrito para que el
+  /// siguiente escaneo no se pierda. Solo en escritorio — en móvil reenfocar
+  /// abriría el teclado virtual sobre la grilla.
+  final _searchFocus = FocusNode();
 
   final List<SaleCartItem> _cart = [];
 
@@ -46,12 +67,32 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// devolver su stock reservado y no duplicarla. Viaja en el draft.
   String? _reopenedHeldSaleId;
 
+  /// Venta original cargada en modo devolución. Sin esto la devolución nunca
+  /// se enlaza a la venta y el backend no puede ajustar el saldo del cliente
+  /// a crédito ni inferir los IMEIs devueltos.
+  String? _returnOriginalSaleId;
+  String? _returnOriginalSaleNumber;
+
+  /// IMEIs que traía cada línea de la venta original cargada para devolver
+  /// (product_id → IMEIs vendidos). Es el catálogo del selector: permite que
+  /// el cajero desmarque un equipo y vuelva a marcarlo sin recargar la venta.
+  final Map<String, List<String>> _returnOriginalImeis = {};
+
   int get _cartLines => _cart.length;
-  double get _cartSubtotal =>
-      _cart.fold<double>(0, (sum, item) => sum + item.lineSubtotal);
-  double get _cartTax =>
-      _cart.fold<double>(0, (sum, item) => sum + item.lineTax);
-  double get _cartTotal => _cartSubtotal + _cartTax;
+
+  // Los totales se suman en CENTAVOS ENTEROS, igual que el RPC suma numeric:
+  // sumar doubles de dos decimales acumula error y el total que ve el cajero
+  // es el mismo que se manda como pagos. Un centavo de diferencia contra el
+  // backend rebota el pago dividido o descuadra la caja.
+  double get _cartSubtotal => fromCents(
+        _cart.fold<double>(0, (sum, item) => sum + item.lineSubtotalCents),
+      );
+  double get _cartTax => fromCents(
+        _cart.fold<double>(0, (sum, item) => sum + item.lineTaxCents),
+      );
+  double get _cartTotal => fromCents(
+        _cart.fold<double>(0, (sum, item) => sum + item.lineTotalCents),
+      );
 
   @override
   void initState() {
@@ -76,6 +117,8 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _clientId = draft.clientId;
     _notesController.text = draft.notes;
     _reopenedHeldSaleId = draft.heldSaleId;
+    _returnOriginalSaleId = draft.returnOriginalSaleId;
+    _returnOriginalSaleNumber = draft.returnOriginalSaleNumber;
   }
 
   @override
@@ -83,6 +126,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _searchController.dispose();
     _notesController.dispose();
     _saleNumberController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -99,6 +143,8 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       clientId: _clientId,
       notes: _notesController.text,
       heldSaleId: _reopenedHeldSaleId,
+      returnOriginalSaleId: _returnOriginalSaleId,
+      returnOriginalSaleNumber: _returnOriginalSaleNumber,
     );
     ref.read(saleDraftProvider.notifier).state = draft;
     // Persistir también a localStorage (web) para sobrevivir recargas.
@@ -196,7 +242,9 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
-              onPressed: () => context.push('/devoluciones'),
+              // Las devoluciones ahora viven dentro del historial de ventas
+              // (filtro "Devoluciones"), no en una pantalla aparte.
+              onPressed: () => context.go('/ventas/historial'),
               icon: const Icon(Icons.history_rounded, size: 18),
               label: const Text('Historial'),
             ),
@@ -259,6 +307,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                 Expanded(
                   child: TextField(
                     controller: _searchController,
+                    focusNode: _searchFocus,
                     onChanged: (v) =>
                         ref.read(salesSearchProvider.notifier).state = v,
                     // La pistola de código de barras "escribe" el código y
@@ -266,7 +315,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                     onSubmitted: _onScanSubmitted,
                     textInputAction: TextInputAction.search,
                     decoration: const InputDecoration(
-                      hintText: 'Buscar o escanear producto...',
+                      hintText: 'Buscar o escanear producto o IMEI...',
                       border: InputBorder.none,
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
@@ -468,6 +517,8 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                       onPriceChanged: (value) => _setUnitPrice(i, value),
                       onQuantityChanged: (value) => _setQty(i, value),
                       onDiscountChanged: (value) => _setDiscountPct(i, value),
+                      onPickImeis: () => _editLineImeis(i),
+                      onImeiRemoved: (imei) => _removeImeiFromLine(i, imei),
                     ),
                   ),
           ),
@@ -605,17 +656,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                           const SizedBox(width: 8),
                           SizedBox(
                             height: 50,
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
+                            child: FilledButton.icon(
+                              style: FilledButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 14,
                                 ),
-                                foregroundColor: const Color(0xFF6B7280),
+                                backgroundColor: AppTokens.primary,
+                                foregroundColor: AppTokens.primaryForeground,
+                                // Mismo gris deshabilitado que COMPLETAR VENTA.
+                                disabledBackgroundColor: const Color(
+                                  0xFF94A3B8,
+                                ),
+                                disabledForegroundColor: Colors.white,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(8),
-                                  side: const BorderSide(
-                                    color: Color(0xFFCBD5E1),
-                                  ),
                                 ),
                               ),
                               onPressed: !enabled ? null : _holdSale,
@@ -624,7 +678,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                                 'Guardar',
                                 style: TextStyle(
                                   fontSize: 13,
-                                  fontWeight: FontWeight.w600,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
                             ),
@@ -723,7 +777,15 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       return;
     }
     final index = _cart.indexWhere((item) => item.product.id == product.id);
+    // Si la línea ya lleva IMEIs, subir la cantidad a ciegas dejaría unidades
+    // sin equipo asignado: se elige por el selector.
+    if (index != -1 && _cart[index].imeis.isNotEmpty) {
+      _editLineImeis(index);
+      return;
+    }
+    // Los servicios no controlan existencias: se venden sin tope de stock.
     if (_stockEnforced &&
+        product.tracksStock &&
         index != -1 &&
         _cart[index].quantity + 1 > product.stock) {
       ScaffoldMessenger.of(
@@ -750,12 +812,26 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       }
     });
     _persistDraft();
+    _refocusScanner();
   }
 
   void _clearSearch() {
     _searchController.clear();
     ref.read(salesSearchProvider.notifier).state = '';
+    _refocusScanner();
   }
+
+  /// Devuelve el foco al buscador para que el siguiente escaneo de la pistola
+  /// caiga ahí. Solo en escritorio: en móvil abriría el teclado virtual.
+  void _refocusScanner() {
+    if (!mounted || ResponsiveLayout.isMobile(context)) return;
+    _searchFocus.requestFocus();
+  }
+
+  /// Normaliza un código escaneado: la pistola suele meter espacios o guiones
+  /// que no están en la base (IMEI "35 1234-56", código con guiones, etc.).
+  static String _normalizeCode(String raw) =>
+      raw.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
 
   /// La pistola escaneó un código (o el cajero presionó Enter). Si coincide con
   /// un IMEI → agrega ese equipo directo. Si coincide con código de barras/SKU
@@ -763,17 +839,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   void _onScanSubmitted(String raw) {
     final code = raw.trim();
     if (code.isEmpty) return;
+    final normalized = _normalizeCode(code);
+    if (normalized.isEmpty) return;
     final products = ref.read(salesProductsProvider).valueOrNull ?? const [];
 
     // 1) ¿Es un IMEI? → agrega ese equipo directo (sin diálogo).
     for (final p in products) {
-      if (p.imeis.contains(code)) {
-        if (_selectedImeisFor(p.id).contains(code)) {
+      for (final imei in p.imeis) {
+        if (_normalizeCode(imei) != normalized) continue;
+        if (_selectedImeisFor(p.id).contains(imei)) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Ese IMEI ya está en el carrito.')),
           );
         } else {
-          _addImeiToCart(p, [code]);
+          _addImeiToCart(p, [imei]);
         }
         _clearSearch();
         return;
@@ -782,14 +861,17 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
     // 2) ¿Código de barras o SKU exacto? → agrega el producto.
     for (final p in products) {
-      if ((p.barcode != null && p.barcode == code) ||
-          (p.sku != null && p.sku == code)) {
+      final barcode = p.barcode;
+      final sku = p.sku;
+      if ((barcode != null && _normalizeCode(barcode) == normalized) ||
+          (sku != null && _normalizeCode(sku) == normalized)) {
         _addProductToCart(p);
         _clearSearch();
         return;
       }
     }
     // 3) Sin coincidencia exacta: se queda como filtro de búsqueda normal.
+    _refocusScanner();
   }
 
   /// IMEIs que ya están en el carrito para este producto.
@@ -854,6 +936,84 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       }
     });
     _persistDraft();
+    _refocusScanner();
+  }
+
+  /// Modo devolución activo.
+  bool get _isReturnMode => ref.read(posModeProvider) == PosMode.returnMode;
+
+  /// Catálogo de IMEIs que puede tener la línea `index`:
+  /// - devolución → los que traía la venta original (o los que quedan en la
+  ///   línea si el draft se rehidrató sin ese dato);
+  /// - venta → los que el producto tiene disponibles, más los ya elegidos.
+  List<String> _imeiCatalogFor(int index) {
+    final item = _cart[index];
+    final result = <String>[];
+    final source = _isReturnMode
+        ? (_returnOriginalImeis[item.product.id] ?? item.imeis)
+        : [...item.imeis, ...item.product.imeis];
+    for (final imei in source) {
+      if (!result.contains(imei)) result.add(imei);
+    }
+    for (final imei in item.imeis) {
+      if (!result.contains(imei)) result.add(imei);
+    }
+    return result;
+  }
+
+  /// Reemplaza los IMEIs de una línea y ata la cantidad a ellos
+  /// (invariante de [SaleCartItem]: quantity == imeis.length).
+  void _applyLineImeis(int index, List<String> imeis) {
+    if (imeis.isEmpty) {
+      _removeItem(index);
+      return;
+    }
+    final item = _cart[index];
+    setState(
+      () => _cart[index] = SaleCartItem(
+        product: item.product,
+        quantity: imeis.length.toDouble(),
+        unitPrice: item.unitPrice,
+        discountPct: item.discountPct,
+        imeis: List<String>.from(imeis),
+      ),
+    );
+    _persistDraft();
+  }
+
+  /// Abre el selector para decidir CUÁLES equipos lleva la línea. En modo
+  /// devolución es la única forma de bajar la cantidad: hay que decir qué
+  /// celular físico entró de vuelta, si no se reintegrarían al inventario
+  /// equipos que siguen en manos del comprador.
+  Future<void> _editLineImeis(int index) async {
+    if (index < 0 || index >= _cart.length) return;
+    final item = _cart[index];
+    final catalog = _imeiCatalogFor(index);
+    if (catalog.isEmpty) return;
+    final isReturn = _isReturnMode;
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _ImeiPickerDialog(
+        productName: item.product.name,
+        imeis: catalog,
+        initialSelected: item.imeis,
+        prompt: isReturn
+            ? 'Marca los equipos que el cliente devuelve:'
+            : 'Selecciona los equipos que salen a la venta:',
+      ),
+    );
+    if (selected == null || !mounted) return;
+    _applyLineImeis(index, selected);
+  }
+
+  /// Quita un IMEI puntual de la línea (chip pulsable del carrito).
+  void _removeImeiFromLine(int index, String imei) {
+    if (index < 0 || index >= _cart.length) return;
+    final remaining = _cart[index]
+        .imeis
+        .where((e) => e != imei)
+        .toList(growable: false);
+    _applyLineImeis(index, remaining);
   }
 
   /// Setea la cantidad a un valor específico (desde el input del cart line).
@@ -864,7 +1024,30 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       return;
     }
     final item = _cart[index];
-    if (_stockEnforced && value > item.product.stock) {
+    // Línea serializada: la cantidad no se edita a mano, la mandan los IMEIs.
+    // Subirla inventaría unidades sin equipo y bajarla dejando la lista
+    // intacta devolvería al inventario celulares que el cliente no entregó.
+    if (item.imeis.isNotEmpty) {
+      final target = value.round();
+      if (target == item.imeis.length) return;
+      if (target < item.imeis.length) {
+        // Recorte consistente: nos quedamos con los primeros N IMEIs.
+        _applyLineImeis(index, item.imeis.take(target).toList());
+      }
+      // Subirla no tiene recorte posible: el cajero debe elegir qué equipos
+      // entran desde el selector.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Esta línea lleva IMEIs: elige los equipos en el selector de IMEI.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (_stockEnforced &&
+        item.product.tracksStock &&
+        value > item.product.stock) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Sin stock suficiente')));
@@ -947,22 +1130,50 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _persistDraft();
   }
 
-  /// Crea un cliente rápido sin salir de la venta y lo selecciona.
+  /// Crea un cliente sin salir de la venta y lo selecciona. Usa el MISMO
+  /// formulario completo de la pantalla Clientes (incluye búsqueda DGII,
+  /// dirección, tier de precio, límite de crédito, etc.).
   Future<void> _onCreateClientInline() async {
-    final result = await showDialog<_QuickClientData>(
+    final input = await showDialog<ClientInput>(
       context: context,
-      builder: (_) => const _QuickClientDialog(),
+      builder: (_) => const ClientFormDialog(),
     );
-    if (result == null || !mounted) return;
+    if (input == null || !mounted) return;
+
+    // Aviso de posible duplicado (mismo documento o mismo nombre). No bloquea:
+    // el cajero decide si usa el existente o crea uno nuevo igual.
+    List<ClientEntity> existing;
     try {
-      final id = await ref
-          .read(clientsRepositoryProvider)
-          .createQuickClient(
-            fullName: result.name,
-            phone: result.phone,
-            documentNumber: result.document,
-          );
+      existing = await ref.read(clientsListProvider.future);
+    } catch (_) {
+      existing = const <ClientEntity>[];
+    }
+    if (!mounted) return;
+    final duplicate = findDuplicateClient(existing, input);
+    if (duplicate != null) {
+      final choice = await _askDuplicateClientAction(duplicate);
+      if (choice == null || !mounted) return;
+      if (choice == _DuplicateClientChoice.useExisting) {
+        // Ya existe: lo seleccionamos y re-preciamos el carrito con su tier.
+        ref.invalidate(salesClientsProvider);
+        try {
+          await ref.read(salesClientsProvider.future);
+        } catch (_) {
+          // Si la recarga falla, igual seleccionamos: el tier cae al precio base.
+        }
+        if (!mounted) return;
+        _onClientChanged(duplicate.id);
+        return;
+      }
+    }
+
+    try {
+      final id = await ref.read(clientsRepositoryProvider).saveClient(input);
+      ref.invalidate(clientsListProvider);
       ref.invalidate(salesClientsProvider);
+      // El re-precio del carrito lee `salesClientsByIdProvider`: hay que
+      // esperar a que la lista se recargue ANTES de seleccionar, si no el
+      // tier del cliente recién creado no se aplica.
       await ref.read(salesClientsProvider.future);
       if (!mounted) return;
       _onClientChanged(id);
@@ -977,6 +1188,41 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     }
   }
 
+  /// Pregunta qué hacer ante un cliente que parece duplicado. Devuelve null si
+  /// el cajero cancela.
+  Future<_DuplicateClientChoice?> _askDuplicateClientAction(
+    ClientEntity duplicate,
+  ) {
+    final doc = duplicate.documentNumber?.trim();
+    return showDialog<_DuplicateClientChoice>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Posible cliente duplicado'),
+        content: Text(
+          'Ya existe el cliente "${duplicate.fullName}"'
+          '${doc != null && doc.isNotEmpty ? ' (Doc. $doc)' : ''}.\n\n'
+          '¿Quieres usar el que ya existe o crear uno nuevo de todas formas?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(ctx, _DuplicateClientChoice.createAnyway),
+            child: const Text('Crear de todas formas'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(ctx, _DuplicateClientChoice.useExisting),
+            child: const Text('Usar el existente'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _removeItem(int index) {
     setState(() => _cart.removeAt(index));
     _persistDraft();
@@ -989,6 +1235,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _clientId = null;
       _paymentMethod = 'cash';
       _reopenedHeldSaleId = null;
+      _returnOriginalSaleId = null;
+      _returnOriginalSaleNumber = null;
+      _returnOriginalImeis.clear();
+      _saleNumberController.clear();
       _searchController.clear();
       ref.read(salesSearchProvider.notifier).state = '';
     });
@@ -1372,10 +1622,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _clearCart();
     }
 
+    // Aunque el carrito estuviera vacío, el enlace a la venta original no debe
+    // sobrevivir al cambio de modo.
+    setState(() {
+      _returnOriginalSaleId = null;
+      _returnOriginalSaleNumber = null;
+      _returnOriginalImeis.clear();
+      _saleNumberController.clear();
+    });
+
     ref.read(posModeProvider.notifier).state = next;
   }
 
-  /// Busca una venta por número y precarga sus items en el carrito (devolución).
+  /// Busca la venta original (por número, NCF o IMEI) y precarga sus items en
+  /// el carrito para devolverlos.
   Future<void> _loadSaleIntoReturn(String saleNumber) async {
     final cleaned = saleNumber.trim();
     if (cleaned.isEmpty) return;
@@ -1413,6 +1673,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         _cart
           ..clear()
           ..addAll(result.items);
+        // Catálogo de equipos vendidos por línea: es lo que ofrece el selector
+        // cuando el cliente devuelve solo una parte de la línea.
+        _returnOriginalImeis.clear();
+        for (final item in result.items) {
+          if (item.imeis.isNotEmpty) {
+            _returnOriginalImeis[item.product.id] = List<String>.from(
+              item.imeis,
+            );
+          }
+        }
+        // Enlace a la venta original: sin esto el backend no ajusta el saldo
+        // del cliente a crédito ni sabe de qué venta salieron los IMEIs.
+        _returnOriginalSaleId = result.saleId;
+        _returnOriginalSaleNumber = result.saleNumber;
         // Cliente original si aplica
         if (result.clientId != null && result.clientId!.isNotEmpty) {
           _clientId = result.clientId;
@@ -1444,9 +1718,40 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     }
   }
 
-  /// Procesa una devolución a partir del carrito actual.
+  /// Procesa una devolución a partir del carrito actual. Antes pide confirmar
+  /// el método de reembolso: solo "Efectivo" saca dinero de la gaveta y baja
+  /// el esperado en caja.
   Future<void> _processReturn() async {
     if (_cart.isEmpty) return;
+
+    // Última defensa antes de tocar el backend: si una línea trae más IMEIs
+    // que unidades devueltas, el RPC reintegraría al inventario equipos que
+    // el cliente NO entregó y quedarían disponibles para venderse de nuevo.
+    for (final item in _cart) {
+      if (item.imeis.length > item.quantity) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppTokens.destructive,
+            content: Text(
+              '"${item.product.name}": ${item.imeis.length} IMEI(s) para '
+              '${item.quantity.toStringAsFixed(0)} unidad(es). Usa el '
+              'selector de IMEI y deja marcados solo los equipos devueltos.',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        );
+        return;
+      }
+    }
+
+    final refundMethod = await showDialog<String>(
+      context: context,
+      builder: (_) => _RefundMethodDialog(
+        total: _cartTotal,
+        originalSaleNumber: _returnOriginalSaleNumber,
+      ),
+    );
+    if (refundMethod == null || !mounted) return;
 
     setState(() => _isSubmitting = true);
     try {
@@ -1455,12 +1760,21 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         ReturnInput(
           items: List.from(_cart),
           clientId: _clientId,
+          originalSaleId: _returnOriginalSaleId,
           notes: _notesController.text.trim(),
+          // Misma sesión de caja que usa el checkout: es lo que hace que el
+          // reembolso en efectivo baje el "Esperado en caja".
+          cashSessionId: ref.read(activeCashSessionIdProvider),
+          refundMethod: refundMethod,
         ),
       );
 
       _clearCart();
       ref.invalidate(salesProductsProvider);
+      // El esperado en caja cambió: refrescar la pantalla de caja.
+      ref.invalidate(cashRegisterDataProvider);
+      // La devolución vive ahora dentro del historial de ventas.
+      ref.invalidate(salesHistoryPageProvider);
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1489,171 +1803,177 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   }
 }
 
-/// Datos del cliente rápido creado desde Ventas.
-class _QuickClientData {
-  const _QuickClientData({
-    required this.name,
-    required this.phone,
-    required this.document,
-  });
+/// Confirmación de devolución: elige por dónde sale el reembolso. Devuelve el
+/// código del método (`cash` | `card` | `transfer` | `credit_note`) o null.
+class _RefundMethodDialog extends StatefulWidget {
+  const _RefundMethodDialog({required this.total, this.originalSaleNumber});
 
-  final String name;
-  final String phone;
-  final String document;
-}
-
-/// Diálogo compacto para crear un cliente sin salir de la venta.
-class _QuickClientDialog extends StatefulWidget {
-  const _QuickClientDialog();
+  final double total;
+  final String? originalSaleNumber;
 
   @override
-  State<_QuickClientDialog> createState() => _QuickClientDialogState();
+  State<_RefundMethodDialog> createState() => _RefundMethodDialogState();
 }
 
-class _QuickClientDialogState extends State<_QuickClientDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _name = TextEditingController();
-  final _phone = TextEditingController();
-  final _doc = TextEditingController();
-  final _dgii = DgiiLookupService();
-  bool _rncLookupLoading = false;
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _phone.dispose();
-    _doc.dispose();
-    super.dispose();
-  }
-
-  /// Consulta el RNC/cédula contra DGII y auto-completa el nombre.
-  Future<void> _lookupRnc() async {
-    final raw = _doc.text.trim();
-    if (raw.isEmpty) {
-      AppSnackBar.info(context, 'Escribe el RNC o cédula primero.');
-      return;
-    }
-    setState(() => _rncLookupLoading = true);
-    try {
-      final info = await _dgii.lookupByRnc(raw);
-      if (!mounted) return;
-      if (info == null) {
-        AppSnackBar.error(context, 'RNC/cédula no encontrado en DGII.');
-        return;
-      }
-      final name = info.nombreRazonSocial ?? info.displayName;
-      if (name != null && name.isNotEmpty && _name.text.trim().isEmpty) {
-        setState(() => _name.text = name);
-      }
-      if (info.isActivo) {
-        AppSnackBar.success(context, 'Encontrado: ${info.displayName ?? raw}');
-      } else {
-        AppSnackBar.info(
-          context,
-          'Encontrado (${info.estado ?? "estado desconocido"}): '
-          '${info.displayName ?? raw}',
-        );
-      }
-    } on InvalidRncException catch (e) {
-      if (mounted) AppSnackBar.error(context, e.reason);
-    } catch (e) {
-      if (mounted) AppSnackBar.error(context, 'No se pudo consultar el RNC', e);
-    } finally {
-      if (mounted) setState(() => _rncLookupLoading = false);
-    }
-  }
+class _RefundMethodDialogState extends State<_RefundMethodDialog> {
+  String _method = 'cash';
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Nuevo cliente'),
+      title: const Text('Procesar devolución'),
       content: SizedBox(
-        width: 360,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: _name,
-                autofocus: true,
-                textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(labelText: 'Nombre completo'),
-                validator: (v) =>
-                    (v ?? '').trim().isEmpty ? 'Campo requerido' : null,
-              ),
-              const SizedBox(height: 10),
-              TextFormField(
-                controller: _phone,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: 'Teléfono (opcional)',
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Total a devolver',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  money(widget.total),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: AppTokens.destructive,
+                  ),
+                ),
+              ],
+            ),
+            if (widget.originalSaleNumber != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Venta original: ${widget.originalSaleNumber}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppTokens.mutedForeground,
                 ),
               ),
-              const SizedBox(height: 10),
-              TextFormField(
-                controller: _doc,
-                keyboardType: TextInputType.number,
-                onFieldSubmitted: (_) => _lookupRnc(),
-                decoration: InputDecoration(
-                  labelText: 'Cédula / RNC (opcional)',
-                  suffixIcon: _rncLookupLoading
-                      ? const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : IconButton(
-                          tooltip: 'Buscar razón social en DGII',
-                          icon: const Icon(Icons.search),
-                          onPressed: _lookupRnc,
-                        ),
-                ),
+            ] else ...[
+              const SizedBox(height: 4),
+              const Text(
+                'Sin venta original enlazada: no se ajustará el saldo del '
+                'cliente a crédito.',
+                style: TextStyle(fontSize: 12, color: AppTokens.warning),
               ),
             ],
-          ),
+            const SizedBox(height: 14),
+            const Text(
+              'Método de reembolso',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            RadioGroup<String>(
+              groupValue: _method,
+              onChanged: (v) => setState(() => _method = v ?? 'cash'),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final entry in _refundMethods)
+                    RadioListTile<String>(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      value: entry.key,
+                      title: Text(
+                        entry.value,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (_method == 'cash')
+              const Text(
+                'Sale efectivo de la gaveta: baja el esperado en caja.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppTokens.mutedForeground,
+                ),
+              ),
+          ],
         ),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: () => Navigator.pop(context),
           child: const Text('Cancelar'),
         ),
-        FilledButton(
-          onPressed: () {
-            if (!_formKey.currentState!.validate()) return;
-            Navigator.of(context).pop(
-              _QuickClientData(
-                name: _name.text.trim(),
-                phone: _phone.text.trim(),
-                document: _doc.text.trim(),
-              ),
-            );
-          },
-          child: const Text('Crear'),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppTokens.destructive,
+            foregroundColor: AppTokens.destructiveForeground,
+          ),
+          onPressed: () => Navigator.pop(context, _method),
+          icon: const Icon(Icons.assignment_return_outlined, size: 18),
+          label: const Text('Procesar devolución'),
         ),
       ],
     );
   }
 }
 
-/// Selector de IMEIs al vender un producto serializado. Devuelve la lista de
-/// IMEIs marcados, o null si se cancela.
+/// Selector de IMEIs de una línea. Se usa al vender un producto serializado y
+/// también en modo devolución para marcar CUÁLES equipos entraron de vuelta.
+/// Devuelve la lista de IMEIs marcados, o null si se cancela.
 class _ImeiPickerDialog extends StatefulWidget {
-  const _ImeiPickerDialog({required this.productName, required this.imeis});
+  const _ImeiPickerDialog({
+    required this.productName,
+    required this.imeis,
+    this.initialSelected = const <String>[],
+    this.prompt = 'Selecciona los equipos que salen a la venta:',
+  });
 
   final String productName;
   final List<String> imeis;
+
+  /// IMEIs ya marcados al abrir (los que la línea trae hoy).
+  final List<String> initialSelected;
+
+  /// Texto que explica qué se está eligiendo (venta o devolución).
+  final String prompt;
 
   @override
   State<_ImeiPickerDialog> createState() => _ImeiPickerDialogState();
 }
 
 class _ImeiPickerDialogState extends State<_ImeiPickerDialog> {
-  final Set<String> _selected = {};
+  late final Set<String> _selected = {...widget.initialSelected};
+  final _scanController = TextEditingController();
+  String? _scanError;
+
+  @override
+  void dispose() {
+    _scanController.dispose();
+    super.dispose();
+  }
+
+  /// Normaliza igual que el buscador del POS: la pistola mete espacios y
+  /// guiones que no están guardados en el producto.
+  static String _normalize(String raw) =>
+      raw.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
+
+  /// Marca el IMEI escaneado. Avisa si no pertenece a este producto (o si ya
+  /// está en el carrito, en cuyo caso no aparece en la lista disponible).
+  void _onScan(String raw) {
+    final normalized = _normalize(raw);
+    if (normalized.isEmpty) return;
+    for (final imei in widget.imeis) {
+      if (_normalize(imei) == normalized) {
+        setState(() {
+          _selected.add(imei);
+          _scanError = null;
+          _scanController.clear();
+        });
+        return;
+      }
+    }
+    setState(() => _scanError = 'Ese IMEI no está disponible en este producto.');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1665,9 +1985,26 @@ class _ImeiPickerDialogState extends State<_ImeiPickerDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Selecciona los equipos que salen a la venta:',
-              style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+            TextField(
+              controller: _scanController,
+              autofocus: true,
+              textInputAction: TextInputAction.search,
+              onSubmitted: _onScan,
+              style: const TextStyle(fontFamily: 'monospace'),
+              decoration: InputDecoration(
+                isDense: true,
+                labelText: 'Escanear IMEI',
+                hintText: 'Escanea o escribe y presiona Enter',
+                hintStyle: const TextStyle(fontSize: 12),
+                errorText: _scanError,
+                prefixIcon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.prompt,
+              style: const TextStyle(fontSize: 13, color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 8),
             Flexible(
@@ -2105,7 +2442,7 @@ class _SaleNumberSearch extends StatelessWidget {
               decoration: const InputDecoration(
                 isDense: true,
                 border: InputBorder.none,
-                hintText: 'Número de venta original (ej: FA-00123)',
+                hintText: 'Venta original: número, NCF o IMEI',
                 hintStyle: TextStyle(fontSize: 13),
               ),
             ),
@@ -2184,7 +2521,10 @@ class _ProductCard extends StatelessWidget {
     final initial = product.name.isNotEmpty
         ? product.name[0].toUpperCase()
         : '?';
-    final isLowStock = product.stock <= 5;
+    // Un servicio no tiene existencia: nunca se marca como bajo stock ni
+    // muestra el badge de cantidad (saldría siempre en 0/rojo).
+    final showsStock = product.tracksStock;
+    final isLowStock = showsStock && product.stock <= 5;
 
     return InkWell(
       onTap: onTap,
@@ -2304,11 +2644,12 @@ class _ProductCard extends StatelessWidget {
               ],
             ),
           ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: _StockBadge(stock: product.stock),
-          ),
+          if (showsStock)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: _StockBadge(stock: product.stock),
+            ),
         ],
       ),
     );
@@ -2377,6 +2718,8 @@ class _CartLineTile extends ConsumerStatefulWidget {
     required this.onPriceChanged,
     required this.onQuantityChanged,
     required this.onDiscountChanged,
+    required this.onPickImeis,
+    required this.onImeiRemoved,
   });
 
   final SaleCartItem item;
@@ -2384,6 +2727,13 @@ class _CartLineTile extends ConsumerStatefulWidget {
   final ValueChanged<double> onPriceChanged;
   final ValueChanged<double> onQuantityChanged;
   final ValueChanged<double> onDiscountChanged;
+
+  /// Abre el selector de IMEIs de la línea (única forma de cambiar la
+  /// cantidad cuando la línea lleva equipos serializados).
+  final VoidCallback onPickImeis;
+
+  /// Quita un IMEI puntual desde su chip.
+  final ValueChanged<String> onImeiRemoved;
 
   @override
   ConsumerState<_CartLineTile> createState() => _CartLineTileState();
@@ -2469,7 +2819,9 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                       ),
                     ),
                     Text(
-                      'Inventario: ${_fmtNum(item.product.stock)}'
+                      // Un servicio no lleva existencia: en vez de "Inventario:
+                      // 0" se rotula como servicio.
+                      '${item.product.tracksStock ? 'Inventario: ${_fmtNum(item.product.stock)}' : 'Servicio'}'
                       '${item.product.sku != null ? '  ·  SKU: ${item.product.sku}' : ''}',
                       style: const TextStyle(
                         fontSize: 10,
@@ -2484,21 +2836,43 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                           runSpacing: 4,
                           children: [
                             for (final imei in item.imeis)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFEFF6FF),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  'IMEI $imei',
-                                  style: const TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontSize: 10,
-                                    color: Color(0xFF2563EB),
+                              // En devolución el chip es pulsable: quitarlo
+                              // saca ese equipo de la devolución y baja la
+                              // cantidad (los demás siguen con el comprador).
+                              InkWell(
+                                onTap: isReturn
+                                    ? () => widget.onImeiRemoved(imei)
+                                    : null,
+                                borderRadius: BorderRadius.circular(4),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEFF6FF),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        'IMEI $imei',
+                                        style: const TextStyle(
+                                          fontFamily: 'monospace',
+                                          fontSize: 10,
+                                          color: Color(0xFF2563EB),
+                                        ),
+                                      ),
+                                      if (isReturn) ...[
+                                        const SizedBox(width: 4),
+                                        const Icon(
+                                          Icons.close_rounded,
+                                          size: 11,
+                                          color: Color(0xFF2563EB),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                               ),
@@ -2539,14 +2913,21 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
               ),
               const SizedBox(width: 6),
               Expanded(
-                child: _CartField(
-                  label: 'Cantidad',
-                  controller: _qtyCtrl,
-                  onSubmit: (raw) {
-                    final v = double.tryParse(raw) ?? item.quantity;
-                    widget.onQuantityChanged(v);
-                  },
-                ),
+                // Línea con IMEIs: la cantidad es igual a los equipos
+                // elegidos, así que no se teclea — se abre el selector.
+                child: item.imeis.isNotEmpty
+                    ? _QuantityByImeiField(
+                        quantity: item.quantity,
+                        onTap: widget.onPickImeis,
+                      )
+                    : _CartField(
+                        label: 'Cantidad',
+                        controller: _qtyCtrl,
+                        onSubmit: (raw) {
+                          final v = double.tryParse(raw) ?? item.quantity;
+                          widget.onQuantityChanged(v);
+                        },
+                      ),
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -2594,6 +2975,66 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Cantidad de una línea serializada: no es editable, la manda la cantidad de
+/// IMEIs elegidos. Al pulsar abre el selector de equipos.
+class _QuantityByImeiField extends StatelessWidget {
+  const _QuantityByImeiField({required this.quantity, required this.onTap});
+
+  final double quantity;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = quantity == quantity.roundToDouble()
+        ? quantity.toInt().toString()
+        : quantity.toStringAsFixed(2);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Cantidad',
+          style: TextStyle(
+            fontSize: 10,
+            color: Color(0xFF64748B),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 2),
+        InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                const Icon(
+                  Icons.qr_code_scanner_rounded,
+                  size: 14,
+                  color: Color(0xFF94A3B8),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

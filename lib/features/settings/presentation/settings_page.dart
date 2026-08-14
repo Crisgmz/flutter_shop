@@ -447,7 +447,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           : 'Desactivado',
                     ),
                     if (profile.invoiceFooter != null)
-                      _detail('Pie de factura', profile.invoiceFooter!),
+                      _detail(
+                        'Pie de factura (perfil fiscal)',
+                        profile.invoiceFooter!,
+                      ),
                   ],
                 );
               },
@@ -1538,20 +1541,37 @@ class _BranchDialogState extends State<_BranchDialog> {
                   contentPadding: EdgeInsets.zero,
                 ),
                 const SizedBox(height: 8),
+                // Estos dos campos SÍ se imprimen (bloque legal al pie del A4).
+                // El PDF acota la nota a 8 líneas / 600 caracteres.
                 TextFormField(
                   controller: _invoiceFooterController,
                   decoration: const InputDecoration(
-                    labelText: 'Nota de pie de factura',
+                    labelText: 'Nota de pie de factura (se imprime)',
+                    helperText:
+                        'Sale al pie de la factura. Máximo 8 líneas: lo que '
+                        'sobre se recorta en el PDF.',
+                    helperMaxLines: 3,
+                    alignLabelWithHint: true,
                   ),
-                  maxLines: 2,
+                  minLines: 4,
+                  maxLines: 8,
+                  keyboardType: TextInputType.multiline,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _quoteTermsController,
                   decoration: const InputDecoration(
-                    labelText: 'Términos y condiciones (cotizaciones)',
+                    labelText:
+                        'Términos y condiciones de cotización (se imprime)',
+                    helperText:
+                        'Sale al pie de la cotización. Máximo 8 líneas: lo que '
+                        'sobre se recorta en el PDF.',
+                    helperMaxLines: 3,
+                    alignLabelWithHint: true,
                   ),
-                  maxLines: 2,
+                  minLines: 4,
+                  maxLines: 8,
+                  keyboardType: TextInputType.multiline,
                 ),
                 const SizedBox(height: 12),
                 const Divider(),
@@ -2016,20 +2036,37 @@ class _FiscalSettingsDialogState extends State<_FiscalSettingsDialog> {
                 const Divider(),
                 const SizedBox(height: 8),
                 // ── Documento ────────────────────────────────────────────
+                // OJO: estos dos son del perfil fiscal (branch_fiscal_settings)
+                // y NO son los que se imprimen. Los textos impresos se editan
+                // en "Editar sucursal".
                 TextFormField(
                   controller: _invoiceFooterController,
                   decoration: const InputDecoration(
-                    labelText: 'Nota de pie de factura',
+                    labelText: 'Nota de pie de factura (perfil fiscal)',
+                    helperText:
+                        'Referencia interna. La nota que se imprime se '
+                        'configura en "Editar sucursal".',
+                    helperMaxLines: 3,
+                    alignLabelWithHint: true,
                   ),
-                  maxLines: 2,
+                  minLines: 2,
+                  maxLines: 6,
+                  keyboardType: TextInputType.multiline,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _termsController,
                   decoration: const InputDecoration(
-                    labelText: 'Términos y condiciones',
+                    labelText: 'Términos y condiciones (perfil fiscal)',
+                    helperText:
+                        'Referencia interna. Los términos que se imprimen en '
+                        'la cotización se configuran en "Editar sucursal".',
+                    helperMaxLines: 3,
+                    alignLabelWithHint: true,
                   ),
-                  maxLines: 3,
+                  minLines: 2,
+                  maxLines: 6,
+                  keyboardType: TextInputType.multiline,
                 ),
               ],
             ),

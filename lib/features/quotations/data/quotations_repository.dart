@@ -41,7 +41,7 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     final row = await _client
         .from('quotations')
         .select(
-          'id, code, client_id, status, created_at, valid_until, notes, subtotal, tax_amount, total_amount, converted_sale_id, client_display_name, clients(full_name)',
+          'id, code, client_id, status, created_at, valid_until, notes, receipt_type, subtotal, tax_amount, total_amount, converted_sale_id, client_display_name, clients(full_name)',
         )
         .eq('id', quoteId)
         .single();
@@ -49,7 +49,7 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     final itemRows = await _client
         .from('quotation_items')
         .select(
-          'product_id, product_name, product_sku, description, quantity, unit_price, tax_rate',
+          'product_id, product_name, product_sku, description, quantity, unit_price, discount_amount, tax_rate',
         )
         .eq('quotation_id', quoteId)
         .order('created_at');
@@ -255,6 +255,14 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     if (normalized == null || normalized['quotation_id']?.toString() != quoteId) {
       throw Exception('No se pudo actualizar la cotización.');
     }
+
+    // `update_quotation_document` no recibe el tipo de comprobante (la
+    // migración 72 solo agregó la columna), así que se persiste aparte. La RLS
+    // de quotations ya exige acceso a la sucursal para hacer UPDATE.
+    await _client
+        .from('quotations')
+        .update({'receipt_type': normalizeQuoteReceiptType(input.receiptType)})
+        .eq('id', quoteId);
   }
 
   @override
@@ -263,10 +271,22 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     required String paymentMethod,
     String? cashSessionId,
   }) async {
+    // El comprobante declarado en la cotización manda al facturar: es ahí donde
+    // recién se consume la secuencia NCF.
+    final quoteRow = await _client
+        .from('quotations')
+        .select('receipt_type')
+        .eq('id', quoteId)
+        .single();
+    final receiptType = normalizeQuoteReceiptType(
+      _normalizeMap(quoteRow)['receipt_type']?.toString(),
+    );
+
     final result = await _client.rpc(
       'convert_quotation_to_sale',
       params: {
         'target_quotation_id': quoteId,
+        'requested_receipt_type': receiptType,
         'requested_payment_method': paymentMethod,
         if (cashSessionId != null && cashSessionId.isNotEmpty)
           'requested_cash_session_id': cashSessionId,
@@ -404,6 +424,8 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       'total_amount': total,
       'valid_until': input.validUntil.toUtc().toIso8601String(),
       'notes': _nullIfEmpty(input.notes),
+      // Solo declara el comprobante que se emitirá al facturar; no consume NCF.
+      'receipt_type': normalizeQuoteReceiptType(input.receiptType),
     };
   }
 
@@ -424,7 +446,9 @@ class QuotationsRepository implements QuotationsRepositoryContract {
                 _nullIfEmpty(item.productDescription) ?? item.productName,
             'quantity': item.quantity,
             'unit_price': item.unitPrice,
-            'discount_amount': 0,
+            // El descuento por línea debe persistirse: `line_subtotal` ya lo
+            // resta, así que dejarlo en 0 rompía el cuadre al reabrir/imprimir.
+            'discount_amount': item.discountAmount,
             'tax_rate': item.taxRate,
             'line_subtotal': item.lineSubtotal,
             'line_tax': item.lineTax,
@@ -509,7 +533,8 @@ class QuotationsRepository implements QuotationsRepositoryContract {
         .from('quotations')
         .select(
           'id, branch_id, code, status, created_at, valid_until, notes, '
-          'subtotal, tax_amount, total_amount, client_display_name, client_id',
+          'receipt_type, subtotal, tax_amount, total_amount, '
+          'client_display_name, client_id',
         )
         .eq('id', quoteId)
         .single();
@@ -536,9 +561,11 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       }
     }
 
+    // `quote_terms` es el texto legal de cotización configurado en "Editar
+    // sucursal"; el PDF lo dibuja al pie como "Términos y condiciones".
     final branchRows = await _client
         .from('branches')
-        .select('name, address, phone')
+        .select('name, address, phone, quote_terms')
         .eq('id', branchId)
         .limit(1);
     final branch = branchRows.isEmpty
@@ -564,11 +591,38 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     final itemRows = await _client
         .from('quotation_items')
         .select(
-          'product_name, product_sku, quantity, unit_price, '
-          'line_subtotal, line_tax, line_total',
+          'product_id, product_name, product_sku, quantity, unit_price, '
+          'discount_amount, line_subtotal, line_tax, line_total',
         )
         .eq('quotation_id', quoteId)
         .order('created_at');
+
+    final items = itemRows
+        .map((row) => Map<String, dynamic>.from(row as Map))
+        .toList(growable: false);
+
+    // Nota del producto (products.notes) para imprimirla bajo cada línea. Se
+    // consulta en lote, acotada a la sucursal de la cotización.
+    final productNotes = await _loadProductNotes(
+      items
+          .map((item) => item['product_id']?.toString())
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toSet(),
+      branchId: branchId,
+    );
+
+    final receiptType = normalizeQuoteReceiptType(
+      quote['receipt_type']?.toString(),
+    );
+    // La cotización nunca lleva NCF real (migración 72). El aviso
+    // "NCF: se asigna al facturar" lo dibujan A4 y térmico desde el propio
+    // documento (`printPendingNcfNotice`), así que aquí no se toca `notes`:
+    // el tamaño de papel se elige en el diálogo, DESPUÉS de preparado el
+    // documento, y adjuntarlo acá lo dejaría congelado al tamaño equivocado
+    // (o duplicado si el usuario cambia de tamaño).
+    final observation = _firstNonEmpty([settings['invoice_observation']]);
+    final printedNotes = _nullIfEmpty(quote['notes']?.toString());
 
     final quoteSource = QuotePrintSource(
       quoteId: quoteId,
@@ -598,7 +652,9 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       bankInfo: _firstNonEmpty([settings['company_bank_info']]),
       signatoryName: _firstNonEmpty([settings['company_signatory_name']]),
       signatoryTitle: _firstNonEmpty([settings['company_signatory_title']]),
-      observation: _firstNonEmpty([settings['invoice_observation']]),
+      observation: observation,
+      quoteTerms: _firstNonEmpty([branch['quote_terms']]),
+      receiptTypeLabel: quoteReceiptTypeDocumentLabel(receiptType),
       showItbis: settings['invoice_show_itbis'] != false,
       clientLegalName: _firstNonEmpty([client['legal_name']]),
       clientDocument: _clientDocLabel(
@@ -608,21 +664,25 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       clientAddress: _firstNonEmpty([client['address']]),
       clientPhone: _firstNonEmpty([client['phone']]),
       clientEmail: _firstNonEmpty([client['email']]),
-      notes: _nullIfEmpty(quote['notes']?.toString()),
+      notes: printedNotes,
       subtotal: _toDouble(quote['subtotal']),
       taxAmount: _toDouble(quote['tax_amount']),
       totalAmount: _toDouble(quote['total_amount']),
-      items: itemRows
-          .map((row) => Map<String, dynamic>.from(row as Map))
+      items: items
           .map(
             (item) => QuotePrintItemSource(
               description: (item['product_name'] ?? '').toString(),
               quantity: _toDouble(item['quantity']),
               unitPrice: _toDouble(item['unit_price']),
+              // `line_subtotal` es la base imponible SIN ITBIS y
+              // `line_total = line_subtotal + line_tax` (ver QuoteCreateItem),
+              // que es justo lo que el A4 imprime como columnas separadas.
               lineSubtotal: _toDouble(item['line_subtotal']),
               lineTax: _toDouble(item['line_tax']),
               lineTotal: _toDouble(item['line_total']),
+              lineDiscount: _toDouble(item['discount_amount']),
               sku: item['product_sku']?.toString(),
+              notes: productNotes[item['product_id']?.toString()],
             ),
           )
           .toList(growable: false),
@@ -632,6 +692,31 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       quote: quoteSource,
       paperSize: paperSize,
     );
+  }
+
+  /// Notas de producto (`products.notes`) por id, en una sola consulta y
+  /// acotadas a la sucursal. Los ids sin nota quedan fuera del mapa.
+  Future<Map<String, String>> _loadProductNotes(
+    Set<String> productIds, {
+    required String branchId,
+  }) async {
+    if (productIds.isEmpty) return const {};
+
+    final rows = await _client
+        .from('products')
+        .select('id, notes')
+        .eq('branch_id', branchId)
+        .inFilter('id', productIds.toList(growable: false));
+
+    final notes = <String, String>{};
+    for (final row in rows) {
+      final map = Map<String, dynamic>.from(row as Map);
+      final id = map['id']?.toString();
+      final note = _nullIfEmpty(map['notes']?.toString());
+      if (id == null || id.isEmpty || note == null) continue;
+      notes[id] = note;
+    }
+    return notes;
   }
 
   Future<String?> _currentBranchId() async {

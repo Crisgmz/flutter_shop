@@ -65,12 +65,20 @@ class CashSessionMetrics {
     this.otherPayments = 0,
     this.salesTotal = 0,
     this.changeGiven = 0,
+    this.cashWithdrawnForChange = 0,
+    this.cashRefunds = 0,
+    this.creditGenerated = 0,
+    this.cashDeposits = 0,
+    this.cashWithdrawals = 0,
+    this.cashAdjustments = 0,
   });
 
   final double totalPayments;
   final double cashPayments;
   final double cardPayments;
   final double transferPayments;
+
+  /// "Otro" = todo lo que no es efectivo / tarjeta / transferencia / crédito.
   final double otherPayments;
   final double totalExpenses;
   final double cashExpenses;
@@ -78,16 +86,71 @@ class CashSessionMetrics {
   /// Total vendido en la sesión (suma de total_amount de las ventas).
   final double salesTotal;
 
-  /// Cambio entregado en efectivo (sobrepagos). Sale del efectivo de la caja.
+  /// Cambio total devuelto al cliente (columna `sales.change_amount`). Es un
+  /// dato contable del ticket, NO el efectivo que sale de la gaveta: cuando el
+  /// cliente paga de más en efectivo, ese efectivo ya entró en `cashPayments`.
   final double changeGiven;
+
+  /// Efectivo que realmente SALE de la gaveta por concepto de cambio: solo
+  /// ocurre cuando el exceso vino por tarjeta o transferencia. Es informativo
+  /// (tarjeta "Efectivo sacado de caja"); no entra en el esperado.
+  final double cashWithdrawnForChange;
+
+  /// Devoluciones reembolsadas EN EFECTIVO contra esta sesión (tabla
+  /// `returns`, filas con `refund_method = 'cash'`). Sale de la gaveta.
+  final double cashRefunds;
+
+  /// Crédito generado en el turno: total de las ventas no anuladas de la
+  /// sesión menos lo cobrado de esas ventas dentro de la misma sesión. No es
+  /// un `payment` con método 'credit' (cuando la venta va a crédito no se
+  /// inserta pago), por eso se calcula aparte.
+  ///
+  /// Se calcula así, y no con `balance_due`, para que el cierre sea estable en
+  /// el tiempo: los abonos posteriores bajan `balance_due` y cambiaban el
+  /// número al reimprimir un cierre ya cerrado.
+  final double creditGenerated;
+
+  /// Efectivo METIDO a mano en la gaveta durante el turno: movimientos
+  /// `deposit` + `opening_top_up` de `cash_register_movements`. El refuerzo de
+  /// apertura es una reposición de fondo, así que entra igual que un depósito.
+  final double cashDeposits;
+
+  /// Sangrías: movimientos `withdrawal` de `cash_register_movements`. Se
+  /// guarda en positivo; en el esperado se resta.
+  final double cashWithdrawals;
+
+  /// Ajustes manuales (`adjustment`). El check de la tabla obliga a
+  /// `amount > 0` y el trigger SQL los suma, así que aquí también suman
+  /// (sobrante declarado por el cajero).
+  final double cashAdjustments;
 
   double get netPayments => _round2(totalPayments - totalExpenses);
 
   /// Efectivo esperado = apertura + cobros en efectivo − gastos en efectivo
-  /// − cambio entregado en efectivo.
+  /// − cambio entregado − devoluciones pagadas en efectivo
+  /// + depósitos/ajustes manuales − sangrías.
+  ///
+  /// OJO: aquí va `changeGiven` (el cambio TOTAL del ticket), NO
+  /// `cashWithdrawnForChange`. No "arreglar" esto cambiando un campo por el
+  /// otro: `cashPayments` ya incluye el efectivo que el cliente entregó de
+  /// más, así que restar el cambio completo devuelve el neto correcto. Si se
+  /// restara solo el efectivo sacado de la gaveta, el esperado quedaría
+  /// inflado por el sobrepago en efectivo.
+  ///
+  /// Los movimientos manuales (depósitos y sangrías) SÍ mueven la gaveta y por
+  /// eso entran aquí: antes se ignoraban y el cajero cargaba con la
+  /// diferencia. Ver `_fetchSessionMetrics` para el detalle de por qué esos
+  /// movimientos no duplican devoluciones ni gastos.
   double expectedCashFromOpening(double openingAmount) {
     return _round2(
-      openingAmount + cashPayments - cashExpenses - changeGiven,
+      openingAmount +
+          cashPayments -
+          cashExpenses -
+          changeGiven -
+          cashRefunds +
+          cashDeposits +
+          cashAdjustments -
+          cashWithdrawals,
     );
   }
 }
@@ -98,11 +161,26 @@ class CashRegisterData {
     required this.openMetrics,
     required this.recentSessions,
     this.pettyCashExpensesToday = 0,
+    this.expectedByOpenSessionId = const {},
   });
 
   final CashSessionEntity? openSession;
   final CashSessionMetrics? openMetrics;
   final List<CashSessionEntity> recentSessions;
+
+  /// Esperado REAL (fórmula completa de `expectedCashFromOpening`) por cada
+  /// sesión ABIERTA de `recentSessions`.
+  ///
+  /// `cash_sessions.expected_amount` no sirve mientras la sesión está abierta:
+  /// el trigger SQL solo mantiene apertura + movimientos manuales, no ve
+  /// ventas, gastos ni devoluciones. Mostrar ese valor en la tabla daba dos
+  /// "Esperado" distintos del mismo turno. Al cerrar, `closeSession` graba el
+  /// cálculo completo, así que en las sesiones cerradas el valor de la base sí
+  /// es el bueno.
+  ///
+  /// Si el cálculo de alguna sesión falla, esa sesión queda fuera del mapa: la
+  /// UI muestra un guión en vez de un número parcial.
+  final Map<String, double> expectedByOpenSessionId;
 
   /// Total de gastos de CAJA CHICA registrados hoy en la sucursal. Informativo:
   /// los gastos se manejan en Caja Chica, no en la sesión de la caja principal.
@@ -371,11 +449,33 @@ class CashRegisterRepository {
       metrics = await _fetchSessionMetrics(openSession.id, branchId);
     }
 
+    // Esperado real de las sesiones abiertas de la lista. La sesión activa ya
+    // tiene sus métricas calculadas arriba, así que se reutilizan; las demás
+    // (un mismo usuario puede tener varias cajas abiertas) se calculan aparte.
+    // Normalmente son una o dos filas, no una tabla entera.
+    final expectedByOpenSessionId = <String, double>{};
+    if (openSession != null && metrics != null) {
+      expectedByOpenSessionId[openSession.id] =
+          metrics.expectedCashFromOpening(openSession.openingAmount);
+    }
+    for (final session in recentSessions) {
+      if (!session.isOpen) continue;
+      if (expectedByOpenSessionId.containsKey(session.id)) continue;
+      try {
+        final sessionMetrics = await _fetchSessionMetrics(session.id, branchId);
+        expectedByOpenSessionId[session.id] =
+            sessionMetrics.expectedCashFromOpening(session.openingAmount);
+      } catch (_) {
+        // Sin métricas no se inventa un número: la fila muestra un guión.
+      }
+    }
+
     return CashRegisterData(
       openSession: openSession,
       openMetrics: metrics,
       recentSessions: recentSessions,
       pettyCashExpensesToday: pettyCashExpensesToday,
+      expectedByOpenSessionId: Map.unmodifiable(expectedByOpenSessionId),
     );
   }
 
@@ -455,6 +555,11 @@ class CashRegisterRepository {
       throw Exception('No hay una sesión de caja abierta.');
     }
 
+    // El cierre reescribe `expected_amount` con el cálculo completo de Dart.
+    // El trigger `apply_cash_register_movement` solo mantiene apertura +
+    // movimientos manuales (no ve ventas, gastos ni devoluciones), así que ese
+    // valor parcial se reemplaza a propósito. Desde este arreglo el término de
+    // movimientos de las dos fórmulas coincide.
     final metrics = await _fetchSessionMetrics(openSession.id, branchId);
     final expected = metrics.expectedCashFromOpening(openSession.openingAmount);
     final closingAmount = _round2(input.closingAmount);
@@ -567,7 +672,9 @@ class CashRegisterRepository {
   ) async {
     final payments = await _client
         .from('payments')
-        .select('amount, payment_method')
+        // `sale_id` se necesita para saber cuánto de cada venta se cobró por
+        // un método distinto al efectivo (ver "Efectivo sacado de caja").
+        .select('sale_id, amount, payment_method')
         .eq('branch_id', branchId)
         .eq('cash_session_id', cashSessionId);
 
@@ -596,14 +703,16 @@ class CashRegisterRepository {
     final cashPayments = sumByMethod((m) => m == 'cash');
     final cardPayments = sumByMethod((m) => m == 'card');
     final transferPayments = sumByMethod((m) => m == 'transfer');
-    // "Otro" = todo lo que no es efectivo/tarjeta/transferencia.
+    // "Otro" = todo lo que no es efectivo/tarjeta/transferencia/crédito.
+    // El crédito NO se suma aquí: se reporta aparte como `creditGenerated`.
     final otherPayments = sumByMethod(
-        (m) => m != 'cash' && m != 'card' && m != 'transfer');
+        (m) => m != 'cash' && m != 'card' && m != 'transfer' && m != 'credit');
 
-    // Total vendido y cambio entregado (sobrepagos) de las ventas de la sesión.
+    // Total vendido, cambio entregado (sobrepagos) y crédito generado por las
+    // ventas de la sesión.
     final salesRows = await _client
         .from('sales')
-        .select('total_amount, change_amount')
+        .select('id, total_amount, change_amount, balance_due')
         .eq('branch_id', branchId)
         .eq('cash_session_id', cashSessionId)
         .neq('status', 'voided');
@@ -611,6 +720,109 @@ class CashRegisterRepository {
         0, (sum, item) => sum + _toDouble((item as Map)['total_amount'])));
     final changeGiven = _round2(salesRows.fold<double>(
         0, (sum, item) => sum + _toDouble((item as Map)['change_amount'])));
+
+    // Crédito generado en el turno = total de las ventas de esta sesión MENOS
+    // lo que se cobró de esas mismas ventas DENTRO de esta sesión.
+    //
+    // A propósito NO se usa `sales.balance_due` (ni `status`): los dos siguen
+    // mutando cuando el cliente abona días después en otra caja, así que
+    // reimprimir un cierre YA CERRADO mostraba un crédito distinto al del día
+    // y el documento dejaba de explicar de dónde salió la venta. Los pagos sí
+    // quedan clavados a su `cash_session_id`, de modo que este número no
+    // cambia nunca después del cierre.
+    final collectedInSessionBySale = <String, double>{};
+    for (final item in payments) {
+      final row = item as Map;
+      // Un pago con método 'credit' no es cobro: es la venta cargada a la
+      // cuenta del cliente (mismo criterio que `otherPayments`).
+      if ((row['payment_method'] ?? '').toString() == 'credit') continue;
+      final saleId = (row['sale_id'] ?? '').toString();
+      if (saleId.isEmpty) continue;
+      collectedInSessionBySale[saleId] =
+          (collectedInSessionBySale[saleId] ?? 0) + _toDouble(row['amount']);
+    }
+    var creditAccum = 0.0;
+    for (final item in salesRows) {
+      final row = item as Map;
+      final total = _toDouble(row['total_amount']);
+      final collected =
+          collectedInSessionBySale[(row['id'] ?? '').toString()] ?? 0;
+      // El cobro se topa al total de la venta: en un sobrepago el pago
+      // registrado incluye el efectivo que se devolvió como cambio, y sin tope
+      // ese exceso taparía el crédito de otra venta del turno.
+      final pending = total - (collected > total ? total : collected);
+      if (pending > 0) creditAccum += pending;
+    }
+    final creditGenerated = _round2(creditAccum);
+
+    // Efectivo REALMENTE sacado de la gaveta por cambio. Solo sale efectivo
+    // cuando el exceso lo pagó el cliente por tarjeta o transferencia; si pagó
+    // de más en efectivo, ese efectivo ya entró en la gaveta y el neto es 0.
+    // Por venta: clamp(pagos no-efectivo − total de la venta, 0, cambio).
+    // Los pagos considerados son SOLO los de esta sesión de caja y los que
+    // apuntan a esa venta, así que un abono posterior desde Cobros (que cae en
+    // la sesión abierta en ese momento) no infla el cálculo. Además se ignoran
+    // las ventas con saldo pendiente: una venta a crédito no devuelve cambio.
+    final nonCashBySale = <String, double>{};
+    for (final item in payments) {
+      final row = item as Map;
+      if ((row['payment_method'] ?? '').toString() == 'cash') continue;
+      final saleId = (row['sale_id'] ?? '').toString();
+      if (saleId.isEmpty) continue;
+      nonCashBySale[saleId] =
+          (nonCashBySale[saleId] ?? 0) + _toDouble(row['amount']);
+    }
+    var withdrawnForChange = 0.0;
+    for (final item in salesRows) {
+      final row = item as Map;
+      final change = _toDouble(row['change_amount']);
+      if (change <= 0) continue;
+      if (_toDouble(row['balance_due']) > 0) continue;
+      final nonCash = nonCashBySale[(row['id'] ?? '').toString()] ?? 0;
+      final excess = nonCash - _toDouble(row['total_amount']);
+      if (excess <= 0) continue;
+      withdrawnForChange += excess > change ? change : excess;
+    }
+    final cashWithdrawnForChange = _round2(withdrawnForChange);
+
+    // Devoluciones de la sesión. Se cuentan UNA sola vez, por la tabla
+    // `returns`: la migración 69 a propósito no inserta un movimiento de caja
+    // por la devolución, así que no hay que leerlas también de
+    // `cash_register_movements` o se restarían dos veces del esperado.
+    //
+    // Va en try/catch (igual que caja chica): si en algún entorno falta la
+    // tabla o la columna `cash_session_id`/`refund_method`, el error de
+    // PostgREST no puede tumbar la pantalla de Caja ni, peor, impedir CERRAR
+    // el turno (`closeSession` también pasa por aquí).
+    final cashRefunds = await _fetchCashRefunds(cashSessionId, branchId);
+
+    // Movimientos manuales de efectivo de la sesión ("Agregar efectivo" y
+    // "Sangría" de la pantalla de Caja). Son plata que entra o sale de la
+    // gaveta sin pasar por una venta, así que tienen que entrar al esperado.
+    //
+    // POR QUÉ NO SE CUENTAN DOS VECES (revisado camino por camino con un grep
+    // de inserts sobre lib/ y supabase/):
+    //   · El ÚNICO punto de la app que inserta en `cash_register_movements` es
+    //     `addMovement` de este mismo repositorio (los dos botones de Caja).
+    //     Ningún RPC del backend inserta ahí.
+    //   · Devoluciones → ya se cuentan por la tabla `returns` (`cashRefunds`).
+    //     La migración 20260814_69 documenta a propósito que NO inserta un
+    //     movimiento de caja por la devolución, justamente para no descontarla
+    //     dos veces.
+    //   · Gastos → ya se cuentan por la tabla `expenses` (`cashExpenses`). El
+    //     módulo de Gastos solo escribe en `expenses`, y la caja chica vive en
+    //     sus propias tablas `petty_cash_*`.
+    // Aun así se descartan explícitamente las filas con
+    // `reference_type` = 'return' | 'expense': si mañana alguien agrega un
+    // flujo (o corre un script) que sí inserte el movimiento, el esperado no
+    // debe restar el mismo billete dos veces.
+    //
+    // También va en try/catch, por lo mismo que las devoluciones: un dato
+    // accesorio que no se pueda leer nunca debe dejar al cajero sin cerrar.
+    final movements = await _fetchMovementTotals(cashSessionId, branchId);
+    final cashDeposits = movements.deposits;
+    final cashWithdrawals = movements.withdrawals;
+    final cashAdjustments = movements.adjustments;
 
     final totalExpenses = _round2(
       expenses.fold<double>(
@@ -636,9 +848,79 @@ class CashRegisterRepository {
       otherPayments: otherPayments,
       salesTotal: salesTotal,
       changeGiven: changeGiven,
+      cashWithdrawnForChange: cashWithdrawnForChange,
+      cashRefunds: cashRefunds,
+      creditGenerated: creditGenerated,
       totalExpenses: totalExpenses,
       cashExpenses: cashExpenses,
+      cashDeposits: cashDeposits,
+      cashWithdrawals: cashWithdrawals,
+      cashAdjustments: cashAdjustments,
     );
+  }
+
+  /// Devoluciones reembolsadas en efectivo contra la sesión. Devuelve 0 si la
+  /// consulta falla (tabla o columna ausente en algún entorno): es un dato
+  /// accesorio y no puede tumbar la pantalla de Caja ni bloquear el cierre.
+  Future<double> _fetchCashRefunds(
+    String cashSessionId,
+    String branchId,
+  ) async {
+    try {
+      final rows = await _client
+          .from('returns')
+          .select('total_amount, refund_method')
+          .eq('branch_id', branchId)
+          .eq('cash_session_id', cashSessionId);
+      return _round2(rows.fold<double>(0, (sum, item) {
+        final row = item as Map;
+        if ((row['refund_method'] ?? '').toString() != 'cash') return sum;
+        return sum + _toDouble(row['total_amount']);
+      }));
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Totales de movimientos manuales de la sesión (depósitos, sangrías y
+  /// ajustes). Devuelve ceros si la consulta falla, por la misma razón que
+  /// `_fetchCashRefunds`.
+  Future<({double deposits, double withdrawals, double adjustments})>
+      _fetchMovementTotals(String cashSessionId, String branchId) async {
+    try {
+      final rows = await _client
+          .from('cash_register_movements')
+          .select('movement_type, amount, reference_type')
+          .eq('branch_id', branchId)
+          .eq('cash_session_id', cashSessionId);
+
+      var depositsAccum = 0.0;
+      var withdrawalsAccum = 0.0;
+      var adjustmentsAccum = 0.0;
+      for (final item in rows) {
+        final row = item as Map;
+        final reference = (row['reference_type'] ?? '').toString();
+        if (reference == 'return' || reference == 'expense') continue;
+        final amount = _toDouble(row['amount']);
+        final type = (row['movement_type'] ?? '').toString();
+        if (type == 'deposit' || type == 'opening_top_up') {
+          // 'opening_top_up' es reposición del fondo de apertura: entra igual
+          // que un depósito (el trigger SQL lo suma con el mismo signo).
+          depositsAccum += amount;
+        } else if (type == 'withdrawal') {
+          withdrawalsAccum += amount;
+        } else if (type == 'adjustment') {
+          adjustmentsAccum += amount;
+        }
+      }
+      return (
+        deposits: _round2(depositsAccum),
+        withdrawals: _round2(withdrawalsAccum),
+        adjustments: _round2(adjustmentsAccum),
+      );
+    } catch (_) {
+      return (deposits: 0.0, withdrawals: 0.0, adjustments: 0.0);
+    }
   }
 
   /// Registra un movimiento manual de efectivo en la sesión activa.

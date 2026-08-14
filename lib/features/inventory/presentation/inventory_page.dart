@@ -1729,10 +1729,15 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
 
     _categoryId = product?.categoryId;
     _isActive = product?.isActive ?? true;
-    _isService = product?.isService ?? false;
+    // Producto nuevo: arranca con el default global de "es servicio"
+    // (app_settings.inv_default_is_service). Al editar manda el producto.
+    _isService = product?.isService ??
+        (ref.read(appSettingsProvider).valueOrNull?.invDefaultIsService ??
+            false);
     _isTaxExempt = product?.isTaxExempt ?? false;
     _priceIncludesTax = product?.priceIncludesTax ?? false;
-    _trackInventory = product?.trackInventory ?? true;
+    // Un servicio no lleva control de inventario.
+    _trackInventory = product?.trackInventory ?? !_isService;
     _imeis.addAll(product?.imeis ?? const <String>[]);
   }
 
@@ -1958,36 +1963,50 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   controllers: _priceTierControllers,
                 ),
                 const SizedBox(height: 10),
-                _formRow(isMobile, [
-                  TextFormField(
-                    controller: _stockController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
+                // Un servicio no maneja inventario: se ocultan Stock y Stock
+                // mínimo para no reintroducir valores (el submit fuerza 0).
+                if (_isService)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'Servicio: no maneja stock ni stock mínimo.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppTokens.textMuted,
+                      ),
                     ),
-                    decoration: const InputDecoration(labelText: 'Stock'),
-                    validator: (value) {
-                      final parsed = double.tryParse(value ?? '');
-                      if (parsed == null) return 'Stock inválido';
-                      return null;
-                    },
-                  ),
-                  TextFormField(
-                    controller: _minStockController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
+                  )
+                else
+                  _formRow(isMobile, [
+                    TextFormField(
+                      controller: _stockController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(labelText: 'Stock'),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '');
+                        if (parsed == null) return 'Stock inválido';
+                        return null;
+                      },
                     ),
-                    decoration: const InputDecoration(
-                      labelText: 'Stock mínimo',
+                    TextFormField(
+                      controller: _minStockController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Stock mínimo',
+                      ),
+                      validator: (value) {
+                        final parsed = double.tryParse(value ?? '');
+                        if (parsed == null || parsed < 0) {
+                          return 'Mínimo inválido';
+                        }
+                        return null;
+                      },
                     ),
-                    validator: (value) {
-                      final parsed = double.tryParse(value ?? '');
-                      if (parsed == null || parsed < 0) {
-                        return 'Mínimo inválido';
-                      }
-                      return null;
-                    },
-                  ),
-                ]),
+                  ]),
                 const SizedBox(height: 10),
                 _formRow(isMobile, [
                   TextFormField(
@@ -2065,7 +2084,15 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   value: _isService,
                   onChanged: (value) => setState(() {
                     _isService = value;
-                    if (value) _trackInventory = false;
+                    // Al marcar servicio se apaga el control de inventario; al
+                    // desmarcarlo se restaura, porque un producto físico sí lo
+                    // lleva (antes quedaba apagado para siempre).
+                    _trackInventory = !value;
+                    // Los controladores de stock NO se tocan: el switch solo
+                    // oculta los campos. Si se pusieran en '0' al marcar
+                    // servicio, apagarlo de nuevo dejaría 0 escrito y el
+                    // guardado borraría el stock real del producto. Convertir
+                    // a servicio ya se resuelve en `_submit`, que fuerza 0.
                   }),
                   title: const Text('Es servicio'),
                   subtitle: const Text('No lleva control de inventario físico'),
@@ -2124,8 +2151,10 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       cost: double.parse(_costController.text),
       price: double.parse(_priceController.text),
       taxRate: double.parse(_taxController.text),
-      stock: double.parse(_stockController.text),
-      minStock: double.parse(_minStockController.text),
+      // Un servicio nunca guarda stock: los campos están ocultos y se fuerza 0
+      // para no reintroducir valores viejos al convertir un producto físico.
+      stock: _isService ? 0 : double.parse(_stockController.text),
+      minStock: _isService ? 0 : double.parse(_minStockController.text),
       isActive: _isActive,
       brand: _brandController.text,
       model: _modelController.text,

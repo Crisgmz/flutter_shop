@@ -12,13 +12,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../features/permissions/presentation/permissions_providers.dart';
 import '../../features/shell/presentation/shell_providers.dart';
+
+/// Código del permiso "Ver ganancia" en el catálogo (`permissions.code`).
+const kReportsProfitPermission = 'reports.profit';
 
 /// Snapshot inmutable del rol del usuario actual, con helpers semánticos.
 class RoleAccess {
-  const RoleAccess({required this.roleCode});
+  const RoleAccess({
+    required this.roleCode,
+    this.permissionOverrides = const <String, bool>{},
+  });
 
   final String roleCode;
+
+  /// Overrides propios (`permission_code -> granted`) de la sucursal activa.
+  /// Vacío = el usuario no tiene excepciones y todo sale del rol.
+  final Map<String, bool> permissionOverrides;
+
+  /// Permiso efectivo: manda el override explícito del usuario si existe; si
+  /// no, el valor por defecto del rol, que es el comportamiento histórico.
+  /// Sin overrides configurados, `hasPermission` devuelve siempre
+  /// `roleDefault`, así que ningún gate cambia de conducta.
+  bool hasPermission(String code, {required bool roleDefault}) =>
+      permissionOverrides[code] ?? roleDefault;
 
   bool get isAdmin => roleCode == 'admin';
   bool get isSupervisor => roleCode == 'supervisor';
@@ -46,12 +64,28 @@ class RoleAccess {
   bool get canViewFiscalReports => isAdmin || isAccountant;
 }
 
-/// Provider que expone el `RoleAccess` actual. Lee desde
+/// Provider que expone el `RoleAccess` actual. Lee el rol desde
 /// `shellAccessProfileProvider` (que ya combina perfil + override por
-/// sucursal).
+/// sucursal) y las excepciones desde `myPermissionOverridesProvider`.
 final roleAccessProvider = Provider<RoleAccess>((ref) {
   final access = ref.watch(shellAccessProfileProvider).valueOrNull;
-  return RoleAccess(roleCode: access?.roleCode ?? 'cashier');
+  final overrides = ref.watch(myPermissionOverridesProvider).valueOrNull;
+  return RoleAccess(
+    roleCode: access?.roleCode ?? 'cashier',
+    permissionOverrides: overrides ?? const <String, bool>{},
+  );
+});
+
+/// ¿Puede el usuario ver la ganancia (columnas/KPIs de utilidad)?
+///
+/// Por rol: admin, supervisor y contador sí; cajero no. Un override explícito
+/// sobre `reports.profit` manda sobre el rol en ambos sentidos.
+final canViewProfitProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kReportsProfitPermission,
+    roleDefault: access.isAdmin || access.isSupervisor || access.isAccountant,
+  );
 });
 
 /// Envuelve un widget y lo oculta si el rol actual no está en `allowed`.

@@ -32,6 +32,9 @@ class SalesProduct {
     this.priceTier10,
     this.imageUrl,
     this.priceIncludesTax = false,
+    this.isService = false,
+    this.trackInventory = true,
+    this.isTaxExempt = false,
     this.imeis = const <String>[],
   });
 
@@ -62,6 +65,28 @@ class SalesProduct {
   final double? priceTier9;
   final double? priceTier10;
   final String? imageUrl;
+
+  /// Producto de servicio (mano de obra, instalación): no es una existencia
+  /// física, así que no mueve inventario ni se muestra con existencia.
+  final bool isService;
+
+  /// Si el producto controla existencias. Default true; la migración 68 lo
+  /// apaga para todos los servicios.
+  final bool trackInventory;
+
+  /// Verdadero solo cuando el producto realmente controla existencias. Es la
+  /// condición que debe usarse en el POS para validar/mostrar stock.
+  bool get tracksStock => !isService && trackInventory;
+
+  /// Espeja `products.is_tax_exempt`. Manda sobre `taxRate`: el formulario de
+  /// inventario deja marcar "Exento de ITBIS" sin poner la tasa en 0.
+  final bool isTaxExempt;
+
+  /// Tasa de ITBIS que realmente se cobra. Es la MISMA regla del RPC
+  /// (`case when p.is_tax_exempt then 0 else p.tax_rate end`): usarla en el
+  /// POS es lo que evita que la pantalla cobre un impuesto que el backend no
+  /// guarda.
+  double get effectiveTaxRate => isTaxExempt ? 0 : taxRate;
 
   /// IMEIs disponibles del producto (celulares/dispositivos serializados).
   final List<String> imeis;
@@ -136,6 +161,11 @@ class SalesProduct {
       priceTier10: optionalDouble(map['price_tier_10']),
       imageUrl: map['image_url']?.toString(),
       priceIncludesTax: map['price_includes_tax'] == true,
+      isTaxExempt: map['is_tax_exempt'] == true,
+      isService: map['is_service'] == true,
+      // Default true: si la columna no viene (o es null) el producto controla
+      // existencias como siempre.
+      trackInventory: map['track_inventory'] != false,
       imeis: map['imeis'] is List
           ? (map['imeis'] as List)
               .map((e) => e.toString())
@@ -228,32 +258,55 @@ class SaleCartItem {
   /// cantidad de la línea corresponde a la cantidad de IMEIs.
   final List<String> imeis;
 
-  /// Monto bruto antes de descuento: cantidad × precio unitario.
-  double get lineGross => _round2(quantity * unitPrice);
+  /// Tasa de ITBIS que se cobra en esta línea: 0 si el producto está exento,
+  /// igual que el RPC. Es la que debe usar cualquier cálculo o pantalla del
+  /// POS; usar `product.taxRate` a secas cobra impuesto que el backend no
+  /// registra.
+  double get taxRate => product.effectiveTaxRate;
 
-  /// Monto del descuento aplicado.
-  double get lineDiscount => _round2(lineGross * (discountPct / 100));
+  // Toda la aritmética va en CENTAVOS ENTEROS (ver sale_checkout_service):
+  // es la única forma de que la pantalla dé exactamente lo mismo que el
+  // `numeric` de Postgres. De estos getters sale el total que ve el cajero y
+  // el monto que se manda como pagos: si difieren del RPC aunque sea un
+  // centavo, el pago dividido rebota o la caja queda descuadrada.
+
+  double get lineGrossCents => grossCents(quantity, unitPrice);
+
+  double get lineDiscountCents => (lineGrossCents * (discountPct / 100))
+      .roundToDouble()
+      .clamp(0, lineGrossCents)
+      .toDouble();
 
   /// Bruto después de descuento. Con precio exclusivo es la base imponible;
   /// con precio ITBIS-incluido es el TOTAL a cobrar de la línea.
-  double get _lineNet => _round2(lineGross - lineDiscount);
+  double get _lineNetCents => lineGrossCents - lineDiscountCents;
 
-  bool get _taxIncluded =>
-      product.priceIncludesTax && product.taxRate > 0;
+  bool get _taxIncluded => product.priceIncludesTax && taxRate > 0;
 
   /// ITBIS de la línea. Exclusivo: se agrega encima (base × t/100).
   /// Incluido: se EXTRAE del monto cobrado (neto × t/(100+t)), así el total
   /// queda exacto (100.00 sigue siendo 100.00).
-  double get lineTax => _taxIncluded
-      ? _round2(_lineNet * product.taxRate / (100 + product.taxRate))
-      : _round2(_lineNet * (product.taxRate / 100));
+  double get lineTaxCents =>
+      taxCents(_lineNetCents, taxRate, inclusive: _taxIncluded);
+
+  double get lineSubtotalCents =>
+      _taxIncluded ? _lineNetCents - lineTaxCents : _lineNetCents;
+
+  double get lineTotalCents =>
+      _taxIncluded ? _lineNetCents : _lineNetCents + lineTaxCents;
+
+  /// Monto bruto antes de descuento: cantidad × precio unitario.
+  double get lineGross => fromCents(lineGrossCents);
+
+  /// Monto del descuento aplicado.
+  double get lineDiscount => fromCents(lineDiscountCents);
+
+  double get lineTax => fromCents(lineTaxCents);
 
   /// Base imponible de la línea (lo que factura sin ITBIS).
-  double get lineSubtotal =>
-      _taxIncluded ? _round2(_lineNet - lineTax) : _lineNet;
+  double get lineSubtotal => fromCents(lineSubtotalCents);
 
-  double get lineTotal =>
-      _taxIncluded ? _lineNet : _round2(lineSubtotal + lineTax);
+  double get lineTotal => fromCents(lineTotalCents);
 }
 
 /// Una línea de pago para ventas con pago mixto (varios métodos que suman el
@@ -414,7 +467,9 @@ class SalesRepository {
           .from('products')
           .select(
             'id, name, sku, barcode, category_id, price, cost, tax_rate, stock, '
-            'is_active, price_includes_tax, price_tier_1, price_tier_2, price_tier_3, '
+            'is_active, price_includes_tax, is_tax_exempt, is_service, '
+            'track_inventory, '
+            'price_tier_1, price_tier_2, price_tier_3, '
             'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
             'price_tier_8, price_tier_9, price_tier_10, image_url, imeis',
           )
@@ -475,11 +530,18 @@ class SalesRepository {
                   // unitPrice ya respeta el tier del cliente si aplica
                   price: item.unitPrice,
                   taxRate: item.product.taxRate,
+                  // El exento manda sobre la tasa: el RPC cobra 0 aunque el
+                  // producto tenga tax_rate 18 en el catálogo.
+                  isTaxExempt: item.product.isTaxExempt,
                   stock: item.product.stock,
                   isActive: item.product.isActive,
                   priceIncludesTax: item.product.priceIncludesTax,
+                  tracksStock: item.product.tracksStock,
                 ),
                 quantity: item.quantity,
+                // El descuento viaja como MONTO hasta el RPC; si se quedara
+                // en el cliente la venta se registraría al precio bruto.
+                discountAmount: item.lineDiscount,
                 imeis: item.imeis,
               ),
             )
@@ -588,10 +650,16 @@ class SalesRepository {
                   name: item.product.name,
                   price: item.unitPrice,
                   taxRate: item.product.taxRate,
+                  // El exento manda sobre la tasa: el RPC cobra 0 aunque el
+                  // producto tenga tax_rate 18 en el catálogo.
+                  isTaxExempt: item.product.isTaxExempt,
                   stock: item.product.stock,
                   isActive: item.product.isActive,
+                  priceIncludesTax: item.product.priceIncludesTax,
+                  tracksStock: item.product.tracksStock,
                 ),
                 quantity: item.quantity,
+                discountAmount: item.lineDiscount,
                 imeis: item.imeis,
               ),
             )
@@ -655,7 +723,7 @@ class SalesRepository {
 
     final itemRows = await _client
         .from('sale_items')
-        .select('product_id, quantity, unit_price, imeis')
+        .select('product_id, quantity, unit_price, discount_amount, imeis')
         .eq('branch_id', branchId)
         .eq('sale_id', saleId)
         .order('created_at');
@@ -672,10 +740,19 @@ class SalesRepository {
       if (product == null) continue;
       final qty = _toDouble(row['quantity']);
       if (qty <= 0) continue;
+      final unitPrice = _toDouble(row['unit_price']);
+      // El carrito trabaja con porcentaje; la línea guardada trae el monto.
+      // Se reconstruye el porcentaje para no perder el descuento al reabrir.
+      final gross = fromCents(grossCents(qty, unitPrice));
+      final savedDiscount = _toDouble(row['discount_amount']);
+      final discountPct = (gross > 0 && savedDiscount > 0)
+          ? (savedDiscount / gross * 100).clamp(0, 100).toDouble()
+          : 0.0;
       items.add(SaleCartItem(
         product: product,
         quantity: qty,
-        unitPrice: _toDouble(row['unit_price']),
+        unitPrice: unitPrice,
+        discountPct: discountPct,
         imeis: row['imeis'] is List
             ? (row['imeis'] as List)
                 .map((e) => e.toString())
@@ -693,9 +770,15 @@ class SalesRepository {
     );
   }
 
+  /// Prepara el trabajo de impresión de una venta.
+  ///
+  /// [allowPending] es opt-in (default false, para no cambiar el resto de los
+  /// call-sites): lo usa el historial para imprimir una CUENTA GUARDADA
+  /// (`pending`), que sale sin NCF y sin pagos.
   Future<PreparedPrintJobData?> prepareCompletedSalePrintJob({
     required String saleId,
     PrintPaperSize paperSize = PrintPaperSize.thermal80mm,
+    bool allowPending = false,
   }) async {
     final saleRows = await _client
         .from('sales')
@@ -712,8 +795,13 @@ class SalesRepository {
 
     final sale = Map<String, dynamic>.from(saleRows.first as Map);
     final status = (sale['status'] ?? '').toString().trim().toLowerCase();
-    // Permitimos imprimir tanto ventas pagadas como ventas a crédito.
-    if (status != 'completed' && status != 'credit') {
+    // Permitimos imprimir ventas pagadas y a crédito. Las cuentas GUARDADAS
+    // (`pending`) solo cuando el caller lo pide explícitamente.
+    final printableStatus =
+        status == 'completed' ||
+        status == 'credit' ||
+        (allowPending && status == 'pending');
+    if (!printableStatus) {
       return null;
     }
 
@@ -724,7 +812,7 @@ class SalesRepository {
 
     final branchRows = await _client
         .from('branches')
-        .select('name, address, phone')
+        .select('name, address, phone, invoice_footer')
         .eq('id', branchId)
         .limit(1);
     final branch = branchRows.isEmpty
@@ -818,11 +906,44 @@ class SalesRepository {
     final itemRows = await _client
         .from('sale_items')
         .select(
-          'description, quantity, unit_price, line_subtotal, line_tax, line_total, '
-          'sku_snapshot, unit_name, imeis',
+          'product_id, description, quantity, unit_price, discount_amount, '
+          'line_subtotal, line_tax, line_total, sku_snapshot, unit_name, imeis',
         )
         .eq('sale_id', saleId)
         .order('created_at');
+
+    // Nota del producto (products.notes) → se imprime debajo de la línea.
+    // Una sola consulta en lote para todos los productos de la venta.
+    final productIds = itemRows
+        .map((row) => Map<String, dynamic>.from(row as Map)['product_id'])
+        .whereType<Object>()
+        .map((e) => e.toString())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    final productNotes = <String, String>{};
+    if (productIds.isNotEmpty) {
+      final noteRows = await _client
+          .from('products')
+          .select('id, notes')
+          .inFilter('id', productIds);
+      for (final raw in noteRows) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final id = row['id']?.toString();
+        final note = _nullIfEmpty(row['notes']?.toString());
+        if (id != null && note != null) productNotes[id] = note;
+      }
+    }
+
+    // "NCF válido hasta": la ÚNICA fuente real es ncf_sequences.expires_on
+    // (fiscal_documents.expires_on existe pero siempre viene NULL). Elegimos la
+    // secuencia de la sucursal + tipo de comprobante cuyo prefijo sea prefijo
+    // del NCF impreso.
+    final ncfValidUntil = await _resolveNcfValidUntil(
+      branchId: branchId,
+      receiptType: (sale['receipt_type'] ?? '').toString(),
+      ncf: saleNcf,
+    );
 
     final paymentRows = await _client
         .from('payments')
@@ -869,8 +990,11 @@ class SalesRepository {
       clientEmail: client['email']?.toString(),
       cashierName: cashier['full_name']?.toString(),
       ncf: sale['ncf']?.toString(),
+      ncfValidUntil: ncfValidUntil,
       ecf: ecfData,
       notes: sale['notes']?.toString(),
+      // Nota legal de pie de factura configurada por sucursal.
+      invoiceFooterNote: _firstNonEmpty([branch['invoice_footer']]),
       items: itemRows
           .map((row) => Map<String, dynamic>.from(row as Map))
           .map(
@@ -889,11 +1013,17 @@ class SalesRepository {
               }(),
               quantity: _toDouble(item['quantity']),
               unitPrice: _toDouble(item['unit_price']),
+              // Regla de cuadre: line_subtotal es la BASE IMPONIBLE (precio ×
+              // cantidad menos descuento, SIN ITBIS) y line_total =
+              // line_subtotal + line_tax. Así lo guarda el backend, por eso se
+              // pasan tal cual y la columna VALOR TOTAL cuadra.
               lineSubtotal: _toDouble(item['line_subtotal']),
               lineTax: _toDouble(item['line_tax']),
               lineTotal: _toDouble(item['line_total']),
+              lineDiscount: _toDouble(item['discount_amount']),
               sku: item['sku_snapshot']?.toString(),
               unitLabel: item['unit_name']?.toString(),
+              notes: productNotes[item['product_id']?.toString()],
             ),
           )
           .toList(growable: false),
@@ -927,7 +1057,44 @@ class SalesRepository {
     return _salePrintPreparationService.prepareCompletedSaleReceipt(
       sale: saleSource,
       paperSize: paperSize,
+      allowPending: allowPending,
     );
+  }
+
+  /// Fecha de vencimiento del NCF impreso, leída de `public.ncf_sequences`.
+  ///
+  /// Es la única fuente real: `fiscal_documents.expires_on` existe pero siempre
+  /// está en NULL. Se busca por sucursal + tipo de comprobante y se elige la
+  /// fila cuyo `prefix` sea prefijo del NCF de la venta (una sucursal puede
+  /// tener varias secuencias del mismo tipo, p. ej. B02 vieja y B02 nueva).
+  /// Devuelve null si la venta no lleva NCF o la secuencia no tiene fecha.
+  Future<DateTime?> _resolveNcfValidUntil({
+    required String branchId,
+    required String receiptType,
+    required String ncf,
+  }) async {
+    final cleanNcf = ncf.trim();
+    if (cleanNcf.isEmpty || receiptType.trim().isEmpty) return null;
+
+    final rows = await _client
+        .from('ncf_sequences')
+        .select('prefix, expires_on')
+        .eq('branch_id', branchId)
+        .eq('receipt_type', receiptType);
+
+    String? bestPrefix;
+    DateTime? bestDate;
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final prefix = (row['prefix'] ?? '').toString().trim();
+      if (prefix.isEmpty || !cleanNcf.startsWith(prefix)) continue;
+      // Con varios prefijos coincidentes gana el más específico (más largo).
+      if (bestPrefix != null && prefix.length <= bestPrefix.length) continue;
+      final expires = DateTime.tryParse((row['expires_on'] ?? '').toString());
+      bestPrefix = prefix;
+      bestDate = expires;
+    }
+    return bestDate;
   }
 
   /// Emisión síncrona del e-CF y datos para la representación impresa.
@@ -986,21 +1153,57 @@ class SalesRepository {
     }
   }
 
-  /// Busca una venta por número en la sucursal actual y devuelve sus líneas
-  /// listas para precargar el carrito en modo devolución. Si no la encuentra,
-  /// retorna null.
+  /// Busca la venta a devolver en la sucursal actual. Acepta el número de
+  /// venta, el NCF o un IMEI vendido, y devuelve sus líneas listas para
+  /// precargar el carrito en modo devolución (con el precio realmente cobrado
+  /// y los IMEIs de cada línea). Si no la encuentra, retorna null.
   Future<SaleLookupResult?> fetchSaleForReturn(String saleNumber) async {
     final branchId = await _currentBranchId();
     if (branchId == null) return null;
     final cleaned = saleNumber.trim();
     if (cleaned.isEmpty) return null;
 
-    final rows = await _client
+    // 1) Número de venta exacto.
+    var rows = await _client
         .from('sales')
         .select('id, sale_number, client_id, status, total_amount')
         .eq('branch_id', branchId)
         .eq('sale_number', cleaned)
         .limit(1);
+
+    // 2) NCF exacto.
+    if (rows.isEmpty) {
+      rows = await _client
+          .from('sales')
+          .select('id, sale_number, client_id, status, total_amount')
+          .eq('branch_id', branchId)
+          .eq('ncf', cleaned)
+          .limit(1);
+    }
+
+    // 3) IMEI: resolvemos el sale_id por el array `sale_items.imeis`.
+    if (rows.isEmpty) {
+      final imeiRows = await _client
+          .from('sale_items')
+          .select('sale_id')
+          .eq('branch_id', branchId)
+          .contains('imeis', [cleaned])
+          .order('created_at', ascending: false)
+          .limit(1);
+      if (imeiRows.isNotEmpty) {
+        final saleId =
+            Map<String, dynamic>.from(imeiRows.first as Map)['sale_id']
+                ?.toString();
+        if (saleId != null && saleId.isNotEmpty) {
+          rows = await _client
+              .from('sales')
+              .select('id, sale_number, client_id, status, total_amount')
+              .eq('branch_id', branchId)
+              .eq('id', saleId)
+              .limit(1);
+        }
+      }
+    }
 
     if (rows.isEmpty) return null;
     final sale = Map<String, dynamic>.from(rows.first as Map);
@@ -1008,7 +1211,8 @@ class SalesRepository {
     final itemRows = await _client
         .from('sale_items')
         .select(
-          'product_id, description, quantity, unit_price, tax_rate, line_total',
+          'product_id, description, quantity, unit_price, tax_rate, '
+          'line_total, imeis',
         )
         .eq('branch_id', branchId)
         .eq('sale_id', sale['id'])
@@ -1024,11 +1228,23 @@ class SalesRepository {
       if (productId == null) continue;
       final product = productsById[productId];
       if (product == null) continue;
-      final qty = (row['quantity'] is num)
-          ? (row['quantity'] as num).toDouble()
-          : double.tryParse(row['quantity']?.toString() ?? '') ?? 0;
+      final qty = _toDouble(row['quantity']);
       if (qty <= 0) continue;
-      items.add(SaleCartItem(product: product, quantity: qty));
+      items.add(
+        SaleCartItem(
+          product: product,
+          quantity: qty,
+          // Precio al que se VENDIÓ, no el precio actual del catálogo: si el
+          // producto subió de precio, devolver al precio nuevo regala dinero.
+          unitPrice: _toDouble(row['unit_price']),
+          imeis: row['imeis'] is List
+              ? (row['imeis'] as List)
+                  .map((e) => e.toString())
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList(growable: false)
+              : const <String>[],
+        ),
+      );
     }
 
     return SaleLookupResult(
@@ -1041,60 +1257,59 @@ class SalesRepository {
     );
   }
 
-  /// Lee las últimas devoluciones de la sucursal actual.
-  Future<List<ReturnSummary>> fetchRecentReturns({int limit = 50}) async {
-    final branchId = await _currentBranchId();
-    if (branchId == null) return const [];
-
-    final rows = await _client
-        .from('returns')
-        .select(
-          'id, return_number, return_date, total_amount, tax_amount, '
-          'notes, original_sale_id, '
-          'clients(full_name), '
-          'return_items(quantity)',
-        )
-        .eq('branch_id', branchId)
-        .order('return_date', ascending: false)
-        .limit(limit);
-
-    return rows
-        .map((item) => ReturnSummary.fromMap(
-              Map<String, dynamic>.from(item as Map),
-            ))
-        .toList(growable: false);
-  }
-
-  /// Procesa una devolución desde el POS llamando al RPC `process_return`.
-  /// El RPC inserta la cabecera + líneas y dispara el trigger que suma stock.
-  /// Si la venta original fue a crédito y se proporciona cliente, descuenta
-  /// `clients.balance_due` automáticamente.
+  /// Procesa una devolución desde el POS llamando al RPC `process_return`
+  /// (firma de 7 parámetros, migración 69). El RPC inserta la cabecera + líneas,
+  /// dispara el trigger que suma stock, devuelve los IMEIs al producto, liga la
+  /// devolución a la sesión de caja (para el efectivo esperado) y, si la venta
+  /// original fue a crédito, descuenta `clients.balance_due`.
   Future<ReturnProcessedResult> processReturn(ReturnInput input) async {
     if (input.items.isEmpty) {
       throw const SaleCheckoutValidationException(
         'No hay productos para devolver.',
       );
     }
+
+    // Invariante de línea serializada: nunca pueden viajar más IMEIs que
+    // unidades devueltas. Si llegan de más, el RPC reintegra al inventario
+    // equipos que el cliente NO devolvió y quedan disponibles para venderse
+    // otra vez (devolución parcial de una línea con varios celulares).
+    for (final item in input.items) {
+      if (item.imeis.length > item.quantity) {
+        throw SaleCheckoutValidationException(
+          'La línea "${item.product.name}" devuelve '
+          '${_fmtQuantity(item.quantity)} unidad(es) pero trae '
+          '${item.imeis.length} IMEI(s). Selecciona exactamente cuáles '
+          'equipos entraron de vuelta.',
+        );
+      }
+    }
+
     final user = _client.auth.currentUser;
     if (user == null) {
       throw Exception('La sesión no es válida. Inicia sesión de nuevo.');
     }
+    final branchId = await _currentBranchId();
 
-    final payload = {
-      if (input.clientId != null && input.clientId!.isNotEmpty)
-        'p_client_id': input.clientId,
-      if (input.originalSaleId != null && input.originalSaleId!.isNotEmpty)
-        'p_original_sale_id': input.originalSaleId,
-      if (input.notes != null && input.notes!.isNotEmpty)
-        'p_notes': input.notes,
+    final payload = <String, dynamic>{
+      'p_branch_id': branchId,
+      'p_client_id': _nullIfEmpty(input.clientId),
+      'p_original_sale_id': _nullIfEmpty(input.originalSaleId),
+      'p_notes': _nullIfEmpty(input.notes),
       'p_items': input.items
           .map((item) => {
                 'product_id': item.product.id,
                 'quantity': item.quantity,
-                'unit_price': item.product.price,
-                'tax_rate': item.product.taxRate,
+                // Precio REALMENTE cobrado en la venta original (o el que el
+                // cajero fijó), no el precio actual del catálogo.
+                'unit_price': item.unitPrice,
+                // Tasa efectiva: si el producto es exento la venta original
+                // cobró 0, así que la devolución no puede reembolsar ITBIS.
+                'tax_rate': item.product.effectiveTaxRate,
+                'imeis': item.imeis,
               })
           .toList(growable: false),
+      'p_cash_session_id': _nullIfEmpty(input.cashSessionId),
+      'p_refund_method': input.refundMethod,
     };
 
     final result = await _client.rpc('process_return', params: payload);
@@ -1105,6 +1320,12 @@ class SalesRepository {
       Map<String, dynamic>.from(result),
     );
   }
+
+  /// Cantidad legible en mensajes de error (3 en vez de 3.0).
+  static String _fmtQuantity(double value) =>
+      value == value.roundToDouble()
+          ? value.toInt().toString()
+          : value.toStringAsFixed(2);
 
   Future<String?> _currentBranchId() async {
     final result = await _client.rpc('current_branch_id');
@@ -1250,12 +1471,23 @@ class ReturnInput {
     this.clientId,
     this.originalSaleId,
     this.notes,
+    this.cashSessionId,
+    this.refundMethod = 'cash',
   });
 
   final List<SaleCartItem> items;
   final String? clientId;
   final String? originalSaleId;
   final String? notes;
+
+  /// Sesión de caja sobre la que se registra la devolución. Es lo que hace que
+  /// un reembolso en efectivo baje el "Esperado en caja". Si es null, el RPC
+  /// toma la sesión abierta más reciente del usuario (o ninguna).
+  final String? cashSessionId;
+
+  /// `cash` | `card` | `transfer` | `credit_note`. Solo `cash` saca dinero de
+  /// la gaveta.
+  final String refundMethod;
 }
 
 /// Resultado de buscar una venta por número para precargar una devolución.
@@ -1277,52 +1509,6 @@ class SaleLookupResult {
   final String status;
   final double totalAmount;
   final List<SaleCartItem> items;
-}
-
-/// Cabecera de devolución para el historial.
-class ReturnSummary {
-  ReturnSummary({
-    required this.id,
-    required this.returnNumber,
-    required this.returnDate,
-    required this.totalAmount,
-    required this.taxAmount,
-    required this.itemsCount,
-    this.clientName,
-    this.originalSaleId,
-    this.notes,
-  });
-
-  factory ReturnSummary.fromMap(Map<String, dynamic> map) {
-    final clientMap = map['clients'];
-    final clientName = clientMap is Map
-        ? clientMap['full_name']?.toString()
-        : null;
-    final itemsRaw = map['return_items'];
-    final itemsCount = itemsRaw is List ? itemsRaw.length : 0;
-    return ReturnSummary(
-      id: (map['id'] ?? '').toString(),
-      returnNumber: (map['return_number'] ?? '').toString(),
-      returnDate: DateTime.tryParse(map['return_date']?.toString() ?? '') ??
-          DateTime.now(),
-      totalAmount: _toDoubleResult(map['total_amount']),
-      taxAmount: _toDoubleResult(map['tax_amount']),
-      itemsCount: itemsCount,
-      clientName: clientName,
-      originalSaleId: map['original_sale_id']?.toString(),
-      notes: map['notes']?.toString(),
-    );
-  }
-
-  final String id;
-  final String returnNumber;
-  final DateTime returnDate;
-  final double totalAmount;
-  final double taxAmount;
-  final int itemsCount;
-  final String? clientName;
-  final String? originalSaleId;
-  final String? notes;
 }
 
 class ReturnProcessedResult {
@@ -1408,4 +1594,3 @@ int _toInt(dynamic value) {
   return int.tryParse(value.toString()) ?? 0;
 }
 
-double _round2(double value) => (value * 100).roundToDouble() / 100;

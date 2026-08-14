@@ -719,6 +719,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   String? _supplierId;
   DateTime _purchaseDate = DateTime.now();
   DateTime? _expectedAt;
+  DateTime? _dueDate;
   String _paymentStatus = 'paid';
   bool _assignNcf = false;
 
@@ -742,6 +743,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
       _notesController.text = initial.notes ?? '';
       _purchaseDate = initial.purchaseDate;
       _expectedAt = initial.expectedAt;
+      _dueDate = initial.dueDate;
       _paymentStatus = initial.paymentStatus;
       final productsById = {for (final p in widget.products) p.id: p};
       for (final item in initial.items) {
@@ -950,6 +952,37 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                     ),
                   ],
                 ),
+                if (_paymentStatus != 'paid') ...[
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    readOnly: true,
+                    decoration: InputDecoration(
+                      labelText: 'Vence el (opcional)',
+                      helperText:
+                          'Si lo dejas vacío, el saldo queda sin fecha de vencimiento',
+                      hintText:
+                          _dueDate == null ? 'Sin fecha' : formatDate(_dueDate!),
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_dueDate != null)
+                            IconButton(
+                              tooltip: 'Quitar fecha',
+                              onPressed: () => setState(() => _dueDate = null),
+                              icon: const Icon(Icons.close, size: 18),
+                            ),
+                          IconButton(
+                            onPressed: _pickDueDate,
+                            icon: const Icon(Icons.calendar_month_outlined),
+                          ),
+                        ],
+                      ),
+                    ),
+                    controller: TextEditingController(
+                      text: _dueDate == null ? '' : formatDate(_dueDate!),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 TextFormField(
                   controller: _categoryController,
@@ -1222,6 +1255,17 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
     setState(() => _expectedAt = picked);
   }
 
+  Future<void> _pickDueDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _dueDate ?? _purchaseDate.add(const Duration(days: 30)),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    setState(() => _dueDate = picked);
+  }
+
   void _addLine() {
     final productId = _lineProductId;
     if (productId == null) {
@@ -1294,6 +1338,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
         paidAmount: double.tryParse(_paidAmountController.text.trim()),
         purchaseCategory: _categoryController.text,
         expectedAt: _expectedAt,
+        dueDate: _paymentStatus == 'paid' ? null : _dueDate,
       ),
     );
   }

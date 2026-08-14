@@ -364,10 +364,16 @@ class FlexTable extends StatelessWidget {
     super.key,
     required this.columns,
     required this.rows,
+    this.rowColors,
   });
 
   final List<FlexTableColumn> columns;
   final List<List<Widget>> rows;
+
+  /// Color de fondo por fila (opcional). Un `null` en la posición `i` — o una
+  /// lista más corta que `rows` — deja el zebra por defecto. Sirve para
+  /// resaltar filas especiales (p. ej. devoluciones en el historial).
+  final List<Color?>? rowColors;
 
   static const _headerBg = Color(0xFFF8FAFC);
   static const _divider = Color(0xFFE2E8F0);
@@ -405,7 +411,11 @@ class FlexTable extends StatelessWidget {
         for (int r = 0; r < rows.length; r++)
           TableRow(
             decoration: BoxDecoration(
-              color: r.isOdd ? const Color(0xFFFAFAFA) : Colors.white,
+              color:
+                  (rowColors != null && r < rowColors!.length
+                      ? rowColors![r]
+                      : null) ??
+                  (r.isOdd ? const Color(0xFFFAFAFA) : Colors.white),
               border: const Border(top: BorderSide(color: _divider)),
             ),
             children: rows[r]

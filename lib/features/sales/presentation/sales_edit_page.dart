@@ -9,6 +9,8 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../data/sales_history_repository.dart';
 import '../data/sales_repository.dart';
+import '../domain/sale_checkout_service.dart'
+    show fromCents, grossCents, taxCents, toCents;
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
@@ -18,29 +20,80 @@ class _EditCartItem {
     required this.product,
     required this.quantity,
     required this.unitPrice,
-    required this.discountPct,
-  });
+    required this.discountAmount,
+    List<String> imeis = const <String>[],
+  }) : imeis = List<String>.from(imeis);
 
   final SalesProduct product;
   double quantity;
   double unitPrice;
-  double discountPct;
 
-  double get lineGross => (quantity * unitPrice * 100).roundToDouble() / 100;
-  double get lineDiscount =>
-      (lineGross * discountPct / 100 * 100).roundToDouble() / 100;
+  /// Descuento de la línea en MONTO, el mismo criterio que usa el backend
+  /// (`sale_items.discount_amount`). Trabajar en porcentaje aquí perdía plata:
+  /// el porcentaje se reconstruía desde `line_subtotal`, que en productos con
+  /// ITBIS incluido ya viene sin impuesto, así que el ITBIS se leía como
+  /// descuento y el total caía solo con abrir y guardar.
+  double discountAmount;
+
+  /// Equipos serializados de la línea. Mientras no esté vacía, la cantidad
+  /// queda atada a su tamaño: el RPC de edición devuelve estos IMEIs al
+  /// inventario y solo los vuelve a sacar con los que reciba de vuelta.
+  final List<String> imeis;
+
+  bool get hasImeis => imeis.isNotEmpty;
+
+  /// Quita un equipo de la línea y baja la cantidad en consecuencia.
+  void removeImei(String imei) {
+    if (!imeis.remove(imei)) return;
+    quantity = imeis.length.toDouble();
+  }
+
+  /// Misma fórmula que el RPC (migraciones 76 y 77) y que
+  /// `SaleCheckoutService.normalize`: bruto → descuento acotado → neto, y el
+  /// ITBIS se agrega encima (exclusivo) o se extrae del neto (incluido). Si
+  /// esta matemática se separa de la del SQL, la pantalla muestra un total y
+  /// se guarda otro.
+  // Toda la aritmética va en CENTAVOS ENTEROS con los helpers compartidos: es
+  // lo único que reproduce el redondeo de `numeric` de Postgres. Con doubles,
+  // 18.0/100 vale 0.17999… y el medio centavo cae para el lado contrario que
+  // en el RPC, así que la pantalla mostraría un total y se guardaría otro.
+  double get _grossCents => grossCents(quantity, unitPrice);
+
+  double get _discountCents =>
+      toCents(discountAmount).clamp(0, _grossCents).toDouble();
+
+  double get _netCents => _grossCents - _discountCents;
+
+  double get lineGross => fromCents(_grossCents);
+
+  double get lineDiscount => fromCents(_discountCents);
+
+  /// Tasa efectiva: un producto exento factura sin ITBIS aunque tenga tasa
+  /// cargada, que es lo que hace el RPC (`case when is_tax_exempt then 0`).
+  double get _rate => product.isTaxExempt ? 0 : product.taxRate;
+
+  bool get _taxIncluded => product.priceIncludesTax && _rate > 0;
+
+  double get _taxCents => taxCents(_netCents, _rate, inclusive: _taxIncluded);
+
+  double get lineTax => fromCents(_taxCents);
+
   double get lineSubtotal =>
-      ((lineGross - lineDiscount) * 100).roundToDouble() / 100;
-  double get lineTax =>
-      (lineSubtotal * product.taxRate / 100 * 100).roundToDouble() / 100;
-  double get lineTotal => ((lineSubtotal + lineTax) * 100).roundToDouble() / 100;
+      fromCents(_taxIncluded ? _netCents - _taxCents : _netCents);
+
+  double get lineTotal =>
+      fromCents(_taxIncluded ? _netCents : _netCents + _taxCents);
 
   Map<String, dynamic> toRpcItem() => {
         'product_id': product.id,
         'description': product.name,
         'quantity': quantity,
         'unit_price': unitPrice,
-        'discount_pct': discountPct,
+        // MONTO, no porcentaje: es el criterio del backend desde la 77.
+        'discount_amount': lineDiscount,
+        // Sin esto el RPC deja los equipos liberados en el inventario tras la
+        // edición y se le pueden vender a otro cliente.
+        'imeis': List<String>.from(imeis),
       };
 }
 
@@ -54,6 +107,11 @@ class SalesEditPage extends ConsumerStatefulWidget {
 }
 
 class _SalesEditPageState extends ConsumerState<SalesEditPage> {
+  /// Esta pantalla solo edita VENTAS; el historial unificado necesita saber
+  /// que el detalle se busca en `sales` y no en `returns`.
+  SalesHistoryDetailKey get _detailKey =>
+      (id: widget.saleId, isReturn: false);
+
   final List<_EditCartItem> _items = [];
   final _notesCtrl = TextEditingController();
   String? _clientId;
@@ -70,6 +128,8 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
 
   double get _subtotal =>
       _items.fold<double>(0, (s, it) => s + it.lineSubtotal);
+  double get _discount =>
+      _items.fold<double>(0, (s, it) => s + it.lineDiscount);
   double get _tax => _items.fold<double>(0, (s, it) => s + it.lineTax);
   double get _total => _subtotal + _tax;
 
@@ -84,16 +144,16 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
       if (pid == null) continue;
       final product = byId[pid];
       if (product == null) continue;
-      // Calcular discountPct a partir del descuento monetario guardado.
-      final gross = si.quantity * si.unitPrice;
-      final discPct = gross > 0
-          ? ((gross - si.lineSubtotal) / gross * 100).clamp(0, 100).toDouble()
-          : 0.0;
+      // El descuento se toma tal cual está guardado en la línea. Antes se
+      // reconstruía un porcentaje con (bruto − line_subtotal): en productos
+      // con ITBIS incluido eso leía el impuesto como descuento y bajaba el
+      // total con solo abrir y guardar.
       _items.add(_EditCartItem(
         product: product,
         quantity: si.quantity,
         unitPrice: si.unitPrice,
-        discountPct: discPct,
+        discountAmount: si.discountAmount,
+        imeis: si.imeis,
       ));
     }
     _clientId = detail.sale.clientId;
@@ -109,9 +169,22 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
       context: context,
       builder: (_) => _ProductPickerDialog(products: products),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
 
     final existing = _items.indexWhere((it) => it.product.id == picked.id);
+    // Línea con IMEIs: subir la cantidad dejaría unidades sin equipo asignado
+    // (la invariante es cantidad == IMEIs). Los equipos se asignan en el POS.
+    if (existing >= 0 && _items[existing].hasImeis) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Esta línea lleva IMEIs: su cantidad la definen los equipos. '
+            'Para agregar otro equipo, hazlo desde el POS.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() {
       if (existing >= 0) {
         _items[existing].quantity += 1;
@@ -120,7 +193,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
           product: picked,
           quantity: 1,
           unitPrice: picked.price,
-          discountPct: 0,
+          discountAmount: 0,
         ));
       }
     });
@@ -134,6 +207,24 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
         ),
       );
       return;
+    }
+
+    // La cantidad de una línea serializada la mandan sus IMEIs. Si sobran
+    // equipos respecto de la cantidad, el RPC sacaría del inventario más de
+    // lo vendido; si faltan, quedarían liberados y vendibles a otro cliente.
+    for (final it in _items) {
+      if (it.imeis.length != it.quantity && it.hasImeis) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '"${it.product.name}": ${it.imeis.length} IMEI(s) para '
+              '${it.quantity.toStringAsFixed(0)} unidad(es). La cantidad debe '
+              'coincidir con los equipos de la línea.',
+            ),
+          ),
+        );
+        return;
+      }
     }
 
     setState(() => _submitting = true);
@@ -158,7 +249,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
       }
       if (!mounted) return;
       ref.invalidate(salesHistoryPageProvider);
-      ref.invalidate(salesHistoryDetailProvider(widget.saleId));
+      ref.invalidate(salesHistoryDetailProvider(_detailKey));
       ref.invalidate(salesProductsProvider);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -182,7 +273,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
 
   @override
   Widget build(BuildContext context) {
-    final detailAsync = ref.watch(salesHistoryDetailProvider(widget.saleId));
+    final detailAsync = ref.watch(salesHistoryDetailProvider(_detailKey));
     final productsAsync = ref.watch(salesProductsProvider);
     final clientsAsync = ref.watch(salesClientsProvider);
 
@@ -215,8 +306,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
             )),
         error: (e, _) => ErrorCard(
           message: 'No se pudo cargar la venta: $e',
-          onRetry: () =>
-              ref.invalidate(salesHistoryDetailProvider(widget.saleId)),
+          onRetry: () => ref.invalidate(salesHistoryDetailProvider(_detailKey)),
         ),
         data: (detail) {
           if (detail == null) {
@@ -243,6 +333,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
                 paymentMethod: _paymentMethod,
                 clientsAsync: clientsAsync,
                 subtotal: _subtotal,
+                discount: _discount,
                 tax: _tax,
                 total: _total,
                 onClientChanged: (v) => setState(() => _clientId = v),
@@ -299,6 +390,7 @@ class _EditForm extends StatelessWidget {
     required this.paymentMethod,
     required this.clientsAsync,
     required this.subtotal,
+    required this.discount,
     required this.tax,
     required this.total,
     required this.onClientChanged,
@@ -315,6 +407,12 @@ class _EditForm extends StatelessWidget {
   final String paymentMethod;
   final AsyncValue<List<SalesClient>> clientsAsync;
   final double subtotal;
+
+  /// Suma de los descuentos de línea. El subtotal ya viene neto, así que el
+  /// resumen muestra el BRUTO arriba y esta fila debajo para que
+  /// subtotal bruto − descuento + ITBIS = total.
+  final double discount;
+
   final double tax;
   final double total;
   final ValueChanged<String?> onClientChanged;
@@ -411,6 +509,7 @@ class _EditForm extends StatelessWidget {
         const SizedBox(height: AppTokens.s16),
         _Totals(
           subtotal: subtotal,
+          discount: discount,
           tax: tax,
           total: total,
           // En ventas PAGADAS el pago sigue al total (queda saldada), igual
@@ -564,7 +663,7 @@ class _EditableLineTileState extends State<_EditableLineTile> {
     super.initState();
     _qtyCtrl = TextEditingController(text: _fmt(widget.item.quantity));
     _priceCtrl = TextEditingController(text: _fmt(widget.item.unitPrice));
-    _discCtrl = TextEditingController(text: _fmt(widget.item.discountPct));
+    _discCtrl = TextEditingController(text: _fmt(widget.item.discountAmount));
   }
 
   @override
@@ -579,8 +678,26 @@ class _EditableLineTileState extends State<_EditableLineTile> {
       v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
 
   void _commitQty(String v) {
+    // Línea con IMEIs: la cantidad la mandan los equipos, no el teclado. Se
+    // baja quitando chips; el campo vuelve a su valor real.
+    if (widget.item.hasImeis) {
+      _qtyCtrl.text = _fmt(widget.item.quantity);
+      return;
+    }
     final n = double.tryParse(v) ?? widget.item.quantity;
     widget.item.quantity = n.clamp(0.001, 999999).toDouble();
+    widget.onChanged();
+  }
+
+  void _removeImei(String imei) {
+    // Quitar el último equipo dejaría la línea en cantidad 0: eso es borrar
+    // la línea completa.
+    if (widget.item.imeis.length <= 1) {
+      widget.onRemove();
+      return;
+    }
+    setState(() => widget.item.removeImei(imei));
+    _qtyCtrl.text = _fmt(widget.item.quantity);
     widget.onChanged();
   }
 
@@ -590,9 +707,13 @@ class _EditableLineTileState extends State<_EditableLineTile> {
     widget.onChanged();
   }
 
+  /// Descuento en MONTO. Se acota al bruto de la línea (precio × cantidad):
+  /// más que eso dejaría el total en negativo y el backend lo recortaría
+  /// igual, así que el campo muestra desde ya lo que se va a guardar.
   void _commitDisc(String v) {
-    final n = double.tryParse(v) ?? widget.item.discountPct;
-    widget.item.discountPct = n.clamp(0, 100).toDouble();
+    final n = double.tryParse(v) ?? widget.item.discountAmount;
+    widget.item.discountAmount = n.clamp(0, widget.item.lineGross).toDouble();
+    _discCtrl.text = _fmt(widget.item.discountAmount);
     widget.onChanged();
   }
 
@@ -624,12 +745,60 @@ class _EditableLineTileState extends State<_EditableLineTile> {
                   ),
                 ),
                 Text(
-                  'Stock: ${_fmt(widget.item.product.stock)}',
+                  widget.item.product.tracksStock
+                      ? 'Stock: ${_fmt(widget.item.product.stock)}'
+                      : 'Servicio',
                   style: const TextStyle(
                     fontSize: 10,
                     color: AppTokens.mutedForeground,
                   ),
                 ),
+                // Equipos de la línea: el supervisor ve qué está editando y
+                // puede sacar uno (la cantidad baja con él).
+                if (widget.item.hasImeis)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        for (final imei in widget.item.imeis)
+                          InkWell(
+                            onTap: () => _removeImei(imei),
+                            borderRadius: BorderRadius.circular(4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEFF6FF),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    'IMEI $imei',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10,
+                                      color: Color(0xFF2563EB),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.close_rounded,
+                                    size: 11,
+                                    color: Color(0xFF2563EB),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
               ],
             ),
           ),
@@ -639,6 +808,8 @@ class _EditableLineTileState extends State<_EditableLineTile> {
               label: 'Cant.',
               controller: _qtyCtrl,
               onSubmit: _commitQty,
+              // Con IMEIs la cantidad no se teclea: sale de los equipos.
+              readOnly: widget.item.hasImeis,
             ),
           ),
           const SizedBox(width: 6),
@@ -655,7 +826,7 @@ class _EditableLineTileState extends State<_EditableLineTile> {
             child: _MiniField(
               label: 'Desc',
               controller: _discCtrl,
-              suffix: '%',
+              suffix: r'$',
               onSubmit: _commitDisc,
             ),
           ),
@@ -706,12 +877,16 @@ class _MiniField extends StatefulWidget {
     required this.controller,
     required this.onSubmit,
     this.suffix,
+    this.readOnly = false,
   });
 
   final String label;
   final TextEditingController controller;
   final ValueChanged<String> onSubmit;
   final String? suffix;
+
+  /// Solo lectura: el valor lo calcula otra cosa (ej. cantidad por IMEIs).
+  final bool readOnly;
 
   @override
   State<_MiniField> createState() => _MiniFieldState();
@@ -755,6 +930,7 @@ class _MiniFieldState extends State<_MiniField> {
         TextField(
           controller: widget.controller,
           focusNode: _focus,
+          readOnly: widget.readOnly,
           keyboardType:
               const TextInputType.numberWithOptions(decimal: true),
           style: const TextStyle(
@@ -775,7 +951,9 @@ class _MiniFieldState extends State<_MiniField> {
               borderRadius: BorderRadius.circular(6),
             ),
             filled: true,
-            fillColor: Colors.white,
+            fillColor: widget.readOnly
+                ? const Color(0xFFF1F5F9)
+                : Colors.white,
           ),
         ),
       ],
@@ -786,12 +964,14 @@ class _MiniFieldState extends State<_MiniField> {
 class _Totals extends StatelessWidget {
   const _Totals({
     required this.subtotal,
+    required this.discount,
     required this.tax,
     required this.total,
     required this.paid,
   });
 
   final double subtotal;
+  final double discount;
   final double tax;
   final double total;
   final double paid;
@@ -799,6 +979,10 @@ class _Totals extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final balance = (total - paid).clamp(0, double.infinity);
+    // El subtotal calculado ya viene NETO de descuento. Para que el resumen
+    // cuadre a la vista (bruto − descuento + ITBIS = total) se muestra el
+    // bruto y el descuento aparte, igual que en el recibo impreso.
+    final grossSubtotal = subtotal + discount;
     return Align(
       alignment: Alignment.centerRight,
       child: SizedBox(
@@ -806,7 +990,8 @@ class _Totals extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _row('Subtotal', money(subtotal)),
+            _row('Subtotal', money(grossSubtotal)),
+            if (discount > 0) _row('Descuento', '-${money(discount)}'),
             _row('ITBIS', money(tax)),
             const Divider(),
             _row('Total', money(total), bold: true),
@@ -918,7 +1103,9 @@ class _ProductPickerDialogState extends State<_ProductPickerDialog> {
                           dense: true,
                           title: Text(p.name),
                           subtitle: Text(
-                            'Precio: ${money(p.price)} · Stock: ${p.stock}',
+                            p.tracksStock
+                                ? 'Precio: ${money(p.price)} · Stock: ${p.stock}'
+                                : 'Precio: ${money(p.price)} · Servicio',
                             style: const TextStyle(fontSize: 11),
                           ),
                           trailing: const Icon(Icons.add_circle_outline,

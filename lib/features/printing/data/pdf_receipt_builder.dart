@@ -165,6 +165,17 @@ class PdfReceiptBuilder {
       fontWeight: pw.FontWeight.bold,
     );
 
+    // Aviso de NCF pendiente (cotización / cuenta guardada). Se deriva del
+    // documento, no de las notas: así sale una sola vez y en cualquier tamaño
+    // de papel que elija el usuario.
+    final pendingNcfNotice = printPendingNcfNotice(data);
+    // Una cotización o una cuenta guardada no entregan el comprobante que
+    // rotula esta fila: se emitirá después.
+    final receiptTypeRowLabel =
+        data.documentType == PrintDocumentType.quote || data.isPendingAccount
+            ? 'Se facturará como:'
+            : 'Tipo comprobante:';
+
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.stretch,
       children: [
@@ -211,7 +222,19 @@ class PdfReceiptBuilder {
           ),
         _thermalDashedDivider(),
 
-        // ── 2) Fecha centrada ─────────────────────────────────────────────
+        // ── 2) Título del documento ───────────────────────────────────────
+        // El ticket no tiene banda de título como el A4; sin esta línea una
+        // cotización o una cuenta guardada se leerían como factura.
+        pw.Center(
+          child: pw.Text(
+            printDocumentTitle(data),
+            textAlign: pw.TextAlign.center,
+            style: big,
+          ),
+        ),
+        _thermalDashedDivider(),
+
+        // ── 3) Fecha centrada ─────────────────────────────────────────────
         pw.Center(
           child: pw.Text(
             formatDateTime(data.issuedAt),
@@ -220,7 +243,7 @@ class PdfReceiptBuilder {
         ),
         _thermalDashedDivider(),
 
-        // ── 3) Metadata centrada: serie, caja, tipo precio, empleado, NCF ─
+        // ── 4) Metadata centrada: serie, caja, tipo precio, empleado, NCF ─
         _thermalMetaRow('Serie y Número:', data.documentNumber, bold: bold, base: base),
         if (_hasText(data.cashRegisterName))
           _thermalMetaRow('Caja registradora:', data.cashRegisterName!, bold: bold, base: base),
@@ -230,13 +253,38 @@ class PdfReceiptBuilder {
           _thermalMetaRow('Empleado:', data.cashierName!, bold: bold, base: base),
         if (_hasText(data.ncf))
           _thermalMetaRow('NCF:', data.ncf!, bold: bold, base: base),
+        if (data.ncfValidUntil != null)
+          _thermalMetaRow(
+            'NCF válido hasta:',
+            formatDate(data.ncfValidUntil!),
+            bold: bold,
+            base: base,
+          ),
+        if (pendingNcfNotice != null)
+          pw.Center(
+            child: pw.Text(
+              pendingNcfNotice,
+              textAlign: pw.TextAlign.center,
+              style: bold,
+            ),
+          ),
         if (_hasText(data.receiptTypeLabel))
-          _thermalMetaRow('Tipo comprobante:', data.receiptTypeLabel!, bold: bold, base: base),
+          _thermalMetaRow(
+            receiptTypeRowLabel,
+            data.receiptTypeLabel!,
+            bold: bold,
+            base: base,
+          ),
 
-        // ── 4) Bloque cliente "Factura a:" ────────────────────────────────
+        // ── 5) Bloque cliente ─────────────────────────────────────────────
         if (data.customer != null) ...[
           _thermalDashedDivider(),
-          pw.Text('Factura a:', style: bold),
+          pw.Text(
+            data.documentType == PrintDocumentType.quote || data.isPendingAccount
+                ? 'Datos del cliente:'
+                : 'Factura a:',
+            style: bold,
+          ),
           pw.SizedBox(height: 2),
           pw.Text('Cliente: ${data.customer!.name}', style: base),
           if (_hasText(data.customer!.address))
@@ -247,15 +295,15 @@ class PdfReceiptBuilder {
             pw.Text('Teléfono : ${data.customer!.phone}', style: base),
         ],
 
-        // ── 5) Tabla de items ─────────────────────────────────────────────
+        // ── 6) Tabla de items ─────────────────────────────────────────────
         _thermalDashedDivider(),
         _thermalItemsTable(data, base: base, bold: bold, muted: muted),
 
-        // ── 6) Totales alineados a la derecha ─────────────────────────────
+        // ── 7) Totales alineados a la derecha ─────────────────────────────
         _thermalDashedDivider(),
         _thermalTotals(data, base: base, bold: bold),
 
-        // ── 7) Notas / footer / barcode ───────────────────────────────────
+        // ── 8) Notas / footer / barcode ───────────────────────────────────
         if (_hasText(data.notes)) ...[
           _thermalDashedDivider(),
           pw.Text('Notas: ${data.notes}', style: muted),
@@ -274,7 +322,7 @@ class PdfReceiptBuilder {
             ),
           ),
         ],
-        // ── 8) e-CF: QR DGII + código de seguridad (Norma 01-2020) ────────
+        // ── 9) e-CF: QR DGII + código de seguridad (Norma 01-2020) ────────
         if (data.ecf != null) ...[
           _thermalDashedDivider(),
           ..._thermalEcfBlock(data.ecf!, base: base, bold: bold, muted: muted),
@@ -547,32 +595,76 @@ class PdfReceiptBuilder {
           ),
         ),
         pw.SizedBox(width: 16),
-        // Logo + nombre comercial + número de documento (derecha).
-        pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.end,
-          children: [
-            if (logoBytes != null)
-              pw.Image(pw.MemoryImage(logoBytes), height: 50),
-            pw.SizedBox(height: 3),
-            pw.Text(
-              data.branch.name,
-              style: pw.TextStyle(
-                fontSize: 13,
-                fontWeight: pw.FontWeight.bold,
-                color: _kNavy,
-                letterSpacing: 1,
+        // Logo + nombre comercial + número de documento + bloque NCF (derecha).
+        // Acotado a 230pt para que un tipo de comprobante largo ("Factura de
+        // Crédito Fiscal Electrónica") envuelva en vez de aplastar al emisor.
+        pw.ConstrainedBox(
+          constraints: const pw.BoxConstraints(maxWidth: 230),
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.end,
+            children: [
+              if (logoBytes != null)
+                pw.Image(pw.MemoryImage(logoBytes), height: 50),
+              pw.SizedBox(height: 3),
+              pw.Text(
+                data.branch.name,
+                style: pw.TextStyle(
+                  fontSize: 13,
+                  fontWeight: pw.FontWeight.bold,
+                  color: _kNavy,
+                  letterSpacing: 1,
+                ),
               ),
-            ),
-            pw.SizedBox(height: 16),
-            pw.Text(
-              data.documentNumber,
-              style: pw.TextStyle(
-                fontSize: 12,
-                fontWeight: pw.FontWeight.bold,
-                color: _kNavy,
+              pw.SizedBox(height: 16),
+              pw.Text(
+                data.documentNumber,
+                style: pw.TextStyle(
+                  fontSize: 12,
+                  fontWeight: pw.FontWeight.bold,
+                  color: _kNavy,
+                ),
               ),
-            ),
-          ],
+              // Bloque fiscal: tipo de comprobante + NCF + vigencia, alineado a
+              // la derecha como en la factura de referencia del cliente.
+              pw.SizedBox(height: 4),
+              pw.Text(
+                printReceiptHeadline(data),
+                textAlign: pw.TextAlign.right,
+                style: pw.TextStyle(
+                  fontSize: 10,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              if (_hasText(data.ncf))
+                pw.Text(
+                  'NCF: ${data.ncf}',
+                  textAlign: pw.TextAlign.right,
+                  style: pw.TextStyle(
+                    fontSize: 10,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+              // Cotización: no hay NCF que imprimir, se avisa en gris.
+              if (printPendingNcfNotice(data) != null)
+                pw.Text(
+                  printPendingNcfNotice(data)!,
+                  textAlign: pw.TextAlign.right,
+                  style: const pw.TextStyle(
+                    fontSize: 8.5,
+                    color: PdfColors.grey600,
+                  ),
+                ),
+              if (data.ncfValidUntil != null)
+                pw.Text(
+                  'NCF válido hasta ${formatDate(data.ncfValidUntil!)}',
+                  textAlign: pw.TextAlign.right,
+                  style: const pw.TextStyle(
+                    fontSize: 8.5,
+                    color: PdfColors.grey600,
+                  ),
+                ),
+            ],
+          ),
         ),
       ],
     );
@@ -586,7 +678,7 @@ class PdfReceiptBuilder {
         pw.SizedBox(height: 7),
         pw.Center(
           child: pw.Text(
-            _invoiceTitle(data),
+            printDocumentTitle(data),
             style: pw.TextStyle(
               fontSize: 13,
               fontWeight: pw.FontWeight.bold,
@@ -658,25 +750,30 @@ class PdfReceiptBuilder {
         if (_hasText(c?.address)) row('Dirección:', c!.address!),
         if (_hasText(c?.phone)) row('Teléfono:', c!.phone!),
         if (_hasText(c?.email)) row('Email:', c!.email!),
-        row('Fecha:', _dateLabel(data.issuedAt)),
+        row('Fecha:', formatDate(data.issuedAt)),
         if (_hasText(data.paymentTermsLabel))
           row('Forma de pago:', data.paymentTermsLabel!),
-        if (_hasText(data.ncf)) row('NCF:', data.ncf!),
+        // El NCF ya no se repite aquí: vive en el bloque fiscal del encabezado.
         if (_hasText(data.referenceNumber)) row('', data.referenceNumber!),
       ],
     );
   }
 
+  /// Detalle del documento: PRODUCTO/SERVICIO · PRECIO · CANTIDAD ·
+  /// DESCUENTO · SUBTOTAL · [ITBIS] · VALOR TOTAL.
+  ///
+  /// SUBTOTAL es la base imponible de la línea (precio × cantidad menos
+  /// descuento, sin ITBIS), de modo que VALOR TOTAL = SUBTOTAL + ITBIS.
   pw.Widget _itemsTable(PrintDocumentData data) {
     pw.Widget hCell(String text, {pw.Alignment align = pw.Alignment.centerLeft}) {
       return pw.Padding(
-        padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 3),
+        padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 2),
         child: pw.Align(
           alignment: align,
           child: pw.Text(
             text,
             style: pw.TextStyle(
-              fontSize: 8.5,
+              fontSize: 8,
               fontWeight: pw.FontWeight.bold,
               color: PdfColors.grey800,
             ),
@@ -691,13 +788,13 @@ class PdfReceiptBuilder {
       bool bold = false,
     }) {
       return pw.Padding(
-        padding: const pw.EdgeInsets.symmetric(vertical: 5, horizontal: 3),
+        padding: const pw.EdgeInsets.symmetric(vertical: 5, horizontal: 2),
         child: pw.Align(
           alignment: align,
           child: pw.Text(
             text,
             style: pw.TextStyle(
-              fontSize: 9.5,
+              fontSize: 9,
               fontWeight: bold ? pw.FontWeight.bold : null,
             ),
           ),
@@ -705,25 +802,54 @@ class PdfReceiptBuilder {
       );
     }
 
+    // Descripción + nota de la línea dentro de la MISMA celda (no rompe el
+    // conteo de columnas de pw.Table).
+    pw.Widget descriptionCell(PrintDocumentItem it) {
+      return pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text(it.description, style: const pw.TextStyle(fontSize: 9)),
+            if (_hasText(it.notes))
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 1),
+                child: pw.Text(
+                  it.notes!,
+                  style: pw.TextStyle(
+                    fontSize: 8,
+                    color: PdfColors.grey600,
+                    fontStyle: pw.FontStyle.italic,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     const right = pw.Alignment.centerRight;
     final showTax = data.showTax;
-    // La columna ITBIS solo aparece si el documento lleva impuesto. Sin ITBIS
-    // se reparte su ancho entre las columnas numéricas (5 columnas).
+    // Ancho útil del A4 con margen 36 ≈ 523pt. La columna ITBIS solo aparece
+    // si el documento lleva impuesto; sin ella su ancho se reparte entre las
+    // demás columnas numéricas (6 columnas).
     final columnWidths = showTax
         ? const <int, pw.TableColumnWidth>{
-            0: pw.FixedColumnWidth(58),
-            1: pw.FlexColumnWidth(3),
-            2: pw.FixedColumnWidth(68),
-            3: pw.FixedColumnWidth(74),
-            4: pw.FixedColumnWidth(36),
-            5: pw.FixedColumnWidth(80),
+            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 159pt
+            1: pw.FixedColumnWidth(62),
+            2: pw.FixedColumnWidth(48),
+            3: pw.FixedColumnWidth(62),
+            4: pw.FixedColumnWidth(66),
+            5: pw.FixedColumnWidth(56),
+            6: pw.FixedColumnWidth(70),
           }
         : const <int, pw.TableColumnWidth>{
-            0: pw.FixedColumnWidth(58),
-            1: pw.FlexColumnWidth(3),
-            2: pw.FixedColumnWidth(76),
-            3: pw.FixedColumnWidth(82),
-            4: pw.FixedColumnWidth(84),
+            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 183pt
+            1: pw.FixedColumnWidth(68),
+            2: pw.FixedColumnWidth(50),
+            3: pw.FixedColumnWidth(68),
+            4: pw.FixedColumnWidth(74),
+            5: pw.FixedColumnWidth(80),
           };
     return pw.Table(
       columnWidths: columnWidths,
@@ -736,10 +862,11 @@ class PdfReceiptBuilder {
             ),
           ),
           children: [
+            hCell('PRODUCTO/SERVICIO'),
+            hCell('PRECIO', align: right),
             hCell('CANTIDAD', align: pw.Alignment.center),
-            hCell('DESCRIPCION'),
-            hCell('MONTO', align: right),
-            hCell('SUB TOTAL', align: right),
+            hCell('DESCUENTO', align: right),
+            hCell('SUBTOTAL', align: right),
             if (showTax) hCell('ITBIS', align: right),
             hCell('VALOR TOTAL', align: right),
           ],
@@ -752,9 +879,13 @@ class PdfReceiptBuilder {
               ),
             ),
             children: [
-              cell(_qty(it.quantity), align: pw.Alignment.center),
-              cell(it.description),
+              descriptionCell(it),
               cell(money(it.unitPrice), align: right),
+              cell(_qty(it.quantity), align: pw.Alignment.center),
+              cell(
+                it.lineDiscount > 0.0049 ? money(it.lineDiscount) : '-',
+                align: right,
+              ),
               cell(money(it.lineSubtotal), align: right),
               if (showTax)
                 cell(
@@ -768,9 +899,14 @@ class PdfReceiptBuilder {
     );
   }
 
-  /// Datos bancarios (izquierda) + "TOTAL A PAGAR" en rojo (derecha).
+  /// Datos bancarios + nota legal (izquierda) y "TOTAL A PAGAR" en rojo
+  /// (derecha).
   pw.Widget _bankAndTotal(PrintDocumentData data) {
     final bankLines = _lines(data.branch.bankInfo);
+    final legalLines = _legalFooterLines(data.legalFooterText);
+    final legalTitle = data.documentType == PrintDocumentType.quote
+        ? 'Términos y condiciones:'
+        : 'Nota:';
     // El ITBIS solo se desglosa si el documento lleva impuesto (data.showTax).
     final showBreakdown = (data.showTax && data.totals.tax > 0.0049) ||
         data.totals.discount > 0.0049 ||
@@ -791,6 +927,25 @@ class PdfReceiptBuilder {
                     color: PdfColors.grey800,
                   ),
                 ),
+              if (legalLines.isNotEmpty) ...[
+                pw.SizedBox(height: bankLines.isEmpty ? 0 : 8),
+                pw.Text(
+                  legalTitle,
+                  style: pw.TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.grey700,
+                  ),
+                ),
+                for (final line in legalLines)
+                  pw.Text(
+                    line,
+                    style: const pw.TextStyle(
+                      fontSize: 8.5,
+                      color: PdfColors.grey700,
+                    ),
+                  ),
+              ],
             ],
           ),
         ),
@@ -999,15 +1154,25 @@ class PdfReceiptBuilder {
   }
 }
 
-/// Título del documento según el comprobante seleccionado. Para venta usa el
-/// `receiptTypeLabel`; para cotización siempre "COTIZACIÓN".
-String _invoiceTitle(PrintDocumentData data) {
+/// Título del documento en mayúsculas, según el comprobante seleccionado. Para
+/// venta usa el `receiptTypeLabel`; para cotización siempre "COTIZACIÓN".
+/// Público porque la vista previa A4 debe mostrar exactamente lo mismo.
+String printDocumentTitle(PrintDocumentData data) {
+  // Cuenta guardada: la venta sigue pendiente, no consumió NCF y no puede
+  // entregarse como factura. Manda sobre cualquier tipo de comprobante.
+  if (data.isPendingAccount) return 'CUENTA GUARDADA - DOCUMENTO NO FISCAL';
   if (data.documentType == PrintDocumentType.quote) return 'COTIZACIÓN';
   if (data.documentType == PrintDocumentType.paymentReceipt) {
     return 'RECIBO DE ABONO';
   }
   if (data.documentType == PrintDocumentType.expenseVoucher) {
     return 'COMPROBANTE DE GASTO';
+  }
+  if (data.documentType == PrintDocumentType.purchaseOrder) {
+    return 'ORDEN DE COMPRA';
+  }
+  if (data.documentType == PrintDocumentType.creditNote) {
+    return 'NOTA DE CRÉDITO';
   }
   final label = (data.receiptTypeLabel ?? '').toLowerCase();
   // e-CF: la representación impresa debe identificar el documento electrónico.
@@ -1037,6 +1202,49 @@ String _invoiceTitle(PrintDocumentData data) {
   return electronic ? 'FACTURA ELECTRÓNICA' : 'FACTURA';
 }
 
+/// Etiqueta del bloque fiscal del encabezado A4, en texto largo capitalizado
+/// ("Factura de Crédito Fiscal").
+///
+/// En la cotización imprime el comprobante que se emitirá al facturar
+/// (`receiptTypeLabel`), no la palabra "Cotización": el cliente pidió ver el
+/// tipo de comprobante. El título central sigue siendo "COTIZACIÓN".
+///
+/// En una cuenta guardada nunca rotula "Factura …": el documento no es fiscal.
+String printReceiptHeadline(PrintDocumentData data) {
+  if (data.isPendingAccount) return 'Cuenta guardada — documento no fiscal';
+  if (data.documentType == PrintDocumentType.quote) {
+    final label = (data.receiptTypeLabel ?? '').trim();
+    return label.isEmpty ? 'Cotización' : label;
+  }
+  return _titleCase(printDocumentTitle(data));
+}
+
+/// Aviso que reemplaza al NCF cuando el documento todavía no consumió una
+/// secuencia: la cotización lo hace al facturarse y la cuenta guardada al
+/// cobrarse. Devuelve null cuando no aplica (o cuando ya trae NCF real).
+String? printPendingNcfNotice(PrintDocumentData data) {
+  if (_hasText(data.ncf)) return null;
+  if (data.isPendingAccount) return 'NCF: se asigna al cobrar';
+  if (data.documentType != PrintDocumentType.quote) return null;
+  return 'NCF: se asigna al facturar';
+}
+
+/// Conectores que se mantienen en minúscula al capitalizar el título.
+const _kLowercaseWords = {'de', 'del', 'la', 'las', 'el', 'los', 'para', 'con', 'y'};
+
+String _titleCase(String value) {
+  final words = value.toLowerCase().split(' ');
+  return [
+    for (var i = 0; i < words.length; i++)
+      if (words[i].isEmpty)
+        words[i]
+      else if (i > 0 && _kLowercaseWords.contains(words[i]))
+        words[i]
+      else
+        '${words[i][0].toUpperCase()}${words[i].substring(1)}',
+  ].join(' ');
+}
+
 /// Divide un texto multilínea en líneas no vacías (para dirección / banco).
 List<String> _lines(String? text) {
   if (text == null) return const [];
@@ -1047,19 +1255,38 @@ List<String> _lines(String? text) {
       .toList(growable: false);
 }
 
+/// Acota la nota legal al pie: el A4 es una sola página con un `Spacer`, así
+/// que un texto largo desbordaría. Máximo [maxLines] líneas y [maxChars]
+/// caracteres en total; lo que sobra se corta con puntos suspensivos.
+List<String> _legalFooterLines(
+  String? text, {
+  int maxLines = 8,
+  int maxChars = 600,
+}) {
+  final source = _lines(text);
+  if (source.isEmpty) return const [];
+
+  final result = <String>[];
+  var used = 0;
+  for (final line in source.take(maxLines)) {
+    final remaining = maxChars - used;
+    if (remaining <= 0) break;
+    if (line.length <= remaining) {
+      result.add(line);
+      used += line.length;
+    } else {
+      result.add('${line.substring(0, remaining).trimRight()}…');
+      break;
+    }
+  }
+  return result;
+}
+
 /// Quita el prefijo "RNC:"/"CÉDULA:" del documento del cliente y deja el número.
 String? _docNumberOnly(String? doc) {
   if (!_hasText(doc)) return null;
   final idx = doc!.indexOf(':');
   return idx >= 0 ? doc.substring(idx + 1).trim() : doc.trim();
-}
-
-/// Fecha corta dd/MM/yyyy (formato de la factura).
-String _dateLabel(DateTime dt) {
-  final l = dt.isUtc ? dt.toLocal() : dt;
-  final dd = l.day.toString().padLeft(2, '0');
-  final mm = l.month.toString().padLeft(2, '0');
-  return '$dd/$mm/${l.year}';
 }
 
 bool _hasText(String? value) => value != null && value.trim().isNotEmpty;

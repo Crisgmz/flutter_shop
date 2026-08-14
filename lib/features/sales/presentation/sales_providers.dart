@@ -28,6 +28,8 @@ class SaleDraft {
     this.clientId,
     this.notes = '',
     this.heldSaleId,
+    this.returnOriginalSaleId,
+    this.returnOriginalSaleNumber,
   });
 
   final List<SaleCartItem> items;
@@ -35,6 +37,12 @@ class SaleDraft {
   final String? paymentMethod;
   final String? clientId;
   final String notes;
+
+  /// Venta original cargada en modo devolución. Viaja en el draft para que el
+  /// enlace no se pierda si el cajero navega a otra sección (sin él, el backend
+  /// no ajusta el saldo del cliente a crédito).
+  final String? returnOriginalSaleId;
+  final String? returnOriginalSaleNumber;
 
   /// Id de la cuenta GUARDADA (venta `pending`) que se reabrió en el POS. Se
   /// setea desde el historial al "Reabrir" y viaja con el draft (sobrevive
@@ -76,7 +84,8 @@ void saveSaleDraftToStore(SaleDraft draft) {
       draft.notes.isEmpty &&
       draft.clientId == null &&
       draft.paymentMethod == null &&
-      draft.heldSaleId == null) {
+      draft.heldSaleId == null &&
+      draft.returnOriginalSaleId == null) {
     kvRemove(_saleDraftKey);
   } else {
     kvWrite(_saleDraftKey, _encodeSaleDraft(draft));
@@ -89,6 +98,8 @@ String _encodeSaleDraft(SaleDraft d) => jsonEncode({
       'clientId': d.clientId,
       'notes': d.notes,
       'heldSaleId': d.heldSaleId,
+      'returnOriginalSaleId': d.returnOriginalSaleId,
+      'returnOriginalSaleNumber': d.returnOriginalSaleNumber,
       'items': [
         for (final it in d.items)
           {
@@ -127,6 +138,8 @@ SaleDraft? _decodeSaleDraft(String? raw) {
       clientId: map['clientId']?.toString(),
       notes: map['notes']?.toString() ?? '',
       heldSaleId: map['heldSaleId']?.toString(),
+      returnOriginalSaleId: map['returnOriginalSaleId']?.toString(),
+      returnOriginalSaleNumber: map['returnOriginalSaleNumber']?.toString(),
     );
   } catch (_) {
     // JSON corrupto o de una versión vieja del modelo: empezar limpio.
@@ -147,6 +160,13 @@ Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
       'stock': p.stock,
       'is_active': p.isActive,
       'price_includes_tax': p.priceIncludesTax,
+      // Sin esto, un borrador restaurado le vuelve a cobrar ITBIS a un
+      // producto exento y la pantalla se separa del RPC.
+      'is_tax_exempt': p.isTaxExempt,
+      // Se persisten para que un borrador restaurado siga sabiendo que la
+      // línea es un servicio y no se bloquee por falta de existencia.
+      'is_service': p.isService,
+      'track_inventory': p.trackInventory,
       'price_tier_1': p.priceTier1,
       'price_tier_2': p.priceTier2,
       'price_tier_3': p.priceTier3,
@@ -214,9 +234,15 @@ final salesFilteredProductsProvider =
     if (!p.isActive) return false;
     if (categoryId != null && p.categoryId != categoryId) return false;
     if (rawQuery.isEmpty) return true;
-    return p.name.toLowerCase().contains(rawQuery) ||
-        (p.sku?.toLowerCase().contains(rawQuery) ?? false) ||
-        (p.barcode?.toLowerCase().contains(rawQuery) ?? false);
+    if (p.name.toLowerCase().contains(rawQuery)) return true;
+    if (p.sku?.toLowerCase().contains(rawQuery) ?? false) return true;
+    if (p.barcode?.toLowerCase().contains(rawQuery) ?? false) return true;
+    // Búsqueda por IMEI (parcial): teclear los últimos dígitos de un equipo
+    // debe encontrar el producto que lo tiene.
+    for (final imei in p.imeis) {
+      if (imei.toLowerCase().contains(rawQuery)) return true;
+    }
+    return false;
   }).toList(growable: false);
 });
 

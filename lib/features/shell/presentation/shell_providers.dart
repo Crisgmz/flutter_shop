@@ -10,6 +10,7 @@ import '../../dashboard/presentation/dashboard_providers.dart';
 import '../../expenses/presentation/expenses_providers.dart';
 import '../../inventory/presentation/inventory_providers.dart';
 import '../../payables/presentation/payables_providers.dart';
+import '../../permissions/presentation/permissions_providers.dart';
 import '../../purchases/presentation/purchases_providers.dart';
 import '../../reports/presentation/reports_providers.dart';
 import '../../sales/presentation/sales_providers.dart';
@@ -214,8 +215,9 @@ final shellVisibleNavItemsProvider = FutureProvider<List<NavItem>>((
   ref,
 ) async {
   final access = await ref.watch(shellAccessProfileProvider.future);
+  final overrides = await ref.watch(myPermissionOverridesProvider.future);
   return navItems
-      .where((item) => item.allowedRoles.contains(access.roleCode))
+      .where((item) => item.allowsWith(access.roleCode, overrides))
       .toList(growable: false);
 });
 
@@ -223,7 +225,8 @@ final shellVisibleNavSectionsProvider = FutureProvider<List<NavSection>>((
   ref,
 ) async {
   final access = await ref.watch(shellAccessProfileProvider.future);
-  return visibleNavSectionsForRole(access.roleCode);
+  final overrides = await ref.watch(myPermissionOverridesProvider.future);
+  return visibleNavSectionsForRole(access.roleCode, overrides: overrides);
 });
 
 String _roleLabel(String role) {
@@ -234,6 +237,20 @@ String _roleLabel(String role) {
     'accountant' => 'Contador',
     _ => role.isEmpty ? 'Usuario' : role,
   };
+}
+
+/// Invalida solo lo que depende de la identidad del usuario: rol efectivo,
+/// permisos y navegación. Se usa tras editar un usuario o su asignación de
+/// sucursal, para que el cambio se vea sin recargar la app.
+///
+/// Es deliberadamente más chico que `invalidateBranchScopedData`: no toca
+/// los ~30 providers de datos de negocio.
+void invalidateIdentityScopedData(WidgetRef ref) {
+  ref.invalidate(shellUserInfoProvider);
+  ref.invalidate(shellAccessProfileProvider);
+  ref.invalidate(myPermissionOverridesProvider);
+  ref.invalidate(shellVisibleNavItemsProvider);
+  ref.invalidate(shellVisibleNavSectionsProvider);
 }
 
 void invalidateBranchScopedData(dynamic ref) {
@@ -249,6 +266,7 @@ void invalidateBranchScopedData(dynamic ref) {
   invalidate(shellCurrentBranchNameProvider);
   invalidate(shellUserInfoProvider);
   invalidate(shellAccessProfileProvider);
+  invalidate(myPermissionOverridesProvider);
   invalidate(shellVisibleNavItemsProvider);
   invalidate(shellVisibleNavSectionsProvider);
   invalidate(dashboardKpisProvider);

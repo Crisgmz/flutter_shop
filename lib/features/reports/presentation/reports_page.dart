@@ -9,7 +9,7 @@
 //   - Categoría + modo → contenido del reporte.
 //
 // Round 1 implementa 6 reportes operativos:
-//   Ventas, Caja, Liquidación, Cobros, Pagos, Ventas suspendidas.
+//   Ventas, Caja, Liquidación, Cobros, Pagos, Ventas guardadas.
 // El resto son placeholders "Próximamente".
 
 import 'dart:math' as math;
@@ -22,10 +22,12 @@ import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../inventory/data/file_io_helper.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../shell/presentation/shell_providers.dart';
-import '../data/reports_repository.dart' show FiscalZClosureRow;
+import '../data/reports_repository.dart'
+    show FiscalZClosureRow, SavedSaleRow, SavedSalesResult;
 import '../domain/report_category.dart';
 import '../export/report_export_models.dart';
 import '../export/report_export_service.dart';
@@ -188,7 +190,7 @@ class ReportsPage extends ConsumerWidget {
     ref.invalidate(cashSessionsReportProvider);
     ref.invalidate(paymentsReportProvider);
     ref.invalidate(outgoingPaymentsReportProvider);
-    ref.invalidate(suspendedSalesReportProvider);
+    ref.invalidate(savedSalesReportProvider);
     ref.invalidate(operationalCloseoutReportProvider);
     ref.invalidate(detailedSalesReportProvider);
     ref.invalidate(voidedSalesReportProvider);
@@ -204,8 +206,12 @@ class _AllCategoriesList extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Sin permiso de ganancia, P&L ni siquiera se lista.
+    final canViewProfit = ref.watch(canViewProfitProvider);
+
     final groups = <ReportCategoryGroup, List<ReportCategory>>{};
     for (final cat in ReportCategory.values) {
+      if (cat == ReportCategory.perdidasGanancias && !canViewProfit) continue;
       groups.putIfAbsent(cat.group, () => []).add(cat);
     }
 
@@ -616,8 +622,8 @@ class _CategoryContent extends StatelessWidget {
         return _CobrosReport(mode: mode);
       case ReportCategory.pagos:
         return _PagosReport(mode: mode);
-      case ReportCategory.ventasSuspendidas:
-        return _SuspendedReport(mode: mode);
+      case ReportCategory.ventasGuardadas:
+        return _SavedSalesReport(mode: mode);
       // ── Round 2 ────────────────────────────────────────────────────
       case ReportCategory.empleados:
         return _EmpleadosReport(mode: mode);
@@ -1474,106 +1480,274 @@ class _PagosReport extends ConsumerWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 6) Ventas suspendidas
+// 6) Ventas guardadas
 // ─────────────────────────────────────────────────────────────────────────
 
-class _SuspendedReport extends ConsumerWidget {
-  const _SuspendedReport({required this.mode});
+/// Cuentas guardadas desde el POS (ventas `pending`).
+///
+/// A diferencia del resto de reportes, por defecto NO aplica el rango de
+/// fechas global: una cuenta guardada es un objeto abierto y la que se guardó
+/// el mes pasado y sigue sin cobrar es justo la que hay que ver. El chip
+/// "Solo el rango de fechas" vive acá adentro para no alterar el resto de
+/// categorías, que sí dependen de la `_FilterBar` compartida.
+class _SavedSalesReport extends ConsumerStatefulWidget {
+  const _SavedSalesReport({required this.mode});
 
   final ReportMode mode;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(suspendedSalesReportProvider);
+  ConsumerState<_SavedSalesReport> createState() => _SavedSalesReportState();
+}
 
-    return async.when(
-      loading: () =>
-          const Padding(padding: EdgeInsets.all(AppTokens.s32), child:
-              Center(child: CircularProgressIndicator())),
-      error: (error, _) => ErrorCard(
-        message: 'No se pudieron cargar las ventas suspendidas: $error',
-        onRetry: () => ref.invalidate(suspendedSalesReportProvider),
-      ),
-      data: (rows) {
-        if (mode == ReportMode.graphic) {
-          // Cuenta por día.
-          final byDay = <String, double>{};
-          for (final r in rows) {
-            final key = formatDate(r.saleDate);
-            byDay.update(key, (v) => v + r.totalAmount,
-                ifAbsent: () => r.totalAmount);
-          }
-          final points = byDay.entries
-              .map((e) => (label: e.key, value: e.value))
-              .toList();
-          return _ReportCard(
-            title: 'Ventas suspendidas — Monto pendiente por día',
-            child: _SimpleBarChart(
-              points: points,
-              color: ReportCategory.ventasSuspendidas.group.accent,
+class _SavedSalesReportState extends ConsumerState<_SavedSalesReport> {
+  final TextEditingController _searchController = TextEditingController();
+  String _search = '';
+
+  static const List<String> _columns = [
+    'Fecha',
+    'Número',
+    'Cliente',
+    'Cajero',
+    'Items',
+    'Nota',
+    'Total',
+  ];
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Filtra en memoria sobre la lista ya cargada — no vuelve a la red en cada
+  /// tecla. La nota entra en la búsqueda porque suele traer la mesa o el
+  /// nombre de la persona.
+  List<SavedSaleRow> _applySearch(List<SavedSaleRow> rows) {
+    final query = _search.trim().toLowerCase();
+    if (query.isEmpty) return rows;
+    return rows.where((r) {
+      return r.saleNumber.toLowerCase().contains(query) ||
+          (r.clientName ?? '').toLowerCase().contains(query) ||
+          (r.notes ?? '').toLowerCase().contains(query);
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final async = ref.watch(savedSalesReportProvider);
+    final useRange = ref.watch(savedSalesUseDateRangeProvider);
+
+    return _ReportCard(
+      title: widget.mode == ReportMode.graphic
+          ? 'Ventas guardadas — Monto guardado por día'
+          : 'Ventas guardadas — Reporte de resumen',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildControls(context, useRange),
+          const SizedBox(height: AppTokens.s12),
+          async.when(
+            loading: () => const Padding(
+              padding: EdgeInsets.all(AppTokens.s32),
+              child: Center(child: CircularProgressIndicator()),
             ),
-          );
-        }
-        final tableRows = rows
-            .map((r) => [
-                  formatDateTime(r.saleDate),
-                  r.saleNumber,
-                  r.clientName ?? '—',
-                  r.status,
-                  money(r.totalAmount),
-                ])
-            .toList(growable: false);
-        final total = rows.fold<double>(0, (s, r) => s + r.totalAmount);
+            error: (error, _) => ErrorCard(
+              message: 'No se pudieron cargar las ventas guardadas: $error',
+              onRetry: () => ref.invalidate(savedSalesReportProvider),
+            ),
+            data: (result) => _buildData(context, result, useRange),
+          ),
+        ],
+      ),
+    );
+  }
 
-        final range = ref.read(reportDateRangeProvider);
-        _publishExport(
-          ref,
-          fileBaseName: 'ventas_suspendidas',
-          build: () => ReportExportData(
-            title: 'Ventas suspendidas',
-            subtitle: 'Cuentas abiertas / pendientes',
-            dateFrom: range.from,
-            dateTo: range.to,
-            sections: [
-              ReportSection(
-                table: ReportTable(
-                  columns: const [
-                    'Fecha',
-                    '#',
-                    'Cliente',
-                    'Estado',
-                    'Total',
-                  ],
-                  rows: tableRows,
-                  numericColumns: const {4},
+  Widget _buildControls(BuildContext context, bool useRange) {
+    final range = ref.watch(reportDateRangeProvider);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: AppTokens.s12,
+          runSpacing: AppTokens.s8,
+          children: [
+            FilterChip(
+              label: const Text('Solo el rango de fechas'),
+              selected: useRange,
+              onSelected: (value) {
+                ref.read(savedSalesUseDateRangeProvider.notifier).state =
+                    value;
+              },
+            ),
+            Text(
+              useRange
+                  ? 'Filtrando por ${formatDate(range.from)} → '
+                      '${formatDate(range.to)}'
+                  : 'Mostrando todas las cuentas guardadas',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTokens.mutedForeground,
+                  ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTokens.s12),
+        TextField(
+          controller: _searchController,
+          decoration: InputDecoration(
+            isDense: true,
+            prefixIcon: const Icon(Icons.search, size: 18),
+            hintText: 'Buscar por número, cliente o nota (mesa, persona)…',
+            suffixIcon: _search.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: 'Limpiar',
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _search = '');
+                    },
+                  ),
+          ),
+          onChanged: (value) => setState(() => _search = value),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildData(
+    BuildContext context,
+    SavedSalesResult result,
+    bool useRange,
+  ) {
+    final rows = _applySearch(result.rows);
+    final total = rows.fold<double>(0, (s, r) => s + r.totalAmount);
+    final searching = _search.trim().isNotEmpty;
+
+    final scopeNote = useRange
+        ? 'Alcance: sólo el rango '
+            '${formatDate(ref.read(reportDateRangeProvider).from)} → '
+            '${formatDate(ref.read(reportDateRangeProvider).to)}.'
+        : 'Alcance: todas las cuentas guardadas (sin filtro de fecha).';
+    final searchNote =
+        searching ? ' Filtro de búsqueda: "${_search.trim()}".' : '';
+    final limitNote = result.limitReached
+        ? ' Aviso: se alcanzó el techo de ${result.limit} cuentas; puede '
+            'haber más sin mostrar.'
+        : '';
+
+    if (widget.mode == ReportMode.graphic) {
+      final byDay = <String, double>{};
+      for (final r in rows) {
+        final key = formatDate(r.saleDate);
+        byDay.update(key, (v) => v + r.totalAmount,
+            ifAbsent: () => r.totalAmount);
+      }
+      final points =
+          byDay.entries.map((e) => (label: e.key, value: e.value)).toList();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (result.limitReached) _SavedSalesLimitBanner(limit: result.limit),
+          _SimpleBarChart(
+            points: points,
+            color: ReportCategory.ventasGuardadas.group.accent,
+          ),
+        ],
+      );
+    }
+
+    final tableRows = rows
+        .map((r) => [
+              formatDateTime(r.saleDate),
+              r.saleNumber,
+              r.clientName ?? '—',
+              r.cashierName ?? '—',
+              '${r.itemsCount}',
+              r.notes ?? '—',
+              money(r.totalAmount),
+            ])
+        .toList(growable: false);
+
+    final totals = <String, String>{
+      'Cuentas guardadas': '${rows.length}',
+      if (searching) 'De un total de': '${result.rows.length}',
+      'Monto guardado': money(total),
+    };
+
+    _publishExport(
+      ref,
+      fileBaseName: 'ventas_guardadas',
+      build: () => ReportExportData(
+        title: 'Ventas guardadas',
+        subtitle: 'Cuentas guardadas desde el POS, pendientes de cobrar',
+        dateFrom: useRange ? ref.read(reportDateRangeProvider).from : null,
+        dateTo: useRange ? ref.read(reportDateRangeProvider).to : null,
+        sections: [
+          ReportSection(
+            table: ReportTable(
+              columns: _columns,
+              rows: tableRows,
+              numericColumns: const {4, 6},
+            ),
+            totals: [
+              for (final entry in totals.entries)
+                ReportKv(
+                  entry.key,
+                  entry.value,
+                  highlight: entry.key == 'Monto guardado',
                 ),
-                totals: [
-                  ReportKv('Cuentas abiertas', '${rows.length}'),
-                  ReportKv('Monto pendiente', money(total), highlight: true),
-                ],
-              ),
             ],
+            note: '$scopeNote$searchNote$limitNote',
           ),
-        );
+        ],
+      ),
+    );
 
-        return _ReportCard(
-          title: 'Ventas suspendidas — Reporte de resumen',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _SimpleTable(
-                columns: const ['Fecha', '#', 'Cliente', 'Estado', 'Total'],
-                rows: tableRows,
-              ),
-              const Divider(),
-              _TotalsRow(items: {
-                'Cuentas abiertas': '${rows.length}',
-                'Monto pendiente': money(total),
-              }),
-            ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (result.limitReached) _SavedSalesLimitBanner(limit: result.limit),
+        _SimpleTable(columns: _columns, rows: tableRows),
+        const Divider(),
+        _TotalsRow(items: totals),
+      ],
+    );
+  }
+}
+
+/// Aviso visible cuando la consulta tocó el techo de filas. Sin filtro de
+/// fecha el `.limit` es el techo real, así que no se puede truncar callado.
+class _SavedSalesLimitBanner extends StatelessWidget {
+  const _SavedSalesLimitBanner({required this.limit});
+
+  final int limit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppTokens.s12),
+      padding: const EdgeInsets.all(AppTokens.s12),
+      decoration: BoxDecoration(
+        color: AppTokens.warning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(AppTokens.radiusM),
+        border: Border.all(color: AppTokens.warning.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_outlined,
+              size: 18, color: AppTokens.warning),
+          const SizedBox(width: AppTokens.s8),
+          Expanded(
+            child: Text(
+              'Se alcanzó el máximo de $limit cuentas guardadas. Puede haber '
+              'más sin mostrar — activa "Solo el rango de fechas" para acotar '
+              'el resultado.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }
@@ -1845,6 +2019,11 @@ class _DetailedSalesReport extends ConsumerWidget {
             : detailedSalesReportProvider),
       ),
       data: (rows) {
+        // Gate de ganancia: si el usuario no tiene `reports.profit`, la
+        // columna y su total no se muestran NI se exportan — el PDF/CSV debe
+        // reflejar exactamente lo que se ve en pantalla.
+        final canViewProfit = ref.watch(canViewProfitProvider);
+
         final tableRows = rows
             .map((r) => [
                   formatDateTime(r.saleDate),
@@ -1857,7 +2036,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                   money(r.subtotal),
                   money(r.taxAmount),
                   money(r.totalAmount),
-                  money(r.profit),
+                  if (canViewProfit) money(r.profit),
                 ])
             .toList(growable: false);
         final totalAmount =
@@ -1867,7 +2046,7 @@ class _DetailedSalesReport extends ConsumerWidget {
         final totalProfit =
             rows.fold<double>(0, (s, r) => s + r.profit);
 
-        const columns = [
+        final columns = [
           'Fecha',
           '#',
           'NCF',
@@ -1878,7 +2057,7 @@ class _DetailedSalesReport extends ConsumerWidget {
           'Subtotal',
           'ITBIS',
           'Total',
-          'Ganancia',
+          if (canViewProfit) 'Ganancia',
         ];
         final range = ref.read(reportDateRangeProvider);
         _publishExport(
@@ -1895,7 +2074,8 @@ class _DetailedSalesReport extends ConsumerWidget {
                 table: ReportTable(
                   columns: columns,
                   rows: tableRows,
-                  numericColumns: const {7, 8, 9, 10},
+                  numericColumns:
+                      canViewProfit ? const {7, 8, 9, 10} : const {7, 8, 9},
                 ),
                 totals: rows.isEmpty
                     ? null
@@ -1903,7 +2083,8 @@ class _DetailedSalesReport extends ConsumerWidget {
                         ReportKv('Ventas', '${rows.length}'),
                         ReportKv('ITBIS', money(totalTax)),
                         ReportKv('Total', money(totalAmount), highlight: true),
-                        ReportKv('Ganancia', money(totalProfit)),
+                        if (canViewProfit)
+                          ReportKv('Ganancia', money(totalProfit)),
                       ],
               ),
             ],
@@ -1918,19 +2099,7 @@ class _DetailedSalesReport extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _SimpleTable(
-                columns: const [
-                  'Fecha',
-                  '#',
-                  'NCF',
-                  'Cliente',
-                  'Cajero',
-                  'Caja',
-                  'Estado',
-                  'Subtotal',
-                  'ITBIS',
-                  'Total',
-                  'Ganancia',
-                ],
+                columns: columns,
                 rows: tableRows,
               ),
               if (rows.isNotEmpty) ...[
@@ -1939,7 +2108,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                   'Ventas': '${rows.length}',
                   'ITBIS': money(totalTax),
                   'Total': money(totalAmount),
-                  'Ganancia': money(totalProfit),
+                  if (canViewProfit) 'Ganancia': money(totalProfit),
                 }),
               ],
             ],
@@ -2881,6 +3050,15 @@ class _PlReport extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // P&L es un reporte de utilidad: sin `reports.profit` no se renderiza.
+    if (!ref.watch(canViewProfitProvider)) {
+      return const EmptyStateCard(
+        icon: Icons.lock_outline,
+        message: 'No tienes permiso para ver la ganancia del negocio. '
+            'Pide a un administrador que te habilite "Ver ganancia".',
+      );
+    }
+
     final async = ref.watch(plReportProvider);
     return async.when(
       loading: () => const _LoadingBox(),

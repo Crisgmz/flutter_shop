@@ -147,16 +147,74 @@ class PermissionsRepository {
         .eq('code', permissionCode)
         .limit(1);
 
-    if (permission.isEmpty) return;
+    if (permission.isEmpty) {
+      throw Exception('Permiso no encontrado: $permissionCode');
+    }
 
     final permissionId = (permission.first as Map)['id'].toString();
 
-    await _client
+    final deleted = await _client
         .from('user_permissions')
         .delete()
         .eq('user_id', userId)
         .eq('branch_id', branchId)
-        .eq('permission_id', permissionId);
+        .eq('permission_id', permissionId)
+        .select('id');
+
+    if (deleted.isEmpty) {
+      throw Exception(
+        'No se quitó el override. No tienes permiso para modificar los '
+        'permisos de este usuario, o el override es global (sin sucursal).',
+      );
+    }
+  }
+
+  /// Overrides de permisos del usuario autenticado en la sucursal activa,
+  /// como `permission_code -> granted`.
+  ///
+  /// Solo devuelve los overrides propios (no los grants del rol): el valor
+  /// por defecto del rol lo resuelve el cliente con `allowedRoles`/`RoleAccess`.
+  Future<Map<String, bool>> fetchMyPermissionOverrides() async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return const <String, bool>{};
+
+    final branchResult = await _client.rpc('current_branch_id');
+    final branchId = branchResult?.toString();
+    // Sin sucursal activa no se sabe qué override aplica. Devolver vacío deja
+    // los permisos en el valor por rol, que es el comportamiento base.
+    if (branchId == null || branchId.isEmpty) return const <String, bool>{};
+
+    final rows = await _client
+        .from('user_permissions')
+        .select('granted, branch_id, permissions!inner(code)')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .or('branch_id.eq.$branchId,branch_id.is.null');
+
+    final result = <String, bool>{};
+    final branchScoped = <String>{};
+    for (final row in rows) {
+      final item = Map<String, dynamic>.from(row as Map);
+      final code = _embeddedCode(item['permissions']);
+      if (code.isEmpty) continue;
+
+      // El override de la sucursal gana sobre el global (branch_id null).
+      final isBranchScoped = (item['branch_id'] ?? '').toString() == branchId;
+      if (!isBranchScoped && branchScoped.contains(code)) continue;
+      if (isBranchScoped) branchScoped.add(code);
+      result[code] = item['granted'] == true;
+    }
+    return result;
+  }
+
+  /// Lee `code` del embed `permissions(...)`, que PostgREST puede devolver
+  /// como objeto o como lista de un elemento según la cardinalidad detectada.
+  String _embeddedCode(dynamic embedded) {
+    final value = embedded is List
+        ? (embedded.isEmpty ? null : embedded.first)
+        : embedded;
+    if (value is! Map) return '';
+    return (value['code'] ?? '').toString();
   }
 
   /// Borra TODOS los overrides del usuario en la sucursal indicada, de

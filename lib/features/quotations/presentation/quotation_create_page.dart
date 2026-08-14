@@ -30,6 +30,10 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
   String? _clientId;
   DateTime _validUntil = DateTime.now().add(const Duration(days: 15));
   QuoteStatus _status = QuoteStatus.draft;
+
+  /// Comprobante que se emitirá al facturar. La cotización NO consume NCF: el
+  /// número fiscal se asigna recién al convertirla en venta.
+  String _receiptType = 'consumer_final';
   bool _isSubmitting = false;
   bool _isBootstrapping = false;
   bool _didBootstrap = false;
@@ -70,6 +74,9 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
       _clientId = draft.clientId;
       if (draft.validUntil != null) _validUntil = draft.validUntil!;
       if (draft.status != null) _status = draft.status!;
+      if (draft.receiptType != null) {
+        _receiptType = normalizeQuoteReceiptType(draft.receiptType);
+      }
       _notesController.text = draft.notes;
     }
   }
@@ -93,6 +100,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
       validUntil: _validUntil,
       status: _status,
       notes: _notesController.text,
+      receiptType: _receiptType,
     );
     ref.read(quotationDraftProvider.notifier).state = draft;
     // Persistir también a localStorage (web) para sobrevivir recargas.
@@ -128,6 +136,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
             ? QuoteStatus.expired
             : detail.status;
         _convertedSaleId = detail.saleId;
+        _receiptType = normalizeQuoteReceiptType(detail.receiptType);
         _notesController.text = detail.notes;
         _items
           ..clear()
@@ -259,6 +268,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
         notes: _notesController.text,
         validUntil: _validUntil,
         status: _status,
+        receiptType: _receiptType,
         items: _items
             .map(
               (item) => QuoteCreateItem(
@@ -681,6 +691,34 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
                       ? (value) {
                           if (value != null) {
                             setState(() => _status = value);
+                            _persistDraft();
+                          }
+                        }
+                      : null,
+                ),
+                const SizedBox(height: AppTokens.s12),
+                DropdownButtonFormField<String>(
+                  initialValue: _receiptType,
+                  decoration: const InputDecoration(
+                    labelText: 'Tipo de comprobante',
+                    helperText: 'El NCF se asigna al facturar, no al cotizar.',
+                    helperMaxLines: 2,
+                    filled: true,
+                    fillColor: AppTokens.secondary,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: kQuoteReceiptTypes
+                      .map(
+                        (type) => DropdownMenuItem<String>(
+                          value: type,
+                          child: Text(quoteReceiptTypeLabel(type)),
+                        ),
+                      )
+                      .toList(growable: false),
+                  onChanged: _canEditDocument
+                      ? (value) {
+                          if (value != null) {
+                            setState(() => _receiptType = value);
                             _persistDraft();
                           }
                         }

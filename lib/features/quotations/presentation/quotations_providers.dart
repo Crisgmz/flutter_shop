@@ -24,6 +24,7 @@ class QuotationDraft {
     this.validUntil,
     this.status,
     this.notes = '',
+    this.receiptType,
   });
 
   final List<QuoteDraftLine> items;
@@ -31,6 +32,10 @@ class QuotationDraft {
   final DateTime? validUntil;
   final QuoteStatus? status;
   final String notes;
+
+  /// Tipo de comprobante declarado (`quotations.receipt_type`). Null = usar el
+  /// default del formulario.
+  final String? receiptType;
 
   bool get isEmpty => items.isEmpty && notes.isEmpty && clientId == null;
 }
@@ -63,6 +68,7 @@ String _encodeQuotationDraft(QuotationDraft d) => jsonEncode({
       'validUntil': d.validUntil?.toIso8601String(),
       'status': d.status?.name,
       'notes': d.notes,
+      'receiptType': d.receiptType,
       'items': [
         for (final it in d.items)
           {
@@ -99,6 +105,7 @@ QuotationDraft? _decodeQuotationDraft(String? raw) {
               .cast<QuoteStatus?>()
               .firstWhere((_) => true, orElse: () => null),
       notes: map['notes']?.toString() ?? '',
+      receiptType: map['receiptType']?.toString(),
     );
   } catch (_) {
     return null;

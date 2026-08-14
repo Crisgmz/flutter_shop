@@ -38,14 +38,22 @@ class SalePrintJobPreparationService {
     String? printerId,
     String? templateId,
     int copies = 1,
+    bool allowPending = false,
   }) {
     final normalizedStatus = sale.status.trim().toLowerCase();
     // Las ventas a crédito también generan recibo (el cliente necesita el
-    // comprobante del saldo aunque no haya pagado). Solo se bloquean estados
-    // sin recibo válido (p. ej. anuladas).
-    if (normalizedStatus != 'completed' && normalizedStatus != 'credit') {
+    // comprobante del saldo aunque no haya pagado). Las cuentas GUARDADAS
+    // (`pending`) solo cuando el caller lo pide con [allowPending]: salen sin
+    // NCF y sin pagos, y se imprimen como documento no fiscal. El resto de los
+    // estados (p. ej. anuladas) no tiene recibo válido.
+    final isPrintable =
+        normalizedStatus == 'completed' ||
+        normalizedStatus == 'credit' ||
+        (allowPending && normalizedStatus == 'pending');
+    if (!isPrintable) {
       throw StateError(
-        'Solo se puede preparar impresión para ventas pagadas o a crédito.',
+        'Solo se puede preparar impresión para ventas pagadas, a crédito o '
+        'cuentas guardadas.',
       );
     }
 

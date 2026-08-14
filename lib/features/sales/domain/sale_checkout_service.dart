@@ -9,7 +9,20 @@ class SaleCheckoutService {
     }
 
     final receiptType = normalizeReceiptType(input.receiptType);
-    final normalizedItems = <String, _MutableSaleLine>{};
+
+    // Una línea normalizada por línea del carrito: NO se consolidan las
+    // repetidas del mismo producto. El RPC liquida `p_items` línea por línea
+    // (una fila de sale_items por item), así que consolidar en Dart cambiaba
+    // el redondeo del ITBIS contra el backend (dos líneas de 0.30 al 18%:
+    // 0.05 + 0.05 en pantalla vs 0.11 sobre el neto sumado) y además
+    // descartaba el precio unitario de la segunda línea, perdiendo dinero en
+    // silencio cuando el mismo producto entraba a dos precios distintos.
+    final lines = <_SaleLine>[];
+
+    // Cantidad acumulada por producto: el tope de existencia sí se valida
+    // contra la suma de todas las líneas del mismo producto, para que dos
+    // líneas separadas no vendan más unidades de las que hay.
+    final quantityByProduct = <String, double>{};
 
     for (final item in input.items) {
       final product = item.product;
@@ -36,59 +49,78 @@ class SaleCheckoutService {
 
       // Guarda app_settings.inv_disallow_no_stock — bloquea el carrito antes
       // de calcular líneas si el stock disponible <= 0 y el flag está activo.
-      if (input.disallowNoStock && product.stock <= 0) {
+      // Los servicios (y todo lo que no controla existencias) quedan fuera:
+      // su stock siempre es 0 y bloquearlos impediría facturar mano de obra.
+      if (input.disallowNoStock && product.tracksStock && product.stock <= 0) {
         throw SaleCheckoutValidationException(
           'El producto ${product.name} no tiene stock disponible.',
         );
       }
 
-      final existing = normalizedItems[product.id];
-      if (existing == null) {
-        normalizedItems[product.id] = _MutableSaleLine(
+      if (item.discountAmount < 0) {
+        throw SaleCheckoutValidationException(
+          'El descuento de ${product.name} no es válido.',
+        );
+      }
+
+      lines.add(
+        _SaleLine(
           productId: product.id,
           description: product.name,
           quantity: item.quantity,
           availableStock: product.stock,
+          tracksStock: product.tracksStock,
           unitPrice: round2(product.price),
-          taxRate: round2(product.taxRate),
+          discountAmount: round2(item.discountAmount),
+          // Tasa efectiva: el RPC usa
+          // `case when p.is_tax_exempt then 0 else p.tax_rate end`, así que un
+          // producto exento cobra 0 aunque tenga tax_rate 18 en el catálogo.
+          taxRate: round2(product.effectiveTaxRate),
           priceIncludesTax: product.priceIncludesTax,
           imeis: item.imeis,
-        );
-      } else {
-        existing.quantity = round3(existing.quantity + item.quantity);
-        existing.imeis.addAll(item.imeis);
+        ),
+      );
+      quantityByProduct[product.id] = round3(
+        (quantityByProduct[product.id] ?? 0) + item.quantity,
+      );
+    }
+
+    // Solo enforzamos la validación de "cantidad > stock" cuando el setting
+    // global está prendido. Si el dueño permite venta sin stock, dejamos pasar
+    // y que el RPC decida (con el flag por producto si aplica). Los servicios
+    // nunca se validan contra stock.
+    if (input.disallowNoStock) {
+      for (final line in lines) {
+        if (!line.tracksStock) continue;
+        final requested = quantityByProduct[line.productId] ?? line.quantity;
+        if (requested > line.availableStock) {
+          throw SaleCheckoutValidationException(
+            'Stock insuficiente para ${line.description}. Disponible: ${line.availableStock.toStringAsFixed(line.availableStock % 1 == 0 ? 0 : 3)}.',
+          );
+        }
       }
     }
 
-    final lines = normalizedItems.values
+    final normalizedLines = lines
         .map((line) {
-          // Solo enforzamos la validación de "cantidad > stock" cuando el
-          // setting global está prendido. Si el dueño permite venta sin
-          // stock, dejamos pasar y que el RPC decida (con el flag por
-          // producto si aplica).
-          if (input.disallowNoStock &&
-              line.quantity > line.availableStock) {
-            throw SaleCheckoutValidationException(
-              'Stock insuficiente para ${line.description}. Disponible: ${line.availableStock.toStringAsFixed(line.availableStock % 1 == 0 ? 0 : 3)}.',
-            );
-          }
-
-          // Misma fórmula que el RPC: exclusivo agrega el ITBIS encima;
-          // ITBIS-incluido lo EXTRAE del monto cobrado (total exacto).
-          final gross = round2(line.quantity * line.unitPrice);
+          // Misma fórmula que el RPC (migración 76): bruto → descuento acotado
+          // → neto. Exclusivo agrega el ITBIS encima del neto; ITBIS-incluido
+          // lo EXTRAE del monto cobrado (total exacto). Todo en CENTAVOS
+          // ENTEROS: es lo único que reproduce el redondeo de `numeric`. Con
+          // doubles, 18/100 vale 0.17999...9333 y cada neto terminado en .25 o
+          // .75 quedaba un centavo por debajo del RPC, lo que reventaba el
+          // pago dividido con "Los pagos no cubren el total".
+          final grossC = grossCents(line.quantity, line.unitPrice);
+          // El descuento nunca deja la línea en negativo ni suma al total, y
+          // se acota contra el MISMO bruto que usa el SQL.
+          final discountC = toCents(
+            line.discountAmount,
+          ).clamp(0, grossC).toDouble();
+          final netC = grossC - discountC;
           final inclusive = line.priceIncludesTax && line.taxRate > 0;
-          final double lineSubtotal;
-          final double lineTax;
-          final double lineTotal;
-          if (inclusive) {
-            lineTotal = gross;
-            lineTax = round2(gross * line.taxRate / (100 + line.taxRate));
-            lineSubtotal = round2(lineTotal - lineTax);
-          } else {
-            lineSubtotal = gross;
-            lineTax = round2(lineSubtotal * (line.taxRate / 100));
-            lineTotal = round2(lineSubtotal + lineTax);
-          }
+          final taxC = taxCents(netC, line.taxRate, inclusive: inclusive);
+          final subtotalC = inclusive ? netC - taxC : netC;
+          final totalC = inclusive ? netC : netC + taxC;
 
           return NormalizedSaleCheckoutItem(
             productId: line.productId,
@@ -96,10 +128,11 @@ class SaleCheckoutService {
             quantity: line.quantity,
             availableStock: line.availableStock,
             unitPrice: line.unitPrice,
+            discountAmount: fromCents(discountC),
             taxRate: line.taxRate,
-            lineSubtotal: lineSubtotal,
-            lineTax: lineTax,
-            lineTotal: lineTotal,
+            lineSubtotal: fromCents(subtotalC),
+            lineTax: fromCents(taxC),
+            lineTotal: fromCents(totalC),
             imeis: line.imeis,
           );
         })
@@ -131,13 +164,21 @@ class SaleCheckoutService {
       );
     }
 
-    final subtotal = round2(
-      lines.fold<double>(0, (sum, item) => sum + item.lineSubtotal),
+    // Los totales también se suman en centavos enteros: sumar doubles de dos
+    // decimales acumula error y el RPC suma numeric exacto.
+    final subtotal = fromCents(
+      normalizedLines.fold<double>(
+        0,
+        (sum, item) => sum + toCents(item.lineSubtotal),
+      ),
     );
-    final taxAmount = round2(
-      lines.fold<double>(0, (sum, item) => sum + item.lineTax),
+    final taxAmount = fromCents(
+      normalizedLines.fold<double>(
+        0,
+        (sum, item) => sum + toCents(item.lineTax),
+      ),
     );
-    final total = round2(subtotal + taxAmount);
+    final total = fromCents(toCents(subtotal) + toCents(taxAmount));
     final saleStatus = input.asCredit ? 'credit' : 'completed';
     final paidAmount = input.asCredit ? 0.0 : total;
     final balanceDue = input.asCredit ? total : 0.0;
@@ -148,7 +189,7 @@ class SaleCheckoutService {
       paymentMethod: input.asCredit ? null : (input.paymentMethod ?? 'cash'),
       clientId: input.clientId,
       notes: nullIfBlank(input.notes),
-      items: lines,
+      items: normalizedLines,
       subtotal: subtotal,
       taxAmount: taxAmount,
       total: total,
@@ -193,11 +234,18 @@ class SaleCheckoutSourceItem {
   const SaleCheckoutSourceItem({
     required this.product,
     required this.quantity,
+    this.discountAmount = 0,
     this.imeis = const <String>[],
   });
 
   final SaleCheckoutSourceProduct product;
   final double quantity;
+
+  /// Descuento de la línea en MONTO absoluto (no porcentaje). Viaja como monto
+  /// hasta el RPC: el porcentaje redondea distinto en Dart y en Postgres y
+  /// terminaría descuadrando el total contra los pagos.
+  final double discountAmount;
+
   final List<String> imeis;
 }
 
@@ -210,6 +258,8 @@ class SaleCheckoutSourceProduct {
     required this.stock,
     required this.isActive,
     this.priceIncludesTax = false,
+    this.tracksStock = true,
+    this.isTaxExempt = false,
   });
 
   final String id;
@@ -218,6 +268,19 @@ class SaleCheckoutSourceProduct {
   final double taxRate;
   final double stock;
   final bool isActive;
+
+  /// Espeja `products.is_tax_exempt`. Manda sobre `taxRate`: el catálogo deja
+  /// marcar "Exento de ITBIS" sin poner la tasa en 0.
+  final bool isTaxExempt;
+
+  /// Tasa que realmente se cobra. Misma regla del RPC:
+  /// `case when p.is_tax_exempt then 0 else p.tax_rate end`.
+  double get effectiveTaxRate => isTaxExempt ? 0 : taxRate;
+
+  /// Si el producto controla existencias. False para servicios (mano de obra),
+  /// que se venden sin importar el stock. Espeja
+  /// `!products.is_service && products.track_inventory`.
+  final bool tracksStock;
 
   /// Si true, `price` trae el ITBIS adentro: el impuesto se extrae del total
   /// (total × t/(100+t)) en vez de agregarse encima. Espeja
@@ -262,6 +325,9 @@ class NormalizedSaleCheckout {
             'description': item.description,
             'quantity': item.quantity,
             'unit_price': item.unitPrice,
+            // Monto absoluto: el RPC lo acota a [0, bruto] y lo guarda en
+            // sale_items.discount_amount (migración 76).
+            'discount_amount': item.discountAmount,
             'tax_rate': item.taxRate,
             if (item.imeis.isNotEmpty) 'imeis': item.imeis,
           },
@@ -277,6 +343,7 @@ class NormalizedSaleCheckoutItem {
     required this.quantity,
     required this.availableStock,
     required this.unitPrice,
+    required this.discountAmount,
     required this.taxRate,
     required this.lineSubtotal,
     required this.lineTax,
@@ -289,6 +356,11 @@ class NormalizedSaleCheckoutItem {
   final double quantity;
   final double availableStock;
   final double unitPrice;
+
+  /// Descuento de la línea ya acotado a [0, bruto]. Es el valor que se manda
+  /// al RPC y el que queda en `sale_items.discount_amount`.
+  final double discountAmount;
+
   final double taxRate;
   final double lineSubtotal;
   final double lineTax;
@@ -305,23 +377,30 @@ class SaleCheckoutValidationException implements Exception {
   String toString() => message;
 }
 
-class _MutableSaleLine {
-  _MutableSaleLine({
+class _SaleLine {
+  _SaleLine({
     required this.productId,
     required this.description,
     required this.quantity,
     required this.availableStock,
     required this.unitPrice,
+    required this.discountAmount,
     required this.taxRate,
+    this.tracksStock = true,
     this.priceIncludesTax = false,
     List<String>? imeis,
   }) : imeis = [...?imeis];
 
   final String productId;
   final String description;
-  double quantity;
+  final double quantity;
   final double availableStock;
+  final bool tracksStock;
   final double unitPrice;
+
+  /// Descuento de la línea (monto absoluto).
+  final double discountAmount;
+
   final double taxRate;
   final bool priceIncludesTax;
   final List<String> imeis;
@@ -372,3 +451,39 @@ String? nullIfBlank(String? value) {
 
 double round2(double value) => (value * 100).roundToDouble() / 100;
 double round3(double value) => (value * 1000).roundToDouble() / 1000;
+
+// ---------------------------------------------------------------------------
+// Aritmética de dinero en CENTAVOS ENTEROS
+// ---------------------------------------------------------------------------
+// Postgres calcula con `numeric` (decimal exacto, redondeo de la mitad hacia
+// arriba). Dart con doubles NO: 18/100 vale 0.17999999999999999333, así que
+// todo neto que caiga justo en medio centavo (los terminados en .25 o .75 al
+// 18%) redondeaba hacia abajo y quedaba un centavo por debajo del RPC. Lo
+// mismo pasaba con el bruto de cantidades fraccionarias (0.5 × 2208.99).
+// Trabajar en centavos enteros —y llevar la cantidad a milésimas enteras— hace
+// que el producto sea exacto y que el .5 caiga del mismo lado que en el SQL.
+
+/// Monto en pesos → centavos enteros (equivale a `numeric(14,2)`).
+double toCents(double amount) => (amount * 100).roundToDouble();
+
+/// Centavos enteros → monto en pesos.
+double fromCents(double cents) => cents / 100;
+
+/// Bruto de la línea en centavos: `round(unit_price × quantity, 2)`.
+double grossCents(double quantity, double unitPrice) {
+  // La cantidad admite hasta 3 decimales (ver [round3]); en milésimas enteras
+  // el producto por los centavos del precio es exacto.
+  final qtyMilli = (quantity * 1000).roundToDouble();
+  return (toCents(unitPrice) * qtyMilli / 1000).roundToDouble();
+}
+
+/// ITBIS de la línea en centavos, con la fórmula del RPC.
+/// [inclusive] = el precio ya trae el impuesto adentro y se EXTRAE
+/// (`neto × t/(100+t)`); si no, se agrega encima (`neto × t/100`).
+double taxCents(double netCents, double rate, {bool inclusive = false}) {
+  if (rate <= 0 || netCents == 0) return 0;
+  // La tasa es numeric(5,2): en centésimas enteras el cociente queda exacto.
+  final rateCents = (rate * 100).roundToDouble();
+  final denominator = inclusive ? 10000 + rateCents : 10000;
+  return (netCents * rateCents / denominator).roundToDouble();
+}

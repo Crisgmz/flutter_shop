@@ -13,6 +13,7 @@ import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../data/dashboard_repository.dart';
 import 'dashboard_providers.dart';
 
@@ -85,6 +86,9 @@ class CloseoutPage extends ConsumerWidget {
                   paymentBreakdown: ref
                       .watch(dashboardPaymentBreakdownProvider)
                       .valueOrNull,
+                  salesByRegister: ref
+                      .watch(dashboardSalesByRegisterProvider)
+                      .valueOrNull,
                 ),
               ),
             ],
@@ -97,18 +101,26 @@ class CloseoutPage extends ConsumerWidget {
 
 /// Bloques visuales del cierre. Exportado para reutilizo desde otras vistas
 /// (en este round sólo lo consume `closeout_page.dart`).
-class CloseoutBlocks extends StatelessWidget {
+///
+/// Es `ConsumerWidget` porque las cifras de ganancia ("Beneficios" y la
+/// columna Ganancia de "Venta por caja") se ocultan al cajero según
+/// `canViewProfitProvider`.
+class CloseoutBlocks extends ConsumerWidget {
   const CloseoutBlocks({
     super.key,
     required this.closeout,
     this.paymentBreakdown,
+    this.salesByRegister,
   });
 
   final DashboardCloseout closeout;
   final DashboardPaymentBreakdown? paymentBreakdown;
+  final DashboardSalesByRegister? salesByRegister;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final canViewProfit = ref.watch(canViewProfitProvider);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: _applyZebra([
@@ -117,7 +129,8 @@ class CloseoutBlocks extends StatelessWidget {
             money(closeout.sales.salesTotalNoTax)),
         _BlockRow('Ventas totales (con impuestos)',
             money(closeout.sales.salesTotalWithTax)),
-        _BlockRow('Beneficios', money(closeout.sales.profit)),
+        if (canViewProfit)
+          _BlockRow('Beneficios', money(closeout.sales.profit)),
         _BlockRow('Total artículos en inventario',
             qty(closeout.sales.inventoryQtyOnHand.toInt())),
         _BlockRow('Valor total del inventario',
@@ -168,6 +181,72 @@ class CloseoutBlocks extends StatelessWidget {
             _BlockRow(entry.label, money(entry.amount)),
           const Divider(height: AppTokens.s16, color: AppTokens.border),
           _BlockRow('Total cobrado', money(paymentBreakdown!.total)),
+        ],
+
+        const _BlockSpacer(),
+        const _BlockHeader('Venta por caja'),
+        if (salesByRegister == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: AppTokens.s8),
+            child: SizedBox(
+              height: 18,
+              width: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else if (salesByRegister!.entries.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+            child: Text(
+              'Sin ventas registradas este día.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppTokens.mutedForeground,
+                  ),
+            ),
+          )
+        else ...[
+          _BlockRow(
+            'Caja',
+            'Venta',
+            extra: canViewProfit ? 'Ganancia' : null,
+            header: true,
+          ),
+          for (final entry in salesByRegister!.entries) ...[
+            _BlockRow(
+              entry.registerName,
+              money(entry.salesTotal),
+              extra: canViewProfit ? money(entry.profit) : null,
+            ),
+            // El crédito se detalla por caja para poder reconciliar contra
+            // "Ventas totales (con impuestos)", que no lo cuenta.
+            if (entry.creditTotal > 0)
+              _BlockRow(
+                '  · de los cuales a crédito',
+                money(entry.creditTotal),
+              ),
+          ],
+          const Divider(height: AppTokens.s16, color: AppTokens.border),
+          _BlockRow(
+            'Total vendido (incluye crédito)',
+            money(salesByRegister!.salesTotal),
+            extra: canViewProfit ? money(salesByRegister!.profit) : null,
+          ),
+          if (salesByRegister!.creditTotal > 0) ...[
+            _BlockRow(
+              '  · de los cuales a crédito',
+              money(salesByRegister!.creditTotal),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: AppTokens.s4),
+              child: Text(
+                'El bloque Ventas solo cuenta las ventas cobradas, por eso su '
+                'total es menor en el monto a crédito.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTokens.mutedForeground,
+                    ),
+              ),
+            ),
+          ],
         ],
 
         const _BlockSpacer(),
@@ -312,28 +391,53 @@ class _BlockHeader extends StatelessWidget {
 }
 
 class _BlockRow extends StatelessWidget {
-  const _BlockRow(this.label, this.value);
+  const _BlockRow(this.label, this.value, {this.extra, this.header = false});
+
   final String label;
   final String value;
 
+  /// Tercera columna opcional (ej. la ganancia en "Venta por caja"). Cuando
+  /// es null la fila se ve exactamente igual que antes.
+  final String? extra;
+
+  /// Fila de encabezado de columnas: mismo alto y zebra, texto atenuado.
+  final bool header;
+
   @override
   Widget build(BuildContext context) {
+    final base = Theme.of(context).textTheme.bodyMedium;
+    final labelStyle =
+        header ? base?.copyWith(color: AppTokens.mutedForeground) : base;
+    final valueStyle = header
+        ? base?.copyWith(color: AppTokens.mutedForeground)
+        : base?.copyWith(fontWeight: FontWeight.w700);
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: AppTokens.s4),
       child: Row(
         children: [
-          Expanded(
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.bodyMedium,
+          Expanded(child: Text(label, style: labelStyle)),
+          if (extra == null)
+            Text(value, style: valueStyle)
+          else ...[
+            SizedBox(
+              width: 120,
+              child: Text(
+                value,
+                textAlign: TextAlign.right,
+                style: valueStyle,
+              ),
             ),
-          ),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
+            const SizedBox(width: AppTokens.s16),
+            SizedBox(
+              width: 120,
+              child: Text(
+                extra!,
+                textAlign: TextAlign.right,
+                style: valueStyle,
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -51,11 +51,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
               if (openSession == null)
                 _noSessionCard()
               else
-                _openSessionCard(
-                  openSession,
-                  metrics,
-                  data.pettyCashExpensesToday,
-                ),
+                _openSessionCard(openSession, metrics),
               if (canSeeAllCashiers) ...[
                 const SizedBox(height: AppTokens.s24),
                 const _AllCashiersPanel(),
@@ -97,7 +93,10 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                     status: session.isOpen ? 'open' : 'closed',
                                   )),
                                   DataCell(Text(money(session.openingAmount))),
-                                  DataCell(Text(money(session.expectedAmount))),
+                                  DataCell(_expectedCell(
+                                    session,
+                                    data.expectedByOpenSessionId,
+                                  )),
                                   DataCell(Text(
                                     session.closingAmount == null
                                         ? '-'
@@ -217,6 +216,34 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     );
   }
 
+  /// Columna "Esperado" de la tabla de sesiones.
+  ///
+  /// En las sesiones CERRADAS el valor de la base es el bueno: `closeSession`
+  /// lo graba con la fórmula completa. En las ABIERTAS no se puede usar
+  /// `session.expectedAmount` porque el trigger SQL solo mantiene apertura +
+  /// movimientos manuales (no ve ventas, gastos ni devoluciones) y quedaban dos
+  /// "Esperado" distintos del mismo turno: el de la tarjeta y el de la fila.
+  /// Se muestra el esperado real calculado con la misma fórmula de la tarjeta;
+  /// si no se pudo calcular, un guión en vez de un número que engaña.
+  Widget _expectedCell(
+    CashSessionEntity session,
+    Map<String, double> expectedByOpenSessionId,
+  ) {
+    if (!session.isOpen) return Text(money(session.expectedAmount));
+
+    final expected = expectedByOpenSessionId[session.id];
+    if (expected == null) {
+      return const Tooltip(
+        message: 'Se calcula al cerrar la caja.',
+        child: Text('—', style: TextStyle(color: AppTokens.mutedForeground)),
+      );
+    }
+    return Tooltip(
+      message: 'Estimado del turno en curso; se confirma al cerrar la caja.',
+      child: Text(money(expected)),
+    );
+  }
+
   Widget _noSessionCard() {
     return Container(
       width: double.infinity,
@@ -256,11 +283,13 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
   Widget _openSessionCard(
     CashSessionEntity openSession,
     CashSessionMetrics? metrics,
-    double pettyCashExpensesToday,
   ) {
-    final expectedCash = metrics == null
-        ? openSession.expectedAmount
-        : metrics.expectedCashFromOpening(openSession.openingAmount);
+    // Sin métricas no hay esperado que mostrar. NO se cae a
+    // `openSession.expectedAmount`: ese valor solo trae apertura + movimientos
+    // manuales (el trigger no ve ventas, gastos ni devoluciones) y parecería
+    // un total completo sin serlo.
+    final expectedCash =
+        metrics?.expectedCashFromOpening(openSession.openingAmount);
 
     return Container(
       width: double.infinity,
@@ -322,6 +351,11 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   icon: Icons.lock_open_outlined,
                 ),
                 KPICard(
+                  label: 'Total de venta',
+                  value: money(metrics?.salesTotal ?? 0),
+                  icon: Icons.point_of_sale_outlined,
+                ),
+                KPICard(
                   label: 'Ingreso efectivo',
                   value: money(metrics?.cashPayments ?? 0),
                   icon: Icons.payments_outlined,
@@ -337,6 +371,13 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   icon: Icons.credit_card_outlined,
                 ),
                 KPICard(
+                  // Crédito generado en el turno: saldo pendiente de las
+                  // ventas de esta sesión. No es un método de cobro.
+                  label: 'Crédito',
+                  value: money(metrics?.creditGenerated ?? 0),
+                  icon: Icons.schedule_outlined,
+                ),
+                KPICard(
                   label: 'Otro',
                   value: money(metrics?.otherPayments ?? 0),
                   icon: Icons.more_horiz_rounded,
@@ -350,20 +391,56 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                   icon: Icons.savings_outlined,
                 ),
                 KPICard(
-                  label: 'Cambio devuelto',
-                  value: money(metrics?.changeGiven ?? 0),
+                  // Efectivo que de verdad sale de la gaveta por cambio: solo
+                  // cuando el exceso lo pagó el cliente por tarjeta o
+                  // transferencia. Un sobrepago en efectivo no saca nada neto.
+                  label: 'Efectivo sacado de caja',
+                  value: money(metrics?.cashWithdrawnForChange ?? 0),
                   icon: Icons.currency_exchange_rounded,
                 ),
                 KPICard(
-                  label: 'Total de venta',
-                  value: money(metrics?.salesTotal ?? 0),
-                  icon: Icons.point_of_sale_outlined,
+                  label: 'Devoluciones',
+                  value: money(metrics?.cashRefunds ?? 0),
+                  icon: Icons.assignment_return_outlined,
                 ),
                 KPICard(
-                  label: 'Esperado en caja',
-                  value: money(expectedCash),
-                  icon: Icons.account_balance_wallet_outlined,
+                  // Efectivo metido a mano en la gaveta (depósitos y refuerzos
+                  // de apertura). Suma al esperado.
+                  label: 'Efectivo agregado',
+                  value: money(metrics?.cashDeposits ?? 0),
+                  icon: Icons.add_circle_outline,
                 ),
+                KPICard(
+                  // Retiros de efectivo del turno. Restan del esperado.
+                  label: 'Sangrías',
+                  value: money(metrics?.cashWithdrawals ?? 0),
+                  icon: Icons.remove_circle_outline,
+                ),
+                if ((metrics?.cashAdjustments ?? 0) != 0)
+                  KPICard(
+                    // Ajustes manuales de arqueo: el trigger SQL los suma, así
+                    // que aquí también suman.
+                    label: 'Ajustes de caja',
+                    value: money(metrics?.cashAdjustments ?? 0),
+                    icon: Icons.tune_outlined,
+                  ),
+                if (expectedCash == null)
+                  const Tooltip(
+                    message:
+                        'No se pudieron cargar los movimientos del turno. '
+                        'Actualiza para volver a calcularlo.',
+                    child: KPICard(
+                      label: 'Esperado en caja',
+                      value: '—',
+                      icon: Icons.account_balance_wallet_outlined,
+                    ),
+                  )
+                else
+                  KPICard(
+                    label: 'Esperado en caja',
+                    value: money(expectedCash),
+                    icon: Icons.account_balance_wallet_outlined,
+                  ),
               ];
               final width = constraints.maxWidth;
               final crossAxisCount = width >= 900 ? 3 : width >= 500 ? 2 : 1;

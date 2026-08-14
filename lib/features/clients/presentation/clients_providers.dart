@@ -53,6 +53,29 @@ final clientsFilteredBalanceProvider = Provider<double>((ref) {
   return total;
 });
 
+/// Busca en una lista de clientes ya cargada uno que probablemente sea el
+/// mismo que se está por crear: coincide número de documento o nombre
+/// completo. Vive suelta acá para que Clientes y Ventas la compartan.
+ClientEntity? findDuplicateClient(
+  List<ClientEntity> clients,
+  ClientInput input,
+) {
+  final name = input.fullName.trim().toLowerCase();
+  final doc = input.documentNumber?.trim().toLowerCase();
+
+  for (final c in clients) {
+    if (doc != null &&
+        doc.isNotEmpty &&
+        c.documentNumber?.trim().toLowerCase() == doc) {
+      return c;
+    }
+    if (name.isNotEmpty && c.fullName.trim().toLowerCase() == name) {
+      return c;
+    }
+  }
+  return null;
+}
+
 final customerBalancesProvider =
     FutureProvider<List<CustomerBalanceItem>>((ref) async {
   final repository = ref.watch(clientsRepositoryProvider);

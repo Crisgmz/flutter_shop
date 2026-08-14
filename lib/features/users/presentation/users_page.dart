@@ -10,6 +10,7 @@ import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../permissions/data/permissions_repository.dart';
 import '../../permissions/presentation/permissions_providers.dart';
+import '../../shell/presentation/shell_providers.dart';
 import '../data/users_repository.dart';
 import 'users_providers.dart';
 
@@ -554,6 +555,9 @@ class _UsersPageState extends ConsumerState<UsersPage> {
 
       if (!mounted) return;
       ref.invalidate(usersListProvider);
+      // El rol y los permisos del usuario editado pueden ser los del propio
+      // usuario en sesión: refrescar identidad para que el cambio se vea ya.
+      invalidateIdentityScopedData(ref);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Usuario actualizado')));
@@ -694,6 +698,8 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       await repository.updateMembership(input);
       if (!mounted) return;
       ref.invalidate(usersListProvider);
+      // El rol por sucursal manda sobre el del perfil: refrescar identidad.
+      invalidateIdentityScopedData(ref);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Asignación actualizada')));
@@ -867,6 +873,11 @@ class _EditUserDialogState extends State<_EditUserDialog> {
     if (picked != null) setState(() => _hireDate = picked);
   }
 
+  /// El rol por sucursal (`role_override`) gana sobre el del perfil, así que
+  /// al guardar se re-alinea. Se avisa para que no parezcan dos campos sueltos.
+  bool get _hasBranchRoleOverride =>
+      widget.user.branches.any((item) => item.roleOverride != null);
+
   @override
   Widget build(BuildContext context) {
     final hireDateLabel = _hireDate == null
@@ -953,6 +964,17 @@ class _EditUserDialogState extends State<_EditUserDialog> {
                   onChanged: (value) =>
                       setState(() => _role = value ?? 'cashier'),
                 ),
+                if (_hasBranchRoleOverride) ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Este usuario tiene rol por sucursal; al guardar se '
+                    'sincroniza.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppTokens.mutedForeground,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 SwitchListTile.adaptive(
                   value: _isActive,

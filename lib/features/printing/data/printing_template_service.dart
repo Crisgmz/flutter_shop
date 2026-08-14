@@ -23,6 +23,11 @@ class PrintingTemplateService {
       if (_notEmpty(document.receiptTypeLabel))
         ThermalTicketRow(left: 'Tipo:', right: document.receiptTypeLabel),
       if (_notEmpty(document.ncf)) ThermalTicketRow(left: 'NCF:', right: document.ncf),
+      if (document.ncfValidUntil != null)
+        ThermalTicketRow(
+          left: 'NCF válido hasta:',
+          right: formatDate(document.ncfValidUntil),
+        ),
       if (_notEmpty(document.cashierName))
         ThermalTicketRow(left: 'Cajero:', right: document.cashierName),
       if (_notEmpty(document.referenceNumber))
@@ -107,6 +112,11 @@ class PrintingTemplateService {
         if (_notEmpty(document.receiptTypeLabel))
           A4KeyValueRow(label: 'Tipo', value: document.receiptTypeLabel!),
         if (_notEmpty(document.ncf)) A4KeyValueRow(label: 'NCF', value: document.ncf!),
+        if (document.ncfValidUntil != null)
+          A4KeyValueRow(
+            label: 'NCF válido hasta',
+            value: formatDate(document.ncfValidUntil),
+          ),
         A4KeyValueRow(label: 'Sucursal', value: document.branch.name),
         if (_notEmpty(document.branch.taxId))
           A4KeyValueRow(label: 'RNC', value: document.branch.taxId!),

@@ -124,6 +124,51 @@ extension QuoteStatusX on QuoteStatus {
   }
 }
 
+/// Tipos de comprobante que una cotización puede declarar. Son los mismos
+/// valores del enum `public.receipt_type` (columna `quotations.receipt_type`,
+/// migración 72). La cotización NO consume secuencia NCF: solo declara qué
+/// comprobante se emitirá al facturar.
+const kQuoteReceiptTypes = <String>[
+  'consumer_final',
+  'fiscal_credit',
+  'governmental',
+  'special',
+  'export',
+];
+
+const _kQuoteReceiptTypeShortLabels = <String, String>{
+  'consumer_final': 'Consumidor final',
+  'fiscal_credit': 'Crédito fiscal',
+  'governmental': 'Gubernamental',
+  'special': 'Régimen especial',
+  'export': 'Exportación',
+};
+
+const _kQuoteReceiptTypeDocumentLabels = <String, String>{
+  'consumer_final': 'Factura para Consumidor Final',
+  'fiscal_credit': 'Factura de Crédito Fiscal',
+  'governmental': 'Factura Gubernamental',
+  'special': 'Factura Régimen Especial',
+  'export': 'Factura de Exportación',
+};
+
+/// Normaliza el valor leído de la base al conjunto soportado. Cae en
+/// `consumer_final`, que es el default de la columna.
+String normalizeQuoteReceiptType(String? value) {
+  final normalized = (value ?? '').trim().toLowerCase();
+  return kQuoteReceiptTypes.contains(normalized)
+      ? normalized
+      : 'consumer_final';
+}
+
+/// Etiqueta corta para el selector del formulario ("Crédito fiscal").
+String quoteReceiptTypeLabel(String? value) =>
+    _kQuoteReceiptTypeShortLabels[normalizeQuoteReceiptType(value)]!;
+
+/// Etiqueta larga para el bloque fiscal impreso ("Factura de Crédito Fiscal").
+String quoteReceiptTypeDocumentLabel(String? value) =>
+    _kQuoteReceiptTypeDocumentLabels[normalizeQuoteReceiptType(value)]!;
+
 class QuoteCatalogProduct {
   QuoteCatalogProduct({
     required this.id,
@@ -244,6 +289,7 @@ class QuoteCreateInput {
     required this.validUntil,
     required this.status,
     this.notes,
+    this.receiptType = 'consumer_final',
   });
 
   final String? clientId;
@@ -251,6 +297,9 @@ class QuoteCreateInput {
   final DateTime validUntil;
   final QuoteStatus status;
   final String? notes;
+
+  /// Comprobante que se emitirá al facturar (`quotations.receipt_type`).
+  final String receiptType;
 }
 
 class QuoteCreateItem {
@@ -324,6 +373,7 @@ class QuoteDetail {
     required this.taxAmount,
     required this.totalAmount,
     this.saleId,
+    this.receiptType = 'consumer_final',
   });
 
   final String id;
@@ -339,6 +389,9 @@ class QuoteDetail {
   final double taxAmount;
   final double totalAmount;
   final String? saleId;
+
+  /// Comprobante declarado en la cotización (`quotations.receipt_type`).
+  final String receiptType;
 
   bool get isExpired =>
       !status.isTerminal && validUntil.isBefore(DateTime.now());
@@ -381,6 +434,9 @@ class QuoteDetail {
       taxAmount: _toDouble(quote['tax_amount']),
       totalAmount: _toDouble(quote['total_amount']),
       saleId: _nullIfEmpty(quote['converted_sale_id']?.toString()),
+      receiptType: normalizeQuoteReceiptType(
+        quote['receipt_type']?.toString(),
+      ),
     );
   }
 }

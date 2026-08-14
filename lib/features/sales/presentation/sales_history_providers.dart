@@ -27,11 +27,15 @@ final salesHistoryPageProvider =
   return repo.fetchPage(pageIndex: index, filter: filter);
 });
 
-/// Detalle bajo demanda. Family por saleId.
-final salesHistoryDetailProvider =
-    FutureProvider.autoDispose.family<SalesHistoryDetail?, String>(
-  (ref, saleId) async {
-    final repo = ref.watch(salesHistoryRepositoryProvider);
-    return repo.fetchDetail(saleId);
-  },
-);
+/// Clave del detalle: id del documento + si es una devolución. El historial es
+/// unificado, así que el id solo no alcanza para saber en qué tabla buscar.
+typedef SalesHistoryDetailKey = ({String id, bool isReturn});
+
+/// Detalle bajo demanda (venta o devolución).
+final salesHistoryDetailProvider = FutureProvider.autoDispose
+    .family<SalesHistoryDetail?, SalesHistoryDetailKey>((ref, key) async {
+  final repo = ref.watch(salesHistoryRepositoryProvider);
+  return key.isReturn
+      ? repo.fetchReturnDetail(key.id)
+      : repo.fetchDetail(key.id);
+});
