@@ -548,6 +548,8 @@ class CobrosRepository {
       receiptTypeLabel: 'RECIBO DE ABONO',
       showTax: false,
       showBarcode: settings['receipt_hide_barcode'] != true,
+      logoOnLeft:
+          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
       footerMessage: 'Comprobante de abono · Gracias por su pago',
       notes: _firstNonEmpty([payment['notes']]),
       items: [

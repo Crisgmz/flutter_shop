@@ -42,6 +42,7 @@ class SalePrintSource {
     this.changeAmount,
     this.showBarcode = true,
     this.showItbis = true,
+    this.logoOnLeft = false,
     this.qrBytes,
     this.ecf,
   });
@@ -102,6 +103,10 @@ class SalePrintSource {
 
   /// Si false, nunca se muestra el ITBIS en el documento A4 (toggle de config).
   final bool showItbis;
+
+  /// Logo y bloque fiscal a la izquierda del A4 en vez de la derecha.
+  /// Espeja `app_settings.invoice_logo_position`.
+  final bool logoOnLeft;
 
   /// Bytes del QR (descargado de company_qr_url). Null → fallback al asset.
   final List<int>? qrBytes;
@@ -202,6 +207,7 @@ class SalePrintDocumentAdapter {
           : (source.balanceDue > 0.0049 ? 'CRÉDITO' : 'CONTADO'),
       // ITBIS solo si: el toggle de config está activo, NO es venta sin
       // comprobante, y al menos un ítem realmente lleva impuesto.
+      logoOnLeft: source.logoOnLeft,
       showTax: source.showItbis &&
           source.receiptType != 'none' &&
           source.items.any((i) => i.lineTax > 0.0049),

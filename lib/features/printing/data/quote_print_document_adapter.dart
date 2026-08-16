@@ -33,6 +33,7 @@ class QuotePrintSource {
     this.ncf,
     this.ncfValidUntil,
     this.showItbis = true,
+    this.logoOnLeft = false,
     this.qrBytes,
   });
 
@@ -69,6 +70,10 @@ class QuotePrintSource {
   final String? ncf;
   final DateTime? ncfValidUntil;
   final bool showItbis;
+
+  /// Logo y bloque fiscal a la izquierda del A4 en vez de la derecha.
+  /// Espeja `app_settings.invoice_logo_position`.
+  final bool logoOnLeft;
   final List<int>? qrBytes;
   final List<QuotePrintItemSource> items;
   final double subtotal;
@@ -143,6 +148,7 @@ class QuotePrintDocumentAdapter {
       ncf: _nullIfBlank(source.ncf),
       ncfValidUntil: source.ncfValidUntil,
       paymentTermsLabel: 'CONTADO',
+      logoOnLeft: source.logoOnLeft,
       showTax: source.showItbis &&
           source.items.any((i) => i.lineTax > 0.0049),
       qrBytes: source.qrBytes,

@@ -960,6 +960,20 @@ class _CompanyInfoSection extends StatelessWidget {
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
+        _EnumRow<String>(
+          label: 'Posición del logo en la factura A4',
+          value: settings.invoiceLogoPosition,
+          options: const {
+            'right': 'Derecha (por defecto)',
+            'left': 'Izquierda',
+          },
+          column: 'invoice_logo_position',
+          helper: 'El logo, el nombre comercial y el bloque del NCF van de ese '
+              'lado; los datos del emisor pasan al lado contrario. No afecta '
+              'al ticket térmico.',
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
         _CompanyLogoPicker(
           value: settings.companyLogoUrl,
           isReadOnly: isReadOnly,

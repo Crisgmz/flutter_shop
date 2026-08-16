@@ -264,6 +264,7 @@ class PrintDocumentData {
     this.ncfValidUntil,
     this.legalFooterText,
     this.isPendingAccount = false,
+    this.logoOnLeft = false,
   });
 
   final PrintDocumentType documentType;
@@ -326,6 +327,12 @@ class PrintDocumentData {
   /// consumió NCF. El documento impreso debe rotularse como NO fiscal para
   /// que nadie lo entregue como factura.
   final bool isPendingAccount;
+
+  /// Si true, en el A4 el bloque de marca (logo + nombre comercial + NCF) va a
+  /// la IZQUIERDA y los datos del emisor a la derecha. Default false (logo a la
+  /// derecha, el layout de siempre). Espeja `app_settings.invoice_logo_position`.
+  /// No aplica al ticket térmico, que va todo centrado.
+  final bool logoOnLeft;
 }
 
 class ThermalTicketRow {

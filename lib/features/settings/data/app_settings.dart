@@ -44,6 +44,16 @@ class AppSettings {
   /// productos tengan tasa). Default true.
   bool get invoiceShowItbis => _bool('invoice_show_itbis', true);
 
+  /// De qué lado va el logo (con el nombre comercial y el bloque fiscal) en el
+  /// A4: `'right'` (por defecto) o `'left'`. Los datos del emisor van al lado
+  /// contrario. No aplica al ticket térmico, que va todo centrado.
+  String get invoiceLogoPosition {
+    final value = _str('invoice_logo_position', 'right').toLowerCase();
+    return value == 'left' ? 'left' : 'right';
+  }
+
+  bool get invoiceLogoOnLeft => invoiceLogoPosition == 'left';
+
   /// URL del código QR para el pie de factura/cotización. Se descarga en
   /// runtime (como el logo), inmune al caché del bundle/service worker.
   String? get companyQrUrl => _strOrNull('company_qr_url');

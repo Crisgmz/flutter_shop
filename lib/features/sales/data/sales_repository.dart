@@ -980,6 +980,8 @@ class SalesRepository {
       cashRegisterName: cashRegisterName,
       showBarcode: settings['receipt_hide_barcode'] != true,
       showItbis: settings['invoice_show_itbis'] != false,
+      logoOnLeft:
+          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
       clientName: client['full_name']?.toString(),
       clientDocument: _buildClientDocumentLabel(
         documentType: client['document_type']?.toString(),

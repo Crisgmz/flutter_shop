@@ -539,100 +539,123 @@ class _A4Preview extends StatelessWidget {
     );
   }
 
-  /// Emisor a la izquierda; logo, nombre, número y bloque fiscal a la derecha.
+  /// Emisor de un lado; logo, nombre, número y bloque fiscal del otro.
+  /// `d.logoOnLeft` decide cuál va dónde, igual que el PDF.
   Widget _header(PrintDocumentData d) {
+    final issuer = _headerIssuer(d, alignEnd: d.logoOnLeft);
+    final brand = _headerBrand(d, alignEnd: !d.logoOnLeft);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (_hasText(d.branch.taxId))
-                Text(
-                  'RNC: ${d.branch.taxId}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              for (final line in _textLines(d.branch.address))
-                Text(line, style: const TextStyle(fontSize: 10, color: _kInkMuted)),
-              if (_hasText(d.branch.phone))
-                Text(
-                  d.branch.phone!,
-                  style: const TextStyle(fontSize: 10, color: _kInkMuted),
-                ),
-              if (_hasText(d.branch.email))
-                Text(
-                  d.branch.email!,
-                  style: const TextStyle(fontSize: 10, color: _kInkMuted),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 16),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            if (d.branch.logoBytes != null) ...[
-              Image.memory(
-                Uint8List.fromList(d.branch.logoBytes!),
-                height: 46,
-                fit: BoxFit.contain,
-              ),
-              const SizedBox(height: 3),
-            ],
+      children: d.logoOnLeft
+          ? [brand, const SizedBox(width: 16), issuer]
+          : [issuer, const SizedBox(width: 16), brand],
+    );
+  }
+
+  Widget _headerIssuer(PrintDocumentData d, {required bool alignEnd}) {
+    final align = alignEnd ? TextAlign.right : TextAlign.left;
+    return Expanded(
+      child: Column(
+        crossAxisAlignment:
+            alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          if (_hasText(d.branch.taxId))
             Text(
-              d.branch.name,
-              textAlign: TextAlign.right,
+              'RNC: ${d.branch.taxId}',
+              textAlign: align,
               style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
-                color: _kNavy,
-                letterSpacing: 1,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
               ),
             ),
-            const SizedBox(height: 12),
+          for (final line in _textLines(d.branch.address))
             Text(
-              d.documentNumber,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: _kNavy,
-              ),
+              line,
+              textAlign: align,
+              style: const TextStyle(fontSize: 10, color: _kInkMuted),
             ),
-            const SizedBox(height: 4),
+          if (_hasText(d.branch.phone))
             Text(
-              printReceiptHeadline(d),
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+              d.branch.phone!,
+              textAlign: align,
+              style: const TextStyle(fontSize: 10, color: _kInkMuted),
             ),
-            if (_hasText(d.ncf))
-              Text(
-                'NCF: ${d.ncf}',
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            if (printPendingNcfNotice(d) != null)
-              Text(
-                printPendingNcfNotice(d)!,
-                textAlign: TextAlign.right,
-                style: const TextStyle(fontSize: 9, color: _kInkMuted),
-              ),
-            if (d.ncfValidUntil != null)
-              Text(
-                'NCF válido hasta ${formatDate(d.ncfValidUntil!)}',
-                textAlign: TextAlign.right,
-                style: const TextStyle(fontSize: 9, color: _kInkMuted),
-              ),
+          if (_hasText(d.branch.email))
+            Text(
+              d.branch.email!,
+              textAlign: align,
+              style: const TextStyle(fontSize: 10, color: _kInkMuted),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _headerBrand(PrintDocumentData d, {required bool alignEnd}) {
+    final align = alignEnd ? TextAlign.right : TextAlign.left;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 230),
+      child: Column(
+        crossAxisAlignment:
+            alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          if (d.branch.logoBytes != null) ...[
+            Image.memory(
+              Uint8List.fromList(d.branch.logoBytes!),
+              height: 46,
+              fit: BoxFit.contain,
+            ),
+            const SizedBox(height: 3),
           ],
-        ),
-      ],
+          Text(
+            d.branch.name,
+            textAlign: align,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: _kNavy,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            d.documentNumber,
+            textAlign: align,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: _kNavy,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            printReceiptHeadline(d),
+            textAlign: align,
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+          ),
+          if (_hasText(d.ncf))
+            Text(
+              'NCF: ${d.ncf}',
+              textAlign: align,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          if (printPendingNcfNotice(d) != null)
+            Text(
+              printPendingNcfNotice(d)!,
+              textAlign: align,
+              style: const TextStyle(fontSize: 9, color: _kInkMuted),
+            ),
+          if (d.ncfValidUntil != null)
+            Text(
+              'NCF válido hasta ${formatDate(d.ncfValidUntil!)}',
+              textAlign: align,
+              style: const TextStyle(fontSize: 9, color: _kInkMuted),
+            ),
+        ],
+      ),
     );
   }
 

@@ -603,7 +603,7 @@ class PurchasesRepository {
         : Map<String, dynamic>.from(branchRows.first as Map);
 
     final settingsRows =
-        await _client.from('app_settings').select('company_tax_id').limit(1);
+        await _client.from('app_settings').select('company_tax_id, invoice_logo_position').limit(1);
     final settings = settingsRows.isEmpty
         ? const <String, dynamic>{}
         : Map<String, dynamic>.from(settingsRows.first as Map);
@@ -624,6 +624,8 @@ class PurchasesRepository {
       receiptTypeLabel: 'Compra',
       notes: detail.notes,
       showBarcode: false,
+      logoOnLeft:
+          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
       items: detail.items
           .map(
             (it) => PrintDocumentItem(

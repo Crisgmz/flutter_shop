@@ -550,123 +550,149 @@ class PdfReceiptBuilder {
     );
   }
 
+  /// Encabezado del A4: bloque de marca (logo + nombre + NCF) de un lado y
+  /// datos del emisor del otro. `data.logoOnLeft` decide de qué lado va cada
+  /// uno; con false queda el layout de siempre (marca a la derecha).
   pw.Widget _header(PrintDocumentData data, Uint8List? logoBytes) {
+    final issuer = _issuerBlock(data, alignEnd: data.logoOnLeft);
+    final brand = _brandBlock(data, logoBytes, alignEnd: !data.logoOnLeft);
+
     return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        // Emisor (izquierda): RNC, dirección, teléfono(s), email.
-        pw.Expanded(
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              if (_hasText(data.branch.taxId))
-                pw.Text(
-                  'RNC: ${data.branch.taxId}',
-                  style: pw.TextStyle(
-                    fontSize: 10,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-              for (final line in _lines(data.branch.address))
-                pw.Text(
-                  line,
-                  style: const pw.TextStyle(
-                    fontSize: 9.5,
-                    color: PdfColors.grey700,
-                  ),
-                ),
-              if (_hasText(data.branch.phone))
-                pw.Text(
-                  data.branch.phone!,
-                  style: const pw.TextStyle(
-                    fontSize: 9.5,
-                    color: PdfColors.grey700,
-                  ),
-                ),
-              if (_hasText(data.branch.email))
-                pw.Text(
-                  data.branch.email!,
-                  style: const pw.TextStyle(
-                    fontSize: 9.5,
-                    color: PdfColors.grey700,
-                  ),
-                ),
-            ],
+      children: data.logoOnLeft
+          ? [brand, pw.SizedBox(width: 16), issuer]
+          : [issuer, pw.SizedBox(width: 16), brand],
+    );
+  }
+
+  /// Emisor: RNC, dirección, teléfono(s), email. Ocupa el ancho sobrante.
+  pw.Widget _issuerBlock(PrintDocumentData data, {required bool alignEnd}) {
+    final align = alignEnd ? pw.TextAlign.right : pw.TextAlign.left;
+    return pw.Expanded(
+      child: pw.Column(
+        crossAxisAlignment:
+            alignEnd ? pw.CrossAxisAlignment.end : pw.CrossAxisAlignment.start,
+        children: [
+          if (_hasText(data.branch.taxId))
+            pw.Text(
+              'RNC: ${data.branch.taxId}',
+              textAlign: align,
+              style: pw.TextStyle(
+                fontSize: 10,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          for (final line in _lines(data.branch.address))
+            pw.Text(
+              line,
+              textAlign: align,
+              style: const pw.TextStyle(
+                fontSize: 9.5,
+                color: PdfColors.grey700,
+              ),
+            ),
+          if (_hasText(data.branch.phone))
+            pw.Text(
+              data.branch.phone!,
+              textAlign: align,
+              style: const pw.TextStyle(
+                fontSize: 9.5,
+                color: PdfColors.grey700,
+              ),
+            ),
+          if (_hasText(data.branch.email))
+            pw.Text(
+              data.branch.email!,
+              textAlign: align,
+              style: const pw.TextStyle(
+                fontSize: 9.5,
+                color: PdfColors.grey700,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Marca: logo + nombre comercial + número de documento + bloque fiscal.
+  /// Acotado a 230pt para que un tipo de comprobante largo ("Factura de
+  /// Crédito Fiscal Electrónica") envuelva en vez de aplastar al emisor.
+  pw.Widget _brandBlock(
+    PrintDocumentData data,
+    Uint8List? logoBytes, {
+    required bool alignEnd,
+  }) {
+    final align = alignEnd ? pw.TextAlign.right : pw.TextAlign.left;
+    return pw.ConstrainedBox(
+      constraints: const pw.BoxConstraints(maxWidth: 230),
+      child: pw.Column(
+        crossAxisAlignment:
+            alignEnd ? pw.CrossAxisAlignment.end : pw.CrossAxisAlignment.start,
+        children: [
+          if (logoBytes != null)
+            pw.Image(pw.MemoryImage(logoBytes), height: 50),
+          pw.SizedBox(height: 3),
+          pw.Text(
+            data.branch.name,
+            textAlign: align,
+            style: pw.TextStyle(
+              fontSize: 13,
+              fontWeight: pw.FontWeight.bold,
+              color: _kNavy,
+              letterSpacing: 1,
+            ),
           ),
-        ),
-        pw.SizedBox(width: 16),
-        // Logo + nombre comercial + número de documento + bloque NCF (derecha).
-        // Acotado a 230pt para que un tipo de comprobante largo ("Factura de
-        // Crédito Fiscal Electrónica") envuelva en vez de aplastar al emisor.
-        pw.ConstrainedBox(
-          constraints: const pw.BoxConstraints(maxWidth: 230),
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.end,
-            children: [
-              if (logoBytes != null)
-                pw.Image(pw.MemoryImage(logoBytes), height: 50),
-              pw.SizedBox(height: 3),
-              pw.Text(
-                data.branch.name,
-                style: pw.TextStyle(
-                  fontSize: 13,
-                  fontWeight: pw.FontWeight.bold,
-                  color: _kNavy,
-                  letterSpacing: 1,
-                ),
-              ),
-              pw.SizedBox(height: 16),
-              pw.Text(
-                data.documentNumber,
-                style: pw.TextStyle(
-                  fontSize: 12,
-                  fontWeight: pw.FontWeight.bold,
-                  color: _kNavy,
-                ),
-              ),
-              // Bloque fiscal: tipo de comprobante + NCF + vigencia, alineado a
-              // la derecha como en la factura de referencia del cliente.
-              pw.SizedBox(height: 4),
-              pw.Text(
-                printReceiptHeadline(data),
-                textAlign: pw.TextAlign.right,
-                style: pw.TextStyle(
-                  fontSize: 10,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              if (_hasText(data.ncf))
-                pw.Text(
-                  'NCF: ${data.ncf}',
-                  textAlign: pw.TextAlign.right,
-                  style: pw.TextStyle(
-                    fontSize: 10,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-              // Cotización: no hay NCF que imprimir, se avisa en gris.
-              if (printPendingNcfNotice(data) != null)
-                pw.Text(
-                  printPendingNcfNotice(data)!,
-                  textAlign: pw.TextAlign.right,
-                  style: const pw.TextStyle(
-                    fontSize: 8.5,
-                    color: PdfColors.grey600,
-                  ),
-                ),
-              if (data.ncfValidUntil != null)
-                pw.Text(
-                  'NCF válido hasta ${formatDate(data.ncfValidUntil!)}',
-                  textAlign: pw.TextAlign.right,
-                  style: const pw.TextStyle(
-                    fontSize: 8.5,
-                    color: PdfColors.grey600,
-                  ),
-                ),
-            ],
+          pw.SizedBox(height: 16),
+          pw.Text(
+            data.documentNumber,
+            textAlign: align,
+            style: pw.TextStyle(
+              fontSize: 12,
+              fontWeight: pw.FontWeight.bold,
+              color: _kNavy,
+            ),
           ),
-        ),
-      ],
+          // Bloque fiscal: tipo de comprobante + NCF + vigencia, como en la
+          // factura de referencia del cliente.
+          pw.SizedBox(height: 4),
+          pw.Text(
+            printReceiptHeadline(data),
+            textAlign: align,
+            style: pw.TextStyle(
+              fontSize: 10,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+          if (_hasText(data.ncf))
+            pw.Text(
+              'NCF: ${data.ncf}',
+              textAlign: align,
+              style: pw.TextStyle(
+                fontSize: 10,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          // Cotización: no hay NCF que imprimir, se avisa en gris.
+          if (printPendingNcfNotice(data) != null)
+            pw.Text(
+              printPendingNcfNotice(data)!,
+              textAlign: align,
+              style: const pw.TextStyle(
+                fontSize: 8.5,
+                color: PdfColors.grey600,
+              ),
+            ),
+          if (data.ncfValidUntil != null)
+            pw.Text(
+              'NCF válido hasta ${formatDate(data.ncfValidUntil!)}',
+              textAlign: align,
+              style: const pw.TextStyle(
+                fontSize: 8.5,
+                color: PdfColors.grey600,
+              ),
+            ),
+        ],
+      ),
     );
   }
 
