@@ -657,7 +657,7 @@ class QuotationsRepository implements QuotationsRepositoryContract {
       receiptTypeLabel: quoteReceiptTypeDocumentLabel(receiptType),
       showItbis: settings['invoice_show_itbis'] != false,
       logoOnLeft:
-          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
       clientLegalName: _firstNonEmpty([client['legal_name']]),
       clientDocument: _clientDocLabel(
         client['document_type']?.toString(),

@@ -33,7 +33,7 @@ class QuotePrintSource {
     this.ncf,
     this.ncfValidUntil,
     this.showItbis = true,
-    this.logoOnLeft = false,
+    this.logoOnLeft = true,
     this.qrBytes,
   });
 
@@ -71,7 +71,7 @@ class QuotePrintSource {
   final DateTime? ncfValidUntil;
   final bool showItbis;
 
-  /// Logo y bloque fiscal a la izquierda del A4 en vez de la derecha.
+  /// Logo a la izquierda del encabezado A4 en vez de la derecha.
   /// Espeja `app_settings.invoice_logo_position`.
   final bool logoOnLeft;
   final List<int>? qrBytes;

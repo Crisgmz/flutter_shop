@@ -549,7 +549,7 @@ class CobrosRepository {
       showTax: false,
       showBarcode: settings['receipt_hide_barcode'] != true,
       logoOnLeft:
-          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
       footerMessage: 'Comprobante de abono · Gracias por su pago',
       notes: _firstNonEmpty([payment['notes']]),
       items: [

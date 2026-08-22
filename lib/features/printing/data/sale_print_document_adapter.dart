@@ -42,7 +42,7 @@ class SalePrintSource {
     this.changeAmount,
     this.showBarcode = true,
     this.showItbis = true,
-    this.logoOnLeft = false,
+    this.logoOnLeft = true,
     this.qrBytes,
     this.ecf,
   });
@@ -104,7 +104,7 @@ class SalePrintSource {
   /// Si false, nunca se muestra el ITBIS en el documento A4 (toggle de config).
   final bool showItbis;
 
-  /// Logo y bloque fiscal a la izquierda del A4 en vez de la derecha.
+  /// Logo a la izquierda del encabezado A4 en vez de la derecha.
   /// Espeja `app_settings.invoice_logo_position`.
   final bool logoOnLeft;
 

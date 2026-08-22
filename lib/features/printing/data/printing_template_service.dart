@@ -45,7 +45,7 @@ class PrintingTemplateService {
       rows.add(
         ThermalTicketRow(
           left: '${_qty(item.quantity)} x ${item.description}',
-          right: money(item.lineTotal),
+          right: moneyPlain(item.lineTotal),
         ),
       );
       if (_notEmpty(item.notes)) {
@@ -55,28 +55,28 @@ class PrintingTemplateService {
 
     rows.addAll([
       const ThermalTicketRow(isDivider: true),
-      ThermalTicketRow(left: 'SUBTOTAL', right: money(document.totals.subtotal)),
+      ThermalTicketRow(left: 'SUBTOTAL', right: moneyPlain(document.totals.subtotal)),
       if (document.totals.discount > 0)
-        ThermalTicketRow(left: 'DESCUENTO', right: money(-document.totals.discount)),
+        ThermalTicketRow(left: 'DESCUENTO', right: moneyPlain(-document.totals.discount)),
       if (document.totals.serviceCharge > 0)
-        ThermalTicketRow(left: 'LEY/SERVICIO', right: money(document.totals.serviceCharge)),
-      ThermalTicketRow(left: 'ITBIS', right: money(document.totals.tax)),
+        ThermalTicketRow(left: 'LEY/SERVICIO', right: moneyPlain(document.totals.serviceCharge)),
+      ThermalTicketRow(left: 'ITBIS', right: moneyPlain(document.totals.tax)),
       ThermalTicketRow(
         left: 'TOTAL',
-        right: money(document.totals.total),
+        right: moneyPlain(document.totals.total),
         emphasized: true,
       ),
       if (document.totals.paid > 0)
-        ThermalTicketRow(left: 'PAGADO', right: money(document.totals.paid)),
+        ThermalTicketRow(left: 'PAGADO', right: moneyPlain(document.totals.paid)),
       if (document.totals.balance > 0)
-        ThermalTicketRow(left: 'BALANCE', right: money(document.totals.balance)),
+        ThermalTicketRow(left: 'BALANCE', right: moneyPlain(document.totals.balance)),
     ]);
 
     if (document.payments.isNotEmpty) {
       rows.add(const ThermalTicketRow(isDivider: true));
       for (final payment in document.payments) {
         rows.add(
-          ThermalTicketRow(left: payment.method, right: money(payment.amount)),
+          ThermalTicketRow(left: payment.method, right: moneyPlain(payment.amount)),
         );
       }
     }
@@ -139,27 +139,27 @@ class PrintingTemplateService {
             (item) => A4LineItemRow(
               description: item.description,
               quantityLabel: _qty(item.quantity),
-              unitPriceLabel: money(item.unitPrice),
-              totalLabel: money(item.lineTotal),
+              unitPriceLabel: moneyPlain(item.unitPrice),
+              totalLabel: moneyPlain(item.lineTotal),
             ),
           )
           .toList(growable: false),
       totalRows: [
-        A4KeyValueRow(label: 'Subtotal', value: money(document.totals.subtotal)),
+        A4KeyValueRow(label: 'Subtotal', value: moneyPlain(document.totals.subtotal)),
         if (document.totals.discount > 0)
-          A4KeyValueRow(label: 'Descuento', value: money(-document.totals.discount)),
+          A4KeyValueRow(label: 'Descuento', value: moneyPlain(-document.totals.discount)),
         if (document.totals.serviceCharge > 0)
-          A4KeyValueRow(label: 'Ley/servicio', value: money(document.totals.serviceCharge)),
-        A4KeyValueRow(label: 'ITBIS', value: money(document.totals.tax)),
+          A4KeyValueRow(label: 'Ley/servicio', value: moneyPlain(document.totals.serviceCharge)),
+        A4KeyValueRow(label: 'ITBIS', value: moneyPlain(document.totals.tax)),
         A4KeyValueRow(
           label: 'Total',
-          value: money(document.totals.total),
+          value: moneyPlain(document.totals.total),
           emphasized: true,
         ),
         if (document.totals.paid > 0)
-          A4KeyValueRow(label: 'Pagado', value: money(document.totals.paid)),
+          A4KeyValueRow(label: 'Pagado', value: moneyPlain(document.totals.paid)),
         if (document.totals.balance > 0)
-          A4KeyValueRow(label: 'Balance pendiente', value: money(document.totals.balance)),
+          A4KeyValueRow(label: 'Balance pendiente', value: moneyPlain(document.totals.balance)),
       ],
       notes: document.notes,
       footer: document.footerMessage,

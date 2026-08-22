@@ -44,12 +44,13 @@ class AppSettings {
   /// productos tengan tasa). Default true.
   bool get invoiceShowItbis => _bool('invoice_show_itbis', true);
 
-  /// De qué lado va el logo (con el nombre comercial y el bloque fiscal) en el
-  /// A4: `'right'` (por defecto) o `'left'`. Los datos del emisor van al lado
-  /// contrario. No aplica al ticket térmico, que va todo centrado.
+  /// De qué lado va el logo en el encabezado del A4: `'left'` (por defecto) o
+  /// `'right'`. Los datos de la empresa quedan centrados en la hoja de
+  /// cualquiera de las dos formas. No aplica al ticket térmico, que va todo
+  /// centrado.
   String get invoiceLogoPosition {
-    final value = _str('invoice_logo_position', 'right').toLowerCase();
-    return value == 'left' ? 'left' : 'right';
+    final value = _str('invoice_logo_position', 'left').toLowerCase();
+    return value == 'right' ? 'right' : 'left';
   }
 
   bool get invoiceLogoOnLeft => invoiceLogoPosition == 'left';

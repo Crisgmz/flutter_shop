@@ -71,12 +71,12 @@ class PrintDispatchPayloadBuilder {
         'notes': template.notes,
         'footer': template.footer,
         'summary': <String, dynamic>{
-          'subtotal': money(document.totals.subtotal),
-          'tax': money(document.totals.tax),
-          'discount': money(document.totals.discount),
-          'total': money(document.totals.total),
-          'paid': money(document.totals.paid),
-          'balance': money(document.totals.balance),
+          'subtotal': moneyPlain(document.totals.subtotal),
+          'tax': moneyPlain(document.totals.tax),
+          'discount': moneyPlain(document.totals.discount),
+          'total': moneyPlain(document.totals.total),
+          'paid': moneyPlain(document.totals.paid),
+          'balance': moneyPlain(document.totals.balance),
         },
       },
     };

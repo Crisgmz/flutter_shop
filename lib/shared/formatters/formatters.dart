@@ -35,12 +35,22 @@ int toInt(Object? v) {
 /// Formatea un número como moneda usando los settings globales.
 ///
 /// Ejemplo (defaults RD$, 2 decimales): `money(1500)` → `"RD\$ 1,500.00"`.
-String money(Object? amount) {
+String money(Object? amount) =>
+    '${LiveSettings.currencySymbol} ${moneyPlain(amount)}';
+
+/// Igual que [money] pero SIN el símbolo de moneda: `moneyPlain(1500)` →
+/// `"1,500.00"`.
+///
+/// Lo usan los documentos impresos (factura A4, ticket térmico, la vista
+/// previa y el payload del agente de impresión). El "RD\$" repetido en cada
+/// celda ensanchaba las columnas numéricas y empujaba la descripción del
+/// producto a un segundo renglón; la moneda ya se entiende por el encabezado
+/// del negocio.
+String moneyPlain(Object? amount) {
   final value = toDouble(amount);
   final decimals = LiveSettings.currencyDecimals;
   final thousands = LiveSettings.thousandsSep;
   final decimalPoint = LiveSettings.decimalPoint;
-  final symbol = LiveSettings.currencySymbol;
 
   final fixed = value.toStringAsFixed(decimals);
   final parts = fixed.split('.');
@@ -53,9 +63,9 @@ String money(Object? amount) {
   );
 
   if (decimals == 0 || decimal.isEmpty) {
-    return '$symbol $withSep';
+    return withSep;
   }
-  return '$symbol $withSep$decimalPoint$decimal';
+  return '$withSep$decimalPoint$decimal';
 }
 
 /// Short money format without decimals for KPIs / compact display.

@@ -404,11 +404,11 @@ class _ThermalPreview extends StatelessWidget {
           TableRow(
             children: [
               _Cell(item.description, style: _mono),
-              _Cell(money(item.unitPrice),
+              _Cell(moneyPlain(item.unitPrice),
                   style: _mono, align: Alignment.centerRight),
               _Cell(_qtyLabel(item.quantity),
                   style: _mono, align: Alignment.center),
-              _Cell(money(item.lineTotal),
+              _Cell(moneyPlain(item.lineTotal),
                   style: _mono, align: Alignment.centerRight),
             ],
           ),
@@ -441,19 +441,19 @@ class _ThermalPreview extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        line('Subtotal', money(d.totals.subtotal)),
+        line('Subtotal', moneyPlain(d.totals.subtotal)),
         if (d.totals.discount > 0)
-          line('Descuento', '-${money(d.totals.discount)}'),
+          line('Descuento', '-${moneyPlain(d.totals.discount)}'),
         if (d.totals.serviceCharge > 0)
-          line('Servicio', money(d.totals.serviceCharge)),
-        if (d.totals.tax > 0) line('ITBIS', money(d.totals.tax)),
-        line('Total', money(d.totals.total), bold: true),
+          line('Servicio', moneyPlain(d.totals.serviceCharge)),
+        if (d.totals.tax > 0) line('ITBIS', moneyPlain(d.totals.tax)),
+        line('Total', moneyPlain(d.totals.total), bold: true),
         if (d.changeAmount != null && d.changeAmount! >= 0)
-          line('Cambio', money(d.changeAmount!)),
+          line('Cambio', moneyPlain(d.changeAmount!)),
         if (d.totals.balance > 0)
-          line('Pendiente', money(d.totals.balance), bold: true),
+          line('Pendiente', moneyPlain(d.totals.balance), bold: true),
         for (final payment in d.payments)
-          line(payment.method, money(payment.amount)),
+          line(payment.method, moneyPlain(payment.amount)),
       ],
     );
   }
@@ -539,104 +539,106 @@ class _A4Preview extends StatelessWidget {
     );
   }
 
-  /// Emisor de un lado; logo, nombre, número y bloque fiscal del otro.
-  /// `d.logoOnLeft` decide cuál va dónde, igual que el PDF.
+  /// Logo a un lado y los datos de la empresa centrados, igual que el PDF.
+  /// `d.logoOnLeft` decide el lado; el costado opuesto reserva un hueco del
+  /// mismo ancho para que la empresa quede centrada en la hoja.
   Widget _header(PrintDocumentData d) {
-    final issuer = _headerIssuer(d, alignEnd: d.logoOnLeft);
-    final brand = _headerBrand(d, alignEnd: !d.logoOnLeft);
+    final logoSlot = SizedBox(
+      width: _kLogoSlotWidth,
+      child: d.branch.logoBytes == null
+          ? null
+          : Align(
+              alignment:
+                  d.logoOnLeft ? Alignment.topLeft : Alignment.topRight,
+              child: Image.memory(
+                Uint8List.fromList(d.branch.logoBytes!),
+                height: 58,
+                fit: BoxFit.contain,
+              ),
+            ),
+    );
+    final company = Expanded(child: _companyBlock(d));
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: d.logoOnLeft
-          ? [brand, const SizedBox(width: 16), issuer]
-          : [issuer, const SizedBox(width: 16), brand],
+          ? [logoSlot, company, const SizedBox(width: _kLogoSlotWidth)]
+          : [const SizedBox(width: _kLogoSlotWidth), company, logoSlot],
     );
   }
 
-  Widget _headerIssuer(PrintDocumentData d, {required bool alignEnd}) {
-    final align = alignEnd ? TextAlign.right : TextAlign.left;
-    return Expanded(
-      child: Column(
-        crossAxisAlignment:
-            alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        children: [
-          if (_hasText(d.branch.taxId))
-            Text(
-              'RNC: ${d.branch.taxId}',
-              textAlign: align,
-              style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          for (final line in _textLines(d.branch.address))
-            Text(
-              line,
-              textAlign: align,
-              style: const TextStyle(fontSize: 10, color: _kInkMuted),
-            ),
-          if (_hasText(d.branch.phone))
-            Text(
-              d.branch.phone!,
-              textAlign: align,
-              style: const TextStyle(fontSize: 10, color: _kInkMuted),
-            ),
-          if (_hasText(d.branch.email))
-            Text(
-              d.branch.email!,
-              textAlign: align,
-              style: const TextStyle(fontSize: 10, color: _kInkMuted),
-            ),
-        ],
-      ),
-    );
-  }
+  Widget _companyBlock(PrintDocumentData d) {
+    Widget line(
+      String text, {
+      double fontSize = 10,
+      Color? color = _kInkMuted,
+      bool bold = false,
+    }) {
+      return Text(
+        text,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: fontSize,
+          color: color,
+          fontWeight: bold ? FontWeight.w700 : FontWeight.normal,
+        ),
+      );
+    }
 
-  Widget _headerBrand(PrintDocumentData d, {required bool alignEnd}) {
-    final align = alignEnd ? TextAlign.right : TextAlign.left;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 230),
-      child: Column(
-        crossAxisAlignment:
-            alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        children: [
-          if (d.branch.logoBytes != null) ...[
-            Image.memory(
-              Uint8List.fromList(d.branch.logoBytes!),
-              height: 46,
-              fit: BoxFit.contain,
-            ),
-            const SizedBox(height: 3),
-          ],
-          Text(
-            d.branch.name,
-            textAlign: align,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: _kNavy,
-              letterSpacing: 1,
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          d.branch.name,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            color: _kNavy,
           ),
-          const SizedBox(height: 12),
+        ),
+        const SizedBox(height: 3),
+        for (final l in _textLines(d.branch.address)) line(l),
+        if (_hasText(d.branch.email)) line(d.branch.email!),
+        if (_hasText(d.branch.phone)) line('Teléfono: ${d.branch.phone}'),
+        if (_hasText(d.branch.taxId))
+          line(
+            'RNC: ${d.branch.taxId}',
+            fontSize: 10,
+            color: null,
+            bold: true,
+          ),
+      ],
+    );
+  }
+
+  /// Número de documento + tipo de comprobante + NCF, a la derecha del bloque
+  /// del cliente.
+  Widget _fiscalBlock(PrintDocumentData d) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 210),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
           Text(
             d.documentNumber,
-            textAlign: align,
+            textAlign: TextAlign.right,
             style: const TextStyle(
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: FontWeight.w800,
               color: _kNavy,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           Text(
             printReceiptHeadline(d),
-            textAlign: align,
+            textAlign: TextAlign.right,
             style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
           ),
           if (_hasText(d.ncf))
             Text(
               'NCF: ${d.ncf}',
-              textAlign: align,
+              textAlign: TextAlign.right,
               style: const TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
@@ -645,13 +647,13 @@ class _A4Preview extends StatelessWidget {
           if (printPendingNcfNotice(d) != null)
             Text(
               printPendingNcfNotice(d)!,
-              textAlign: align,
+              textAlign: TextAlign.right,
               style: const TextStyle(fontSize: 9, color: _kInkMuted),
             ),
           if (d.ncfValidUntil != null)
             Text(
               'NCF válido hasta ${formatDate(d.ncfValidUntil!)}',
-              textAlign: align,
+              textAlign: TextAlign.right,
               style: const TextStyle(fontSize: 9, color: _kInkMuted),
             ),
         ],
@@ -714,18 +716,27 @@ class _A4Preview extends StatelessWidget {
             ? 'Pasaporte:'
             : 'RNC:';
 
-    return Column(
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        row('Cliente:', c?.name ?? 'Consumidor Final'),
-        row(docLabel, _docNumberOnly(c?.document) ?? 'N/A'),
-        if (_hasText(c?.address)) row('Dirección:', c!.address!),
-        if (_hasText(c?.phone)) row('Teléfono:', c!.phone!),
-        if (_hasText(c?.email)) row('Email:', c!.email!),
-        row('Fecha:', formatDate(d.issuedAt)),
-        if (_hasText(d.paymentTermsLabel))
-          row('Forma de pago:', d.paymentTermsLabel!),
-        if (_hasText(d.referenceNumber)) row('', d.referenceNumber!),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              row('Cliente:', c?.name ?? 'Consumidor Final'),
+              row(docLabel, _docNumberOnly(c?.document) ?? 'N/A'),
+              if (_hasText(c?.address)) row('Dirección:', c!.address!),
+              if (_hasText(c?.phone)) row('Teléfono:', c!.phone!),
+              if (_hasText(c?.email)) row('Email:', c!.email!),
+              row('Fecha:', formatDate(d.issuedAt)),
+              if (_hasText(d.paymentTermsLabel))
+                row('Forma de pago:', d.paymentTermsLabel!),
+              if (_hasText(d.referenceNumber)) row('', d.referenceNumber!),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        _fiscalBlock(d),
       ],
     );
   }
@@ -738,9 +749,9 @@ class _A4Preview extends StatelessWidget {
     Widget header(String text, {TextAlign align = TextAlign.left}) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 3),
-        child: Text(
+        child: _oneLine(
           text,
-          textAlign: align,
+          align: align,
           style: const TextStyle(
             fontSize: 8.5,
             fontWeight: FontWeight.w700,
@@ -753,9 +764,9 @@ class _A4Preview extends StatelessWidget {
     Widget cell(String text, {TextAlign align = TextAlign.left, bool bold = false}) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 3),
-        child: Text(
+        child: _oneLine(
           text,
-          textAlign: align,
+          align: align,
           style: TextStyle(
             fontSize: 9.5,
             fontWeight: bold ? FontWeight.w700 : FontWeight.normal,
@@ -764,18 +775,20 @@ class _A4Preview extends StatelessWidget {
       );
     }
 
-    // La nota de la línea va dentro de la misma celda de la descripción.
+    // La nota de la línea va dentro de la misma celda de la descripción. La
+    // descripción no envuelve: se achica para que quede en la misma fila que
+    // el precio y la cantidad, igual que el PDF.
     Widget descriptionCell(PrintDocumentItem it) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 3),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(it.description, style: const TextStyle(fontSize: 9.5)),
+            _oneLine(it.description, style: const TextStyle(fontSize: 9.5)),
             if (_hasText(it.notes))
               Padding(
                 padding: const EdgeInsets.only(top: 1),
-                child: Text(
+                child: _oneLine(
                   it.notes!,
                   style: const TextStyle(
                     fontSize: 8,
@@ -789,23 +802,25 @@ class _A4Preview extends StatelessWidget {
       );
     }
 
+    // Mismas proporciones que el PDF: sin el símbolo de moneda las columnas
+    // numéricas se estrecharon y PRODUCTO/SERVICIO se quedó con el sobrante.
     final columnWidths = showTax
         ? const <int, TableColumnWidth>{
-            0: FlexColumnWidth(3.4),
-            1: FlexColumnWidth(1.35),
+            0: FlexColumnWidth(4.2),
+            1: FlexColumnWidth(1.2),
             2: FlexColumnWidth(1),
-            3: FlexColumnWidth(1.35),
-            4: FlexColumnWidth(1.4),
-            5: FlexColumnWidth(1.15),
-            6: FlexColumnWidth(1.5),
+            3: FlexColumnWidth(1.25),
+            4: FlexColumnWidth(1.35),
+            5: FlexColumnWidth(1.2),
+            6: FlexColumnWidth(1.45),
           }
         : const <int, TableColumnWidth>{
-            0: FlexColumnWidth(3.4),
-            1: FlexColumnWidth(1.45),
+            0: FlexColumnWidth(4.2),
+            1: FlexColumnWidth(1.25),
             2: FlexColumnWidth(1),
-            3: FlexColumnWidth(1.45),
-            4: FlexColumnWidth(1.5),
-            5: FlexColumnWidth(1.6),
+            3: FlexColumnWidth(1.3),
+            4: FlexColumnWidth(1.4),
+            5: FlexColumnWidth(1.5),
           };
 
     return Table(
@@ -838,19 +853,19 @@ class _A4Preview extends StatelessWidget {
             ),
             children: [
               descriptionCell(it),
-              cell(money(it.unitPrice), align: TextAlign.right),
+              cell(moneyPlain(it.unitPrice), align: TextAlign.right),
               cell(_qtyLabel(it.quantity), align: TextAlign.center),
               cell(
-                it.lineDiscount > 0.0049 ? money(it.lineDiscount) : '-',
+                it.lineDiscount > 0.0049 ? moneyPlain(it.lineDiscount) : '-',
                 align: TextAlign.right,
               ),
-              cell(money(it.lineSubtotal), align: TextAlign.right),
+              cell(moneyPlain(it.lineSubtotal), align: TextAlign.right),
               if (showTax)
                 cell(
-                  it.lineTax > 0.0049 ? money(it.lineTax) : '-',
+                  it.lineTax > 0.0049 ? moneyPlain(it.lineTax) : '-',
                   align: TextAlign.right,
                 ),
-              cell(money(it.lineTotal), align: TextAlign.right, bold: true),
+              cell(moneyPlain(it.lineTotal), align: TextAlign.right, bold: true),
             ],
           ),
       ],
@@ -925,13 +940,13 @@ class _A4Preview extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (showBreakdown) ...[
-              miniTotal('Subtotal', money(d.totals.subtotal)),
+              miniTotal('Subtotal', moneyPlain(d.totals.subtotal)),
               if (d.totals.discount > 0.0049)
-                miniTotal('Descuento', '-${money(d.totals.discount)}'),
+                miniTotal('Descuento', '-${moneyPlain(d.totals.discount)}'),
               if (d.totals.serviceCharge > 0.0049)
-                miniTotal('Ley / Servicio', money(d.totals.serviceCharge)),
+                miniTotal('Ley / Servicio', moneyPlain(d.totals.serviceCharge)),
               if (d.showTax && d.totals.tax > 0.0049)
-                miniTotal('ITBIS', money(d.totals.tax)),
+                miniTotal('ITBIS', moneyPlain(d.totals.tax)),
               const SizedBox(height: 3),
             ],
             Row(
@@ -948,7 +963,7 @@ class _A4Preview extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  money(d.totals.total),
+                  moneyPlain(d.totals.total),
                   style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w800,
@@ -960,7 +975,7 @@ class _A4Preview extends StatelessWidget {
             if (d.totals.balance > 0.0049)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: miniTotal('Balance pendiente', money(d.totals.balance)),
+                child: miniTotal('Balance pendiente', moneyPlain(d.totals.balance)),
               ),
           ],
         ),
@@ -1029,6 +1044,41 @@ const Color _kNavy = Color(0xFF1B3A6B);
 const Color _kRed = Color(0xFFC0202A);
 const Color _kInkMuted = Color(0xFF64748B);
 const Color _kHairline = Color(0xFFCBD5E1);
+
+/// Ancho del hueco que reservan los dos costados del encabezado: el logo ocupa
+/// uno y el otro queda vacío, de modo que los datos de la empresa queden
+/// centrados en la hoja sin importar de qué lado esté el logo.
+const double _kLogoSlotWidth = 96;
+
+/// Texto que nunca envuelve: se dibuja en un solo renglón y, si no cabe, se
+/// achica en vez de bajar a una segunda línea. Mantiene nombre, precio y
+/// cantidad del producto en la misma fila, igual que el PDF.
+///
+/// El `Align` externo es necesario: dentro de una celda de `Table` las
+/// restricciones traen el ancho fijo, y un `FittedBox` con ancho mínimo igual
+/// al máximo estiraría la altura de la fila. `Align` las afloja.
+Widget _oneLine(
+  String text, {
+  required TextStyle style,
+  TextAlign align = TextAlign.left,
+}) {
+  final alignment = switch (align) {
+    TextAlign.right || TextAlign.end => Alignment.centerRight,
+    TextAlign.center => Alignment.center,
+    _ => Alignment.centerLeft,
+  };
+  if (text.trim().isEmpty) {
+    return Align(alignment: alignment, child: Text(text, style: style));
+  }
+  return Align(
+    alignment: alignment,
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: alignment,
+      child: Text(text, style: style, maxLines: 1, softWrap: false),
+    ),
+  );
+}
 
 bool _hasText(String? value) => value != null && value.trim().isNotEmpty;
 

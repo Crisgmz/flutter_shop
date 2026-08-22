@@ -964,13 +964,14 @@ class _CompanyInfoSection extends StatelessWidget {
           label: 'Posición del logo en la factura A4',
           value: settings.invoiceLogoPosition,
           options: const {
-            'right': 'Derecha (por defecto)',
-            'left': 'Izquierda',
+            'left': 'Izquierda (por defecto)',
+            'right': 'Derecha',
           },
           column: 'invoice_logo_position',
-          helper: 'El logo, el nombre comercial y el bloque del NCF van de ese '
-              'lado; los datos del emisor pasan al lado contrario. No afecta '
-              'al ticket térmico.',
+          helper: 'De qué lado del encabezado va el logo. El nombre de la '
+              'empresa, la dirección, el correo, el teléfono y el RNC quedan '
+              'centrados en cualquiera de las dos opciones. No afecta al '
+              'ticket térmico.',
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),

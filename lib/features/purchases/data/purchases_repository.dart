@@ -625,7 +625,7 @@ class PurchasesRepository {
       notes: detail.notes,
       showBarcode: false,
       logoOnLeft:
-          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
       items: detail.items
           .map(
             (it) => PrintDocumentItem(

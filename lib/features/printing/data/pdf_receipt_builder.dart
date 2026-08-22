@@ -46,6 +46,61 @@ const PdfColor _kNavy = PdfColor.fromInt(0xFF1B3A6B);
 /// Rojo del "TOTAL A PAGAR".
 const PdfColor _kRed = PdfColor.fromInt(0xFFC0202A);
 
+/// Texto que NUNCA envuelve: se dibuja en un solo renglón y, si no cabe en el
+/// ancho disponible, se achica proporcionalmente en vez de bajar a una segunda
+/// línea. Así el nombre del producto, el precio y la cantidad quedan siempre
+/// en la misma fila de la tabla.
+///
+/// `pw.FittedBox` mide al hijo sin límite de ancho —de ahí que el texto salga
+/// en una línea— y después lo escala para caber en la celda.
+pw.Widget _oneLine(
+  String text, {
+  required pw.TextStyle style,
+  pw.Alignment align = pw.Alignment.centerLeft,
+}) {
+  // `FittedBox` mide sin límites y asume un hijo con tamaño > 0; un texto
+  // vacío rompería esa premisa.
+  if (text.trim().isEmpty) return pw.Text(text, style: style);
+  return pw.FittedBox(
+    fit: pw.BoxFit.scaleDown,
+    alignment: align,
+    child: pw.Text(text, style: style, maxLines: 1, softWrap: false),
+  );
+}
+
+/// Piso de tamaño de letra para la descripción de un ítem. Por debajo de esto
+/// el nombre del producto deja de leerse en papel.
+const double _kMinItemFontSize = 6.5;
+
+/// Tamaño de letra con el que [text] entra en [maxWidth] en un solo renglón,
+/// acotado entre [_kMinItemFontSize] y [baseFontSize].
+///
+/// Mide con las métricas reales del font del documento (`stringMetrics`
+/// devuelve el ancho en ems), así que no depende de estimar el ancho promedio
+/// de los caracteres.
+double _fitFontSize(
+  pw.Context context,
+  String text, {
+  required double maxWidth,
+  required double baseFontSize,
+}) {
+  if (text.trim().isEmpty || maxWidth <= 0) return baseFontSize;
+  final font = pw.Theme.of(context).defaultTextStyle.font?.getFont(context);
+  if (font == null) return baseFontSize;
+  final width = font.stringMetrics(text).width * baseFontSize;
+  if (width <= maxWidth) return baseFontSize;
+  final scaled = baseFontSize * maxWidth / width;
+  return scaled < _kMinItemFontSize ? _kMinItemFontSize : scaled;
+}
+
+/// Margen de la hoja A4.
+const double _kA4Margin = 36;
+
+/// Ancho del hueco que reservan los dos costados del encabezado A4. El logo
+/// ocupa uno y el otro queda vacío, de modo que los datos de la empresa
+/// queden centrados en la hoja sin importar de qué lado esté el logo.
+const double _kLogoSlotWidth = 96;
+
 class PdfReceiptBuilder {
   const PdfReceiptBuilder();
 
@@ -68,9 +123,14 @@ class PdfReceiptBuilder {
     doc.addPage(
       pw.Page(
         pageFormat: pageFormat,
-        margin: const pw.EdgeInsets.all(36),
-        build: (context) =>
-            _buildContent(data, qrBytes: qrBytes, logoBytes: logoBytes),
+        margin: const pw.EdgeInsets.all(_kA4Margin),
+        build: (context) => _buildContent(
+          context,
+          data,
+          qrBytes: qrBytes,
+          logoBytes: logoBytes,
+          contentWidth: pageFormat.width - _kA4Margin * 2,
+        ),
       ),
     );
 
@@ -106,9 +166,11 @@ class PdfReceiptBuilder {
   }
 
   pw.Widget _buildContent(
+    pw.Context context,
     PrintDocumentData data, {
     Uint8List? qrBytes,
     Uint8List? logoBytes,
+    required double contentWidth,
   }) {
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.stretch,
@@ -119,7 +181,7 @@ class PdfReceiptBuilder {
         pw.SizedBox(height: 12),
         _clientBlock(data),
         pw.SizedBox(height: 12),
-        _itemsTable(data),
+        _itemsTable(context, data, contentWidth),
         pw.SizedBox(height: 14),
         _bankAndTotal(data),
         if (_hasText(data.notes)) ...[
@@ -444,9 +506,9 @@ class PdfReceiptBuilder {
     return pw.Table(
       columnWidths: const {
         0: pw.FlexColumnWidth(1),   // Nombre (toma el espacio restante)
-        1: pw.FixedColumnWidth(50), // Precio (suficiente para "RD$ 1,000.00")
-        2: pw.FixedColumnWidth(32), // Cant. — centrado, con aire a los lados
-        3: pw.FixedColumnWidth(55), // Total
+        1: pw.FixedColumnWidth(42), // Precio (los montos ya no traen moneda)
+        2: pw.FixedColumnWidth(28), // Cant. — centrado, con aire a los lados
+        3: pw.FixedColumnWidth(48), // Total
       },
       children: [
         // Header
@@ -468,7 +530,7 @@ class PdfReceiptBuilder {
             children: [
               _thermalCell(item.description, style: base),
               _thermalCell(
-                money(item.unitPrice),
+                moneyPlain(item.unitPrice),
                 style: base,
                 align: pw.Alignment.centerRight,
               ),
@@ -478,7 +540,7 @@ class PdfReceiptBuilder {
                 align: pw.Alignment.center,
               ),
               _thermalCell(
-                money(item.lineTotal),
+                moneyPlain(item.lineTotal),
                 style: base,
                 align: pw.Alignment.centerRight,
               ),
@@ -533,131 +595,126 @@ class PdfReceiptBuilder {
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.stretch,
       children: [
-        line('Subtotal', money(data.totals.subtotal)),
+        line('Subtotal', moneyPlain(data.totals.subtotal)),
         if (data.totals.discount > 0)
-          line('Descuento', '-${money(data.totals.discount)}'),
+          line('Descuento', '-${moneyPlain(data.totals.discount)}'),
         if (data.totals.serviceCharge > 0)
-          line('Servicio', money(data.totals.serviceCharge)),
-        if (data.totals.tax > 0) line('ITBIS', money(data.totals.tax)),
-        line('Total', money(data.totals.total), emphasized: true),
+          line('Servicio', moneyPlain(data.totals.serviceCharge)),
+        if (data.totals.tax > 0) line('ITBIS', moneyPlain(data.totals.tax)),
+        line('Total', moneyPlain(data.totals.total), emphasized: true),
         if (data.changeAmount != null && data.changeAmount! >= 0)
-          line('Cambio', money(data.changeAmount!)),
+          line('Cambio', moneyPlain(data.changeAmount!)),
         if (data.totals.balance > 0)
-          line('Pendiente', money(data.totals.balance), emphasized: true),
+          line('Pendiente', moneyPlain(data.totals.balance), emphasized: true),
         for (final payment in data.payments)
-          line(payment.method, money(payment.amount)),
+          line(payment.method, moneyPlain(payment.amount)),
       ],
     );
   }
 
-  /// Encabezado del A4: bloque de marca (logo + nombre + NCF) de un lado y
-  /// datos del emisor del otro. `data.logoOnLeft` decide de qué lado va cada
-  /// uno; con false queda el layout de siempre (marca a la derecha).
+  /// Encabezado del A4: logo a un lado y los datos de la empresa —nombre,
+  /// dirección, correo, teléfono y RNC— centrados en la hoja, como la factura
+  /// de referencia del cliente.
+  ///
+  /// `data.logoOnLeft` (espejo de `app_settings.invoice_logo_position`) decide
+  /// de qué lado va el logo. El lado opuesto lleva un hueco del mismo ancho
+  /// para que el bloque de la empresa quede centrado respecto a la hoja y no
+  /// respecto al espacio sobrante.
+  ///
+  /// El número de documento y el bloque fiscal (tipo de comprobante + NCF) ya
+  /// no viven aquí: bajaron junto al bloque del cliente ([_clientBlock]).
   pw.Widget _header(PrintDocumentData data, Uint8List? logoBytes) {
-    final issuer = _issuerBlock(data, alignEnd: data.logoOnLeft);
-    final brand = _brandBlock(data, logoBytes, alignEnd: !data.logoOnLeft);
+    final logoSlot = pw.SizedBox(
+      width: _kLogoSlotWidth,
+      child: logoBytes == null
+          ? null
+          : pw.Image(
+              pw.MemoryImage(logoBytes),
+              height: 62,
+              alignment: data.logoOnLeft
+                  ? pw.Alignment.topLeft
+                  : pw.Alignment.topRight,
+              fit: pw.BoxFit.contain,
+            ),
+    );
+    final company = pw.Expanded(child: _companyBlock(data));
 
     return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: data.logoOnLeft
-          ? [brand, pw.SizedBox(width: 16), issuer]
-          : [issuer, pw.SizedBox(width: 16), brand],
+          ? [logoSlot, company, pw.SizedBox(width: _kLogoSlotWidth)]
+          : [pw.SizedBox(width: _kLogoSlotWidth), company, logoSlot],
     );
   }
 
-  /// Emisor: RNC, dirección, teléfono(s), email. Ocupa el ancho sobrante.
-  pw.Widget _issuerBlock(PrintDocumentData data, {required bool alignEnd}) {
-    final align = alignEnd ? pw.TextAlign.right : pw.TextAlign.left;
-    return pw.Expanded(
-      child: pw.Column(
-        crossAxisAlignment:
-            alignEnd ? pw.CrossAxisAlignment.end : pw.CrossAxisAlignment.start,
-        children: [
-          if (_hasText(data.branch.taxId))
-            pw.Text(
-              'RNC: ${data.branch.taxId}',
-              textAlign: align,
-              style: pw.TextStyle(
-                fontSize: 10,
-                fontWeight: pw.FontWeight.bold,
-              ),
-            ),
-          for (final line in _lines(data.branch.address))
-            pw.Text(
-              line,
-              textAlign: align,
-              style: const pw.TextStyle(
-                fontSize: 9.5,
-                color: PdfColors.grey700,
-              ),
-            ),
-          if (_hasText(data.branch.phone))
-            pw.Text(
-              data.branch.phone!,
-              textAlign: align,
-              style: const pw.TextStyle(
-                fontSize: 9.5,
-                color: PdfColors.grey700,
-              ),
-            ),
-          if (_hasText(data.branch.email))
-            pw.Text(
-              data.branch.email!,
-              textAlign: align,
-              style: const pw.TextStyle(
-                fontSize: 9.5,
-                color: PdfColors.grey700,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+  /// Datos de la empresa centrados: nombre comercial, dirección, correo,
+  /// teléfono y RNC.
+  pw.Widget _companyBlock(PrintDocumentData data) {
+    pw.Widget line(
+      String text, {
+      double fontSize = 9.5,
+      PdfColor? color = PdfColors.grey700,
+      bool bold = false,
+    }) {
+      return pw.Text(
+        text,
+        textAlign: pw.TextAlign.center,
+        style: pw.TextStyle(
+          fontSize: fontSize,
+          color: color,
+          fontWeight: bold ? pw.FontWeight.bold : null,
+        ),
+      );
+    }
 
-  /// Marca: logo + nombre comercial + número de documento + bloque fiscal.
-  /// Acotado a 230pt para que un tipo de comprobante largo ("Factura de
-  /// Crédito Fiscal Electrónica") envuelva en vez de aplastar al emisor.
-  pw.Widget _brandBlock(
-    PrintDocumentData data,
-    Uint8List? logoBytes, {
-    required bool alignEnd,
-  }) {
-    final align = alignEnd ? pw.TextAlign.right : pw.TextAlign.left;
-    return pw.ConstrainedBox(
-      constraints: const pw.BoxConstraints(maxWidth: 230),
-      child: pw.Column(
-        crossAxisAlignment:
-            alignEnd ? pw.CrossAxisAlignment.end : pw.CrossAxisAlignment.start,
-        children: [
-          if (logoBytes != null)
-            pw.Image(pw.MemoryImage(logoBytes), height: 50),
-          pw.SizedBox(height: 3),
-          pw.Text(
-            data.branch.name,
-            textAlign: align,
-            style: pw.TextStyle(
-              fontSize: 13,
-              fontWeight: pw.FontWeight.bold,
-              color: _kNavy,
-              letterSpacing: 1,
-            ),
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.center,
+      children: [
+        pw.Text(
+          data.branch.name,
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(
+            fontSize: 15,
+            fontWeight: pw.FontWeight.bold,
+            color: _kNavy,
           ),
-          pw.SizedBox(height: 16),
+        ),
+        pw.SizedBox(height: 3),
+        for (final l in _lines(data.branch.address)) line(l),
+        if (_hasText(data.branch.email)) line(data.branch.email!),
+        if (_hasText(data.branch.phone)) line('Teléfono: ${data.branch.phone}'),
+        if (_hasText(data.branch.taxId))
+          line(
+            'RNC: ${data.branch.taxId}',
+            fontSize: 10,
+            color: null,
+            bold: true,
+          ),
+      ],
+    );
+  }
+
+  /// Número de documento + bloque fiscal (tipo de comprobante, NCF y su
+  /// vigencia), alineado a la derecha del bloque del cliente.
+  pw.Widget _fiscalBlock(PrintDocumentData data) {
+    return pw.ConstrainedBox(
+      constraints: const pw.BoxConstraints(maxWidth: 210),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.end,
+        children: [
           pw.Text(
             data.documentNumber,
-            textAlign: align,
+            textAlign: pw.TextAlign.right,
             style: pw.TextStyle(
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: pw.FontWeight.bold,
               color: _kNavy,
             ),
           ),
-          // Bloque fiscal: tipo de comprobante + NCF + vigencia, como en la
-          // factura de referencia del cliente.
-          pw.SizedBox(height: 4),
+          pw.SizedBox(height: 3),
           pw.Text(
             printReceiptHeadline(data),
-            textAlign: align,
+            textAlign: pw.TextAlign.right,
             style: pw.TextStyle(
               fontSize: 10,
               fontWeight: pw.FontWeight.bold,
@@ -666,17 +723,17 @@ class PdfReceiptBuilder {
           if (_hasText(data.ncf))
             pw.Text(
               'NCF: ${data.ncf}',
-              textAlign: align,
+              textAlign: pw.TextAlign.right,
               style: pw.TextStyle(
                 fontSize: 10,
                 fontWeight: pw.FontWeight.bold,
               ),
             ),
-          // Cotización: no hay NCF que imprimir, se avisa en gris.
+          // Cotización / cuenta guardada: no hay NCF que imprimir, se avisa.
           if (printPendingNcfNotice(data) != null)
             pw.Text(
               printPendingNcfNotice(data)!,
-              textAlign: align,
+              textAlign: pw.TextAlign.right,
               style: const pw.TextStyle(
                 fontSize: 8.5,
                 color: PdfColors.grey600,
@@ -685,7 +742,7 @@ class PdfReceiptBuilder {
           if (data.ncfValidUntil != null)
             pw.Text(
               'NCF válido hasta ${formatDate(data.ncfValidUntil!)}',
-              textAlign: align,
+              textAlign: pw.TextAlign.right,
               style: const pw.TextStyle(
                 fontSize: 8.5,
                 color: PdfColors.grey600,
@@ -768,19 +825,29 @@ class PdfReceiptBuilder {
             ? 'Pasaporte:'
             : 'RNC:';
 
-    return pw.Column(
+    return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
-        row('Cliente:', c?.name ?? 'Consumidor Final'),
-        row(docLabel, _docNumberOnly(c?.document) ?? 'N/A'),
-        if (_hasText(c?.address)) row('Dirección:', c!.address!),
-        if (_hasText(c?.phone)) row('Teléfono:', c!.phone!),
-        if (_hasText(c?.email)) row('Email:', c!.email!),
-        row('Fecha:', formatDate(data.issuedAt)),
-        if (_hasText(data.paymentTermsLabel))
-          row('Forma de pago:', data.paymentTermsLabel!),
-        // El NCF ya no se repite aquí: vive en el bloque fiscal del encabezado.
-        if (_hasText(data.referenceNumber)) row('', data.referenceNumber!),
+        pw.Expanded(
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              row('Cliente:', c?.name ?? 'Consumidor Final'),
+              row(docLabel, _docNumberOnly(c?.document) ?? 'N/A'),
+              if (_hasText(c?.address)) row('Dirección:', c!.address!),
+              if (_hasText(c?.phone)) row('Teléfono:', c!.phone!),
+              if (_hasText(c?.email)) row('Email:', c!.email!),
+              row('Fecha:', formatDate(data.issuedAt)),
+              if (_hasText(data.paymentTermsLabel))
+                row('Forma de pago:', data.paymentTermsLabel!),
+              if (_hasText(data.referenceNumber)) row('', data.referenceNumber!),
+            ],
+          ),
+        ),
+        pw.SizedBox(width: 12),
+        // Número de documento + NCF: bajaron del encabezado a esta fila para
+        // dejar la marca sola arriba, como en la factura de referencia.
+        _fiscalBlock(data),
       ],
     );
   }
@@ -790,14 +857,51 @@ class PdfReceiptBuilder {
   ///
   /// SUBTOTAL es la base imponible de la línea (precio × cantidad menos
   /// descuento, sin ITBIS), de modo que VALOR TOTAL = SUBTOTAL + ITBIS.
-  pw.Widget _itemsTable(PrintDocumentData data) {
+  pw.Widget _itemsTable(
+    pw.Context context,
+    PrintDocumentData data,
+    double contentWidth,
+  ) {
+    const right = pw.Alignment.centerRight;
+    final showTax = data.showTax;
+    // Ancho útil del A4 con margen 36 ≈ 523pt. Las columnas numéricas ya no
+    // cargan el símbolo de moneda, así que se estrecharon y el ancho liberado
+    // fue a PRODUCTO/SERVICIO: la descripción entra en una sola línea. La
+    // columna ITBIS solo aparece si el documento lleva impuesto; sin ella su
+    // ancho se reparte entre las demás (6 columnas).
+    final columnWidths = showTax
+        ? const <int, pw.TableColumnWidth>{
+            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 185pt
+            1: pw.FixedColumnWidth(54),
+            2: pw.FixedColumnWidth(46),
+            3: pw.FixedColumnWidth(56),
+            4: pw.FixedColumnWidth(62),
+            5: pw.FixedColumnWidth(54),
+            6: pw.FixedColumnWidth(66),
+          }
+        : const <int, pw.TableColumnWidth>{
+            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 219pt
+            1: pw.FixedColumnWidth(58),
+            2: pw.FixedColumnWidth(48),
+            3: pw.FixedColumnWidth(60),
+            4: pw.FixedColumnWidth(66),
+            5: pw.FixedColumnWidth(72),
+          };
+    // Lo que sobra tras las columnas fijas es lo que le toca a la descripción
+    // (menos el padding horizontal de la celda).
+    final fixedWidth = columnWidths.entries
+        .where((e) => e.key != 0)
+        .fold<double>(0, (sum, e) => sum + (e.value as pw.FixedColumnWidth).width);
+    final descriptionWidth = contentWidth - fixedWidth - 4;
+
     pw.Widget hCell(String text, {pw.Alignment align = pw.Alignment.centerLeft}) {
       return pw.Padding(
         padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 2),
         child: pw.Align(
           alignment: align,
-          child: pw.Text(
+          child: _oneLine(
             text,
+            align: align,
             style: pw.TextStyle(
               fontSize: 8,
               fontWeight: pw.FontWeight.bold,
@@ -817,8 +921,9 @@ class PdfReceiptBuilder {
         padding: const pw.EdgeInsets.symmetric(vertical: 5, horizontal: 2),
         child: pw.Align(
           alignment: align,
-          child: pw.Text(
+          child: _oneLine(
             text,
+            align: align,
             style: pw.TextStyle(
               fontSize: 9,
               fontWeight: bold ? pw.FontWeight.bold : null,
@@ -830,17 +935,34 @@ class PdfReceiptBuilder {
 
     // Descripción + nota de la línea dentro de la MISMA celda (no rompe el
     // conteo de columnas de pw.Table).
+    //
+    // La descripción va en un solo renglón para que nombre, cantidad y precio
+    // queden en la misma fila: si no entra a 9pt se achica lo justo, hasta el
+    // piso legible de [_kMinItemFontSize]. Solo un nombre desmedido llega a
+    // ese piso, y ahí sí se permite un segundo renglón antes que imprimirlo
+    // ilegible o cortado.
     pw.Widget descriptionCell(PrintDocumentItem it) {
+      final size = _fitFontSize(
+        context,
+        it.description,
+        maxWidth: descriptionWidth,
+        baseFontSize: 9,
+      );
       return pw.Padding(
         padding: const pw.EdgeInsets.symmetric(vertical: 5, horizontal: 2),
         child: pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
-            pw.Text(it.description, style: const pw.TextStyle(fontSize: 9)),
+            pw.Text(
+              it.description,
+              style: pw.TextStyle(fontSize: size),
+              maxLines: size > _kMinItemFontSize ? 1 : 2,
+              softWrap: size <= _kMinItemFontSize,
+            ),
             if (_hasText(it.notes))
               pw.Padding(
                 padding: const pw.EdgeInsets.only(top: 1),
-                child: pw.Text(
+                child: _oneLine(
                   it.notes!,
                   style: pw.TextStyle(
                     fontSize: 8,
@@ -854,29 +976,6 @@ class PdfReceiptBuilder {
       );
     }
 
-    const right = pw.Alignment.centerRight;
-    final showTax = data.showTax;
-    // Ancho útil del A4 con margen 36 ≈ 523pt. La columna ITBIS solo aparece
-    // si el documento lleva impuesto; sin ella su ancho se reparte entre las
-    // demás columnas numéricas (6 columnas).
-    final columnWidths = showTax
-        ? const <int, pw.TableColumnWidth>{
-            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 159pt
-            1: pw.FixedColumnWidth(62),
-            2: pw.FixedColumnWidth(48),
-            3: pw.FixedColumnWidth(62),
-            4: pw.FixedColumnWidth(66),
-            5: pw.FixedColumnWidth(56),
-            6: pw.FixedColumnWidth(70),
-          }
-        : const <int, pw.TableColumnWidth>{
-            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 183pt
-            1: pw.FixedColumnWidth(68),
-            2: pw.FixedColumnWidth(50),
-            3: pw.FixedColumnWidth(68),
-            4: pw.FixedColumnWidth(74),
-            5: pw.FixedColumnWidth(80),
-          };
     return pw.Table(
       columnWidths: columnWidths,
       children: [
@@ -906,19 +1005,19 @@ class PdfReceiptBuilder {
             ),
             children: [
               descriptionCell(it),
-              cell(money(it.unitPrice), align: right),
+              cell(moneyPlain(it.unitPrice), align: right),
               cell(_qty(it.quantity), align: pw.Alignment.center),
               cell(
-                it.lineDiscount > 0.0049 ? money(it.lineDiscount) : '-',
+                it.lineDiscount > 0.0049 ? moneyPlain(it.lineDiscount) : '-',
                 align: right,
               ),
-              cell(money(it.lineSubtotal), align: right),
+              cell(moneyPlain(it.lineSubtotal), align: right),
               if (showTax)
                 cell(
-                  it.lineTax > 0.0049 ? money(it.lineTax) : '-',
+                  it.lineTax > 0.0049 ? moneyPlain(it.lineTax) : '-',
                   align: right,
                 ),
-              cell(money(it.lineTotal), align: right, bold: true),
+              cell(moneyPlain(it.lineTotal), align: right, bold: true),
             ],
           ),
       ],
@@ -980,13 +1079,13 @@ class PdfReceiptBuilder {
           crossAxisAlignment: pw.CrossAxisAlignment.end,
           children: [
             if (showBreakdown) ...[
-              _miniTotal('Subtotal', money(data.totals.subtotal)),
+              _miniTotal('Subtotal', moneyPlain(data.totals.subtotal)),
               if (data.totals.discount > 0.0049)
-                _miniTotal('Descuento', '-${money(data.totals.discount)}'),
+                _miniTotal('Descuento', '-${moneyPlain(data.totals.discount)}'),
               if (data.totals.serviceCharge > 0.0049)
-                _miniTotal('Ley / Servicio', money(data.totals.serviceCharge)),
+                _miniTotal('Ley / Servicio', moneyPlain(data.totals.serviceCharge)),
               if (data.showTax && data.totals.tax > 0.0049)
-                _miniTotal('ITBIS', money(data.totals.tax)),
+                _miniTotal('ITBIS', moneyPlain(data.totals.tax)),
               pw.SizedBox(height: 3),
             ],
             pw.Row(
@@ -1004,7 +1103,7 @@ class PdfReceiptBuilder {
                 ),
                 pw.SizedBox(width: 12),
                 pw.Text(
-                  money(data.totals.total),
+                  moneyPlain(data.totals.total),
                   style: pw.TextStyle(
                     fontSize: 17,
                     fontWeight: pw.FontWeight.bold,
@@ -1018,7 +1117,7 @@ class PdfReceiptBuilder {
                 padding: const pw.EdgeInsets.only(top: 2),
                 child: _miniTotal(
                   'Balance pendiente',
-                  money(data.totals.balance),
+                  moneyPlain(data.totals.balance),
                 ),
               ),
           ],

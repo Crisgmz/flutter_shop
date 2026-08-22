@@ -302,7 +302,7 @@ class ExpensesRepository {
       showTax: false,
       showBarcode: settings['receipt_hide_barcode'] != true,
       logoOnLeft:
-          settings['invoice_logo_position']?.toString().toLowerCase() == 'left',
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
       footerMessage: 'Comprobante de egreso',
       notes: noteParts.isEmpty ? null : noteParts.join(' · '),
       items: [
