@@ -128,6 +128,7 @@ class SalePrintItemSource {
     this.unitLabel,
     this.notes,
     this.lineDiscount = 0,
+    this.isService,
   });
 
   final String description;
@@ -142,6 +143,9 @@ class SalePrintItemSource {
 
   /// Descuento aplicado a la línea (monto). 0 = sin descuento.
   final double lineDiscount;
+
+  /// `products.is_service` de la línea. Null si el producto ya no existe.
+  final bool? isService;
 }
 
 class SalePrintPaymentSource {
@@ -231,6 +235,7 @@ class SalePrintDocumentAdapter {
               lineTax: item.lineTax,
               lineTotal: item.lineTotal,
               lineDiscount: item.lineDiscount,
+              isService: item.isService,
               sku: _nullIfBlank(item.sku),
               unitLabel: _nullIfBlank(item.unitLabel),
               notes: _nullIfBlank(item.notes),

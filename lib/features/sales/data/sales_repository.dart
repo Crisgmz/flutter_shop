@@ -912,8 +912,10 @@ class SalesRepository {
         .eq('sale_id', saleId)
         .order('created_at');
 
-    // Nota del producto (products.notes) → se imprime debajo de la línea.
-    // Una sola consulta en lote para todos los productos de la venta.
+    // Nota del producto (products.notes) → se imprime debajo de la línea, y
+    // products.is_service → decide si la primera columna del A4 se rotula
+    // PRODUCTO, SERVICIO o ambos. Una sola consulta en lote para todos los
+    // productos de la venta.
     final productIds = itemRows
         .map((row) => Map<String, dynamic>.from(row as Map)['product_id'])
         .whereType<Object>()
@@ -922,16 +924,19 @@ class SalesRepository {
         .toSet()
         .toList(growable: false);
     final productNotes = <String, String>{};
+    final productIsService = <String, bool>{};
     if (productIds.isNotEmpty) {
       final noteRows = await _client
           .from('products')
-          .select('id, notes')
+          .select('id, notes, is_service')
           .inFilter('id', productIds);
       for (final raw in noteRows) {
         final row = Map<String, dynamic>.from(raw as Map);
         final id = row['id']?.toString();
+        if (id == null || id.isEmpty) continue;
         final note = _nullIfEmpty(row['notes']?.toString());
-        if (id != null && note != null) productNotes[id] = note;
+        if (note != null) productNotes[id] = note;
+        productIsService[id] = row['is_service'] == true;
       }
     }
 
@@ -1026,6 +1031,7 @@ class SalesRepository {
               sku: item['sku_snapshot']?.toString(),
               unitLabel: item['unit_name']?.toString(),
               notes: productNotes[item['product_id']?.toString()],
+              isService: productIsService[item['product_id']?.toString()],
             ),
           )
           .toList(growable: false),

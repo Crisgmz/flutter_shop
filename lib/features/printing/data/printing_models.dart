@@ -162,6 +162,7 @@ class PrintDocumentItem {
     this.unitLabel,
     this.notes,
     this.lineDiscount = 0,
+    this.isService,
   });
 
   final String description;
@@ -181,6 +182,26 @@ class PrintDocumentItem {
 
   /// Descuento aplicado a la línea (monto, no porcentaje). 0 = sin descuento.
   final double lineDiscount;
+
+  /// Porcentaje de descuento de la línea, reconstruido desde el monto igual
+  /// que lo hace el carrito al reabrir una venta guardada: la base de datos
+  /// guarda `discount_amount`, no el porcentaje. Devuelve 0 si la línea no
+  /// lleva descuento.
+  double get discountPercent {
+    final gross = quantity * unitPrice;
+    if (gross <= 0 || lineDiscount <= 0) return 0;
+    return (lineDiscount / gross * 100).clamp(0, 100).toDouble();
+  }
+
+  /// `products.is_service` de la línea: true = servicio, false = producto,
+  /// null = no se sabe (documentos que no vienen del catálogo, como el
+  /// comprobante de gasto o el recibo de abono). Solo se usa para rotular la
+  /// primera columna del A4 — ver `printItemsColumnLabel`.
+  final bool? isService;
+
+  /// True si la línea trae descuento (con la misma tolerancia de centavo que
+  /// usa el resto del documento impreso).
+  bool get hasDiscount => lineDiscount > 0.0049;
 }
 
 class PrintPaymentLine {

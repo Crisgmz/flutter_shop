@@ -601,9 +601,10 @@ class QuotationsRepository implements QuotationsRepositoryContract {
         .map((row) => Map<String, dynamic>.from(row as Map))
         .toList(growable: false);
 
-    // Nota del producto (products.notes) para imprimirla bajo cada línea. Se
-    // consulta en lote, acotada a la sucursal de la cotización.
-    final productNotes = await _loadProductNotes(
+    // Nota del producto (products.notes) para imprimirla bajo cada línea y
+    // products.is_service para rotular la primera columna del A4. Se consultan
+    // en lote, acotadas a la sucursal de la cotización.
+    final productData = await _loadProductPrintData(
       items
           .map((item) => item['product_id']?.toString())
           .whereType<String>()
@@ -611,6 +612,8 @@ class QuotationsRepository implements QuotationsRepositoryContract {
           .toSet(),
       branchId: branchId,
     );
+    final productNotes = productData.notes;
+    final productIsService = productData.isService;
 
     final receiptType = normalizeQuoteReceiptType(
       quote['receipt_type']?.toString(),
@@ -685,6 +688,7 @@ class QuotationsRepository implements QuotationsRepositoryContract {
               lineDiscount: _toDouble(item['discount_amount']),
               sku: item['product_sku']?.toString(),
               notes: productNotes[item['product_id']?.toString()],
+              isService: productIsService[item['product_id']?.toString()],
             ),
           )
           .toList(growable: false),
@@ -696,29 +700,35 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     );
   }
 
-  /// Notas de producto (`products.notes`) por id, en una sola consulta y
-  /// acotadas a la sucursal. Los ids sin nota quedan fuera del mapa.
-  Future<Map<String, String>> _loadProductNotes(
+  /// Notas de producto (`products.notes`) y `products.is_service` por id, en
+  /// una sola consulta y acotadas a la sucursal. Los ids sin nota quedan fuera
+  /// del mapa de notas; los que existen siempre entran al de servicio.
+  Future<({Map<String, String> notes, Map<String, bool> isService})>
+      _loadProductPrintData(
     Set<String> productIds, {
     required String branchId,
   }) async {
-    if (productIds.isEmpty) return const {};
+    if (productIds.isEmpty) {
+      return (notes: const <String, String>{}, isService: const <String, bool>{});
+    }
 
     final rows = await _client
         .from('products')
-        .select('id, notes')
+        .select('id, notes, is_service')
         .eq('branch_id', branchId)
         .inFilter('id', productIds.toList(growable: false));
 
     final notes = <String, String>{};
+    final isService = <String, bool>{};
     for (final row in rows) {
       final map = Map<String, dynamic>.from(row as Map);
       final id = map['id']?.toString();
+      if (id == null || id.isEmpty) continue;
       final note = _nullIfEmpty(map['notes']?.toString());
-      if (id == null || id.isEmpty || note == null) continue;
-      notes[id] = note;
+      if (note != null) notes[id] = note;
+      isService[id] = map['is_service'] == true;
     }
-    return notes;
+    return (notes: notes, isService: isService);
   }
 
   Future<String?> _currentBranchId() async {

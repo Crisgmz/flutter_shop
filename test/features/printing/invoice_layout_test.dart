@@ -13,7 +13,12 @@ void main() {
 
   final logo = File('assets/shopplus_logo.png').readAsBytesSync();
 
-  PrintDocumentData buildDocument({bool logoOnLeft = true}) {
+  PrintDocumentData buildDocument({
+    bool logoOnLeft = true,
+    bool withDiscount = false,
+    bool? isService,
+    bool? secondIsService,
+  }) {
     return PrintDocumentData(
       logoOnLeft: logoOnLeft,
       documentType: PrintDocumentType.fiscalInvoice,
@@ -35,11 +40,14 @@ void main() {
         name: 'jacuzzi continental',
         phone: '8295059592',
       ),
-      items: const [
+      items: [
         PrintDocumentItem(
           description: 'Bomba Iberia de jacuzzi 2 hp 110v',
           quantity: 2,
           unitPrice: 7500,
+          // 15,000 bruto con 1,500 de descuento = 10%.
+          lineDiscount: withDiscount ? 1500 : 0,
+          isService: isService,
           lineSubtotal: 12711.86,
           lineTax: 2288.14,
           lineTotal: 15000,
@@ -50,6 +58,7 @@ void main() {
           description:
               'Calentador eléctrico de titanio para jacuzzi y spa 11kw 220v '
               'con termostato digital incorporado',
+          isService: secondIsService ?? isService,
           quantity: 1,
           unitPrice: 42000,
           lineSubtotal: 35593.22,
@@ -70,6 +79,12 @@ void main() {
       }
     });
 
+    test('A4 se genera con la columna %DESC', () async {
+      final bytes = await const PdfReceiptBuilder()
+          .buildBytes(buildDocument(withDiscount: true));
+      expect(bytes.length, greaterThan(1000));
+    });
+
     test('el ticket térmico se genera', () async {
       final bytes =
           await const PdfReceiptBuilder().buildThermalBytes(buildDocument());
@@ -78,12 +93,11 @@ void main() {
   });
 
   group('vista previa en pantalla', () {
-    testWidgets('renderiza el A4 sin overflow', (tester) async {
+    Future<void> pumpPreview(WidgetTester tester, PrintDocumentData document) async {
       tester.view.physicalSize = const Size(1600, 1400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
 
-      final document = buildDocument();
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -104,14 +118,54 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-
       expect(tester.takeException(), isNull);
-      // Los montos van sin el símbolo de moneda.
+    }
+
+    testWidgets('renderiza el A4 sin overflow y sin símbolo de moneda',
+        (tester) async {
+      await pumpPreview(tester, buildDocument());
+
       expect(find.text('33,000.00'), findsOneWidget);
       expect(find.textContaining(r'RD$'), findsNothing);
       // Número de documento y NCF salieron del encabezado, siguen impresos.
       expect(find.text('FA-000005'), findsOneWidget);
       expect(find.text('NCF: B0200000003'), findsOneWidget);
+    });
+
+    testWidgets('sin descuentos no imprime la columna %DESC', (tester) async {
+      await pumpPreview(tester, buildDocument());
+
+      expect(find.text('%DESC'), findsNothing);
+    });
+
+    testWidgets('rotula la primera columna según lo que se factura',
+        (tester) async {
+      await pumpPreview(tester, buildDocument(isService: false));
+      expect(find.text('PRODUCTO'), findsOneWidget);
+
+      await pumpPreview(tester, buildDocument(isService: true));
+      expect(find.text('SERVICIO'), findsOneWidget);
+
+      // Mixto → el rótulo de siempre.
+      await pumpPreview(
+        tester,
+        buildDocument(isService: false, secondIsService: true),
+      );
+      expect(find.text('PRODUCTO/SERVICIO'), findsOneWidget);
+
+      // Sin dato (gasto, recibo de abono) tampoco se inventa.
+      await pumpPreview(tester, buildDocument());
+      expect(find.text('PRODUCTO/SERVICIO'), findsOneWidget);
+    });
+
+    testWidgets('con descuento imprime %DESC en porcentaje', (tester) async {
+      await pumpPreview(tester, buildDocument(withDiscount: true));
+
+      expect(find.text('%DESC'), findsOneWidget);
+      // 1,500 sobre 15,000 de bruto = 10%.
+      expect(find.text('10%'), findsOneWidget);
+      // La línea sin descuento queda con guion, no en blanco.
+      expect(find.text('-'), findsOneWidget);
     });
   });
 }

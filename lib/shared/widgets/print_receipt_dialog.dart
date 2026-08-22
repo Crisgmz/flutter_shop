@@ -741,10 +741,12 @@ class _A4Preview extends StatelessWidget {
     );
   }
 
-  /// PRODUCTO/SERVICIO · PRECIO · CANTIDAD · DESCUENTO · SUBTOTAL · [ITBIS] ·
+  /// PRODUCTO/SERVICIO · PRECIO · CANTIDAD · [%DESC] · SUBTOTAL · [ITBIS] ·
   /// VALOR TOTAL, igual que el PDF. SUBTOTAL es la base imponible de la línea.
   Widget _itemsTable(PrintDocumentData d) {
     final showTax = d.showTax;
+    // %DESC solo si alguna línea trae descuento, igual que el PDF.
+    final showDiscount = d.items.any((it) => it.hasDiscount);
 
     Widget header(String text, {TextAlign align = TextAlign.left}) {
       return Padding(
@@ -803,25 +805,21 @@ class _A4Preview extends StatelessWidget {
     }
 
     // Mismas proporciones que el PDF: sin el símbolo de moneda las columnas
-    // numéricas se estrecharon y PRODUCTO/SERVICIO se quedó con el sobrante.
-    final columnWidths = showTax
-        ? const <int, TableColumnWidth>{
-            0: FlexColumnWidth(4.2),
-            1: FlexColumnWidth(1.2),
-            2: FlexColumnWidth(1),
-            3: FlexColumnWidth(1.25),
-            4: FlexColumnWidth(1.35),
-            5: FlexColumnWidth(1.2),
-            6: FlexColumnWidth(1.45),
-          }
-        : const <int, TableColumnWidth>{
-            0: FlexColumnWidth(4.2),
-            1: FlexColumnWidth(1.25),
-            2: FlexColumnWidth(1),
-            3: FlexColumnWidth(1.3),
-            4: FlexColumnWidth(1.4),
-            5: FlexColumnWidth(1.5),
-          };
+    // numéricas se estrecharon y PRODUCTO/SERVICIO se queda con el sobrante,
+    // así que al ocultar %DESC o ITBIS la descripción gana ese espacio.
+    final numericFlex = <double>[
+      1.25, // PRECIO
+      1, // CANTIDAD
+      if (showDiscount) 1.05, // %DESC
+      1.35, // SUBTOTAL
+      if (showTax) 1.2, // ITBIS
+      1.45, // VALOR TOTAL
+    ];
+    final columnWidths = <int, TableColumnWidth>{
+      0: const FlexColumnWidth(4.2),
+      for (var i = 0; i < numericFlex.length; i++)
+        i + 1: FlexColumnWidth(numericFlex[i]),
+    };
 
     return Table(
       columnWidths: columnWidths,
@@ -835,10 +833,10 @@ class _A4Preview extends StatelessWidget {
             ),
           ),
           children: [
-            header('PRODUCTO/SERVICIO'),
+            header(printItemsColumnLabel(d.items)),
             header('PRECIO', align: TextAlign.right),
             header('CANTIDAD', align: TextAlign.center),
-            header('DESCUENTO', align: TextAlign.right),
+            if (showDiscount) header('%DESC', align: TextAlign.right),
             header('SUBTOTAL', align: TextAlign.right),
             if (showTax) header('ITBIS', align: TextAlign.right),
             header('VALOR TOTAL', align: TextAlign.right),
@@ -855,10 +853,11 @@ class _A4Preview extends StatelessWidget {
               descriptionCell(it),
               cell(moneyPlain(it.unitPrice), align: TextAlign.right),
               cell(_qtyLabel(it.quantity), align: TextAlign.center),
-              cell(
-                it.lineDiscount > 0.0049 ? moneyPlain(it.lineDiscount) : '-',
-                align: TextAlign.right,
-              ),
+              if (showDiscount)
+                cell(
+                  it.hasDiscount ? _percentLabel(it.discountPercent) : '-',
+                  align: TextAlign.right,
+                ),
               cell(moneyPlain(it.lineSubtotal), align: TextAlign.right),
               if (showTax)
                 cell(
@@ -1049,6 +1048,17 @@ const Color _kHairline = Color(0xFFCBD5E1);
 /// uno y el otro queda vacío, de modo que los datos de la empresa queden
 /// centrados en la hoja sin importar de qué lado esté el logo.
 const double _kLogoSlotWidth = 96;
+
+/// Porcentaje de descuento como se imprime en la columna %DESC: sin decimales
+/// cuando es redondo (`10%`) y con hasta dos cuando no (`12.5%`).
+String _percentLabel(double value) {
+  final rounded = (value * 100).roundToDouble() / 100;
+  if (rounded == rounded.roundToDouble()) {
+    return '${rounded.toStringAsFixed(0)}%';
+  }
+  final text = rounded.toStringAsFixed(2);
+  return '${text.endsWith('0') ? text.substring(0, text.length - 1) : text}%';
+}
 
 /// Texto que nunca envuelve: se dibuja en un solo renglón y, si no cabe, se
 /// achica en vez de bajar a una segunda línea. Mantiene nombre, precio y

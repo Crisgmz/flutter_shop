@@ -853,7 +853,10 @@ class PdfReceiptBuilder {
   }
 
   /// Detalle del documento: PRODUCTO/SERVICIO · PRECIO · CANTIDAD ·
-  /// DESCUENTO · SUBTOTAL · [ITBIS] · VALOR TOTAL.
+  /// [%DESC] · SUBTOTAL · [ITBIS] · VALOR TOTAL.
+  ///
+  /// El rótulo de la primera columna se adapta a lo que se factura — ver
+  /// [printItemsColumnLabel].
   ///
   /// SUBTOTAL es la base imponible de la línea (precio × cantidad menos
   /// descuento, sin ITBIS), de modo que VALOR TOTAL = SUBTOTAL + ITBIS.
@@ -864,35 +867,32 @@ class PdfReceiptBuilder {
   ) {
     const right = pw.Alignment.centerRight;
     final showTax = data.showTax;
+    // %DESC solo aparece si alguna línea trae descuento. Una factura sin
+    // descuentos no debe cargar una columna llena de guiones.
+    final showDiscount = data.items.any((it) => it.hasDiscount);
+
     // Ancho útil del A4 con margen 36 ≈ 523pt. Las columnas numéricas ya no
-    // cargan el símbolo de moneda, así que se estrecharon y el ancho liberado
-    // fue a PRODUCTO/SERVICIO: la descripción entra en una sola línea. La
-    // columna ITBIS solo aparece si el documento lleva impuesto; sin ella su
-    // ancho se reparte entre las demás (6 columnas).
-    final columnWidths = showTax
-        ? const <int, pw.TableColumnWidth>{
-            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 185pt
-            1: pw.FixedColumnWidth(54),
-            2: pw.FixedColumnWidth(46),
-            3: pw.FixedColumnWidth(56),
-            4: pw.FixedColumnWidth(62),
-            5: pw.FixedColumnWidth(54),
-            6: pw.FixedColumnWidth(66),
-          }
-        : const <int, pw.TableColumnWidth>{
-            0: pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO ≈ 219pt
-            1: pw.FixedColumnWidth(58),
-            2: pw.FixedColumnWidth(48),
-            3: pw.FixedColumnWidth(60),
-            4: pw.FixedColumnWidth(66),
-            5: pw.FixedColumnWidth(72),
-          };
+    // cargan el símbolo de moneda, así que van estrechas; PRODUCTO/SERVICIO
+    // toma todo lo que sobre, de modo que al ocultar %DESC o ITBIS la
+    // descripción gana ese espacio.
+    final numericWidths = <double>[
+      58, // PRECIO
+      48, // CANTIDAD
+      if (showDiscount) 50, // %DESC
+      64, // SUBTOTAL
+      if (showTax) 56, // ITBIS
+      68, // VALOR TOTAL
+    ];
+    final columnWidths = <int, pw.TableColumnWidth>{
+      0: const pw.FlexColumnWidth(1), // PRODUCTO/SERVICIO
+      for (var i = 0; i < numericWidths.length; i++)
+        i + 1: pw.FixedColumnWidth(numericWidths[i]),
+    };
     // Lo que sobra tras las columnas fijas es lo que le toca a la descripción
     // (menos el padding horizontal de la celda).
-    final fixedWidth = columnWidths.entries
-        .where((e) => e.key != 0)
-        .fold<double>(0, (sum, e) => sum + (e.value as pw.FixedColumnWidth).width);
-    final descriptionWidth = contentWidth - fixedWidth - 4;
+    final descriptionWidth = contentWidth -
+        numericWidths.fold<double>(0, (sum, w) => sum + w) -
+        4;
 
     pw.Widget hCell(String text, {pw.Alignment align = pw.Alignment.centerLeft}) {
       return pw.Padding(
@@ -987,10 +987,10 @@ class PdfReceiptBuilder {
             ),
           ),
           children: [
-            hCell('PRODUCTO/SERVICIO'),
+            hCell(printItemsColumnLabel(data.items)),
             hCell('PRECIO', align: right),
             hCell('CANTIDAD', align: pw.Alignment.center),
-            hCell('DESCUENTO', align: right),
+            if (showDiscount) hCell('%DESC', align: right),
             hCell('SUBTOTAL', align: right),
             if (showTax) hCell('ITBIS', align: right),
             hCell('VALOR TOTAL', align: right),
@@ -1007,10 +1007,11 @@ class PdfReceiptBuilder {
               descriptionCell(it),
               cell(moneyPlain(it.unitPrice), align: right),
               cell(_qty(it.quantity), align: pw.Alignment.center),
-              cell(
-                it.lineDiscount > 0.0049 ? moneyPlain(it.lineDiscount) : '-',
-                align: right,
-              ),
+              if (showDiscount)
+                cell(
+                  it.hasDiscount ? _percent(it.discountPercent) : '-',
+                  align: right,
+                ),
               cell(moneyPlain(it.lineSubtotal), align: right),
               if (showTax)
                 cell(
@@ -1327,6 +1328,23 @@ String printDocumentTitle(PrintDocumentData data) {
   return electronic ? 'FACTURA ELECTRÓNICA' : 'FACTURA';
 }
 
+/// Rótulo de la primera columna del detalle según lo que se está facturando:
+/// `PRODUCTO` si todas las líneas son productos, `SERVICIO` si todas son
+/// servicios y `PRODUCTO/SERVICIO` si hay de los dos.
+///
+/// También cae en `PRODUCTO/SERVICIO` cuando alguna línea no sabe qué es
+/// (`isService == null`): los documentos que no salen del catálogo —recibo de
+/// abono, comprobante de gasto, orden de compra— no traen el dato, y rotularlos
+/// como una cosa u otra sería inventar.
+///
+/// Público porque la vista previa A4 debe mostrar exactamente lo mismo.
+String printItemsColumnLabel(List<PrintDocumentItem> items) {
+  if (items.isEmpty) return 'PRODUCTO/SERVICIO';
+  if (items.every((it) => it.isService == false)) return 'PRODUCTO';
+  if (items.every((it) => it.isService == true)) return 'SERVICIO';
+  return 'PRODUCTO/SERVICIO';
+}
+
 /// Etiqueta del bloque fiscal del encabezado A4, en texto largo capitalizado
 /// ("Factura de Crédito Fiscal").
 ///
@@ -1419,4 +1437,15 @@ bool _hasText(String? value) => value != null && value.trim().isNotEmpty;
 String _qty(double value) {
   if (value == value.roundToDouble()) return value.toStringAsFixed(0);
   return value.toStringAsFixed(2);
+}
+
+/// Porcentaje de descuento como se imprime en la columna %DESC: sin decimales
+/// cuando es redondo (`10%`) y con hasta dos cuando no (`12.5%`).
+String _percent(double value) {
+  final rounded = (value * 100).roundToDouble() / 100;
+  if (rounded == rounded.roundToDouble()) {
+    return '${rounded.toStringAsFixed(0)}%';
+  }
+  final text = rounded.toStringAsFixed(2);
+  return '${text.endsWith('0') ? text.substring(0, text.length - 1) : text}%';
 }
