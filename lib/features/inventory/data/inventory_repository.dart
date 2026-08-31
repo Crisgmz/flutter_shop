@@ -62,6 +62,7 @@ class InventoryProduct {
     this.maxStock = 0,
     this.allowNegativeStock = false,
     this.imeis = const <String>[],
+    this.imeiOnPurchase = false,
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
@@ -110,6 +111,10 @@ class InventoryProduct {
 
   /// IMEIs registrados del producto (celulares/dispositivos serializados).
   final List<String> imeis;
+
+  /// Si true, al comprar este producto se piden los IMEIs de los equipos que
+  /// entran (`products.imei_on_purchase`). Si es false, la compra ni pregunta.
+  final bool imeiOnPurchase;
 
   final double? priceTier1;
   final double? priceTier2;
@@ -194,6 +199,7 @@ class InventoryProduct {
               .where((e) => e.trim().isNotEmpty)
               .toList(growable: false)
           : const <String>[],
+      imeiOnPurchase: map['imei_on_purchase'] == true,
       priceTier1: map['price_tier_1'] == null ? null : _toDouble(map['price_tier_1']),
       priceTier2: map['price_tier_2'] == null ? null : _toDouble(map['price_tier_2']),
       priceTier3: map['price_tier_3'] == null ? null : _toDouble(map['price_tier_3']),
@@ -238,6 +244,7 @@ class InventoryProductInput {
     this.maxStock = 0,
     this.allowNegativeStock = false,
     this.imeis = const <String>[],
+    this.imeiOnPurchase = false,
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
@@ -283,6 +290,9 @@ class InventoryProductInput {
 
   /// IMEIs del producto (celulares/dispositivos serializados).
   final List<String> imeis;
+
+  /// Espeja `products.imei_on_purchase`: pedir IMEIs al comprarlo.
+  final bool imeiOnPurchase;
 
   final double? priceTier1;
   final double? priceTier2;
@@ -516,7 +526,7 @@ class InventoryRepository {
             'reorder_level, max_stock, allow_negative_stock, '
             'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
             'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
-            'price_tier_9, price_tier_10, imeis',
+            'price_tier_9, price_tier_10, imeis, imei_on_purchase',
           )
           .eq('branch_id', branchId)
           .order('name')
@@ -557,7 +567,9 @@ class InventoryRepository {
         });
   }
 
-  Future<void> saveProduct(InventoryProductInput input) async {
+  /// Crea o actualiza el producto y devuelve su id. El POS lo usa para meter
+  /// al carrito el producto que se acaba de crear dentro de la venta.
+  Future<String> saveProduct(InventoryProductInput input) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
@@ -567,8 +579,12 @@ class InventoryRepository {
 
     if (input.id == null) {
       payload['branch_id'] = branchId;
-      await _client.from('products').insert(payload);
-      return;
+      final row = await _client
+          .from('products')
+          .insert(payload)
+          .select('id')
+          .single();
+      return (row['id'] ?? '').toString();
     }
 
     await _client
@@ -576,6 +592,7 @@ class InventoryRepository {
         .update(payload)
         .eq('id', input.id!)
         .eq('branch_id', branchId);
+    return input.id!;
   }
 
   /// Registra un ajuste manual de inventario para llevar el stock del producto
@@ -649,8 +666,10 @@ class InventoryRepository {
             ? existingBySku[sku]
             : null;
         final payload = _buildProductPayload(input);
-        // El import no maneja IMEIs: no tocar la columna para no borrarlos.
+        // El import no maneja IMEIs: no tocar la columna para no borrarlos,
+        // ni apagar el "pedir IMEI en la compra" de los productos existentes.
         payload.remove('imeis');
+        payload.remove('imei_on_purchase');
         if (existingId == null) {
           payload['branch_id'] = branchId;
           await _client.from('products').insert(payload);
@@ -712,6 +731,7 @@ class InventoryRepository {
       'price_includes_tax': input.priceIncludesTax,
       'track_inventory': input.trackInventory,
       'imeis': input.imeis,
+      'imei_on_purchase': input.imeiOnPurchase,
       'price_tier_1': input.priceTier1 ?? input.price,
       'price_tier_2': input.priceTier2,
       'price_tier_3': input.priceTier3,

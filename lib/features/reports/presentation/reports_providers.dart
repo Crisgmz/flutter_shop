@@ -330,3 +330,8 @@ final hourlySalesReportProvider =
   final r = ref.watch(reportDateRangeProvider);
   return repo.fetchSalesByHour(from: r.from, to: r.to);
 });
+
+/// Texto de búsqueda del reporte de artículos. Con la lista completa en
+/// pantalla, encontrar un artículo puntual tomaba demasiado; esto filtra la
+/// tabla por nombre.
+final articlesReportSearchProvider = StateProvider<String>((ref) => '');

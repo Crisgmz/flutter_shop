@@ -103,6 +103,7 @@ class SalesHistoryFilter {
     this.to,
     this.search = '',
     this.statuses = const <String>[],
+    this.cashRegisterId,
   });
 
   final DateTime? from;
@@ -110,19 +111,26 @@ class SalesHistoryFilter {
   final String search;
   final List<String> statuses;
 
+  /// Caja (cash_register) cuyos documentos se quieren ver. `null` = todas.
+  final String? cashRegisterId;
+
   SalesHistoryFilter copyWith({
     DateTime? from,
     DateTime? to,
     String? search,
     List<String>? statuses,
+    String? cashRegisterId,
     bool clearFrom = false,
     bool clearTo = false,
+    bool clearCashRegister = false,
   }) {
     return SalesHistoryFilter(
       from: clearFrom ? null : (from ?? this.from),
       to: clearTo ? null : (to ?? this.to),
       search: search ?? this.search,
       statuses: statuses ?? this.statuses,
+      cashRegisterId:
+          clearCashRegister ? null : (cashRegisterId ?? this.cashRegisterId),
     );
   }
 }
@@ -202,6 +210,22 @@ class SalesHistoryRepository {
       query = query.or(conditions.join(','));
     }
 
+    // Filtro por caja: los documentos guardan `cash_session_id`, así que se
+    // traducen las sesiones de esa caja a ids. Si la caja nunca abrió sesión,
+    // no hay nada que mostrar.
+    final registerId = filter.cashRegisterId;
+    if (registerId != null && registerId.isNotEmpty) {
+      final sessionIds = await _sessionIdsForRegister(
+        branchId: branchId,
+        cashRegisterId: registerId,
+        filter: filter,
+      );
+      if (sessionIds.isEmpty) {
+        return SalesHistoryPage(rows: const [], hasMore: false);
+      }
+      query = query.inFilter('cash_session_id', sessionIds);
+    }
+
     final rows = await query
         .order('doc_date', ascending: false)
         .range(from, to);
@@ -279,6 +303,50 @@ class SalesHistoryRepository {
     }).toList(growable: false);
 
     return SalesHistoryPage(rows: result, hasMore: hasMore);
+  }
+
+  /// Sesiones (cash_sessions) de una caja, para traducir "caja 1" a los
+  /// `cash_session_id` que llevan las ventas y devoluciones.
+  ///
+  /// Se acota al rango de fechas del filtro cuando lo hay: una caja acumula
+  /// una sesión por día y por cajero, y mandar años de ids en la URL sería
+  /// una consulta enorme. Sin rango se toman las 500 sesiones más recientes,
+  /// que es mucho más de lo que cubre el historial paginado en pantalla.
+  Future<List<String>> _sessionIdsForRegister({
+    required String branchId,
+    required String cashRegisterId,
+    required SalesHistoryFilter filter,
+  }) async {
+    var query = _client
+        .from('cash_sessions')
+        .select('id')
+        .eq('branch_id', branchId)
+        .eq('cash_register_id', cashRegisterId);
+
+    if (filter.to != null) {
+      final endOfDay = DateTime(
+        filter.to!.year,
+        filter.to!.month,
+        filter.to!.day,
+        23,
+        59,
+        59,
+      );
+      query = query.lte('opened_at', endOfDay.toIso8601String());
+    }
+    if (filter.from != null) {
+      // Una sesión abierta antes del rango puede seguir facturando dentro de
+      // él: solo se descartan las que ya habían cerrado antes de empezar.
+      query = query.or(
+        'closed_at.is.null,closed_at.gte.${filter.from!.toIso8601String()}',
+      );
+    }
+
+    final rows = await query.order('opened_at', ascending: false).limit(500);
+    return rows
+        .map((row) => ((row as Map)['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
   }
 
   /// Ids (de venta y de devolución) que contienen un IMEI dado. Usa los índices

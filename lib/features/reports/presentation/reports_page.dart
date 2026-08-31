@@ -2600,6 +2600,18 @@ class _ArticulosReport extends ConsumerWidget {
         final ordered = byProduct.values.toList()
           ..sort((a, b) => b.net.compareTo(a.net));
 
+        // Búsqueda por nombre: la lista completa sale muy larga y encontrar un
+        // artículo puntual tomaba demasiado.
+        final search = ref
+            .watch(articlesReportSearchProvider)
+            .trim()
+            .toLowerCase();
+        final visible = search.isEmpty
+            ? ordered
+            : ordered
+                .where((p) => p.name.toLowerCase().contains(search))
+                .toList(growable: false);
+
         if (mode == ReportMode.graphic) {
           final top = ordered.take(10).toList();
           return _ReportCard(
@@ -2620,7 +2632,7 @@ class _ArticulosReport extends ConsumerWidget {
         }
         const articulosCols = ['Producto', 'Unidades', 'Ventas', 'Neto'];
         final articulosRows = [
-          for (final p in ordered)
+          for (final p in visible)
             [
               p.name,
               qty(p.units.toInt()),
@@ -2651,12 +2663,89 @@ class _ArticulosReport extends ConsumerWidget {
 
         return _ReportCard(
           title: 'Artículos — Resumen del período',
-          child: _SimpleTable(
-            columns: articulosCols,
-            rows: articulosRows,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const _ArticulosSearchField(),
+              const SizedBox(height: AppTokens.s12),
+              if (articulosRows.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppTokens.s16),
+                  child: Text(
+                    'Ningún artículo coincide con la búsqueda.',
+                    style: TextStyle(color: AppTokens.mutedForeground),
+                  ),
+                )
+              else
+                _SimpleTable(
+                  columns: articulosCols,
+                  rows: articulosRows,
+                ),
+            ],
           ),
         );
       },
+    );
+  }
+}
+
+/// Buscador del reporte de artículos: al escribir el nombre, la tabla deja
+/// solo ese producto. El texto vive en un provider para no perderse cuando el
+/// reporte se reconstruye al recargar los datos.
+class _ArticulosSearchField extends ConsumerStatefulWidget {
+  const _ArticulosSearchField();
+
+  @override
+  ConsumerState<_ArticulosSearchField> createState() =>
+      _ArticulosSearchFieldState();
+}
+
+class _ArticulosSearchFieldState extends ConsumerState<_ArticulosSearchField> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(
+      text: ref.read(articlesReportSearchProvider),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = ref.watch(articlesReportSearchProvider);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(
+        width: 320,
+        child: TextField(
+          controller: _controller,
+          onChanged: (text) =>
+              ref.read(articlesReportSearchProvider.notifier).state = text,
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.search, size: 18),
+            hintText: 'Buscar artículo por nombre',
+            isDense: true,
+            border: const OutlineInputBorder(),
+            suffixIcon: value.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.close, size: 16),
+                    onPressed: () {
+                      _controller.clear();
+                      ref.read(articlesReportSearchProvider.notifier).state =
+                          '';
+                    },
+                  ),
+          ),
+        ),
+      ),
     );
   }
 }

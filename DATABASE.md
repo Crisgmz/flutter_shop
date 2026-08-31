@@ -42,6 +42,8 @@ Archivo auxiliar:
 - `product_categories`
 - `products`
   - `sku`, `barcode`, `cost`, `price`, `tax_rate`, `stock`, `min_stock`
+  - `imeis` (text[]): equipos serializados disponibles para vender
+  - `imei_on_purchase` (bool): pedir los IMEIs al comprar este producto
 
 ### CRM / terceros
 - `clients`
@@ -52,6 +54,7 @@ Archivo auxiliar:
 ### Compras
 - `purchases`
 - `purchase_items`
+  - `imeis` (text[]): equipos que entraron por esa línea; la app los suma a `products.imeis`
 
 ### Ventas / POS
 - `sales`

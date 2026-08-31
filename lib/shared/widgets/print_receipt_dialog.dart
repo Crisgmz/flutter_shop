@@ -541,7 +541,8 @@ class _A4Preview extends StatelessWidget {
 
   /// Logo a un lado y los datos de la empresa centrados, igual que el PDF.
   /// `d.logoOnLeft` decide el lado; el costado opuesto reserva un hueco del
-  /// mismo ancho para que la empresa quede centrada en la hoja.
+  /// mismo ancho para que la empresa quede centrada en la hoja, más un
+  /// [_kCompanyNudge] que la separa del logo.
   Widget _header(PrintDocumentData d) {
     final logoSlot = SizedBox(
       width: _kLogoSlotWidth,
@@ -552,7 +553,8 @@ class _A4Preview extends StatelessWidget {
                   d.logoOnLeft ? Alignment.topLeft : Alignment.topRight,
               child: Image.memory(
                 Uint8List.fromList(d.branch.logoBytes!),
-                height: 58,
+                // Mismo recorte proporcional que el PDF (62 → 54).
+                height: 50,
                 fit: BoxFit.contain,
               ),
             ),
@@ -562,8 +564,18 @@ class _A4Preview extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: d.logoOnLeft
-          ? [logoSlot, company, const SizedBox(width: _kLogoSlotWidth)]
-          : [const SizedBox(width: _kLogoSlotWidth), company, logoSlot],
+          ? [
+              logoSlot,
+              const SizedBox(width: _kCompanyNudge),
+              company,
+              const SizedBox(width: _kLogoSlotWidth - _kCompanyNudge),
+            ]
+          : [
+              const SizedBox(width: _kLogoSlotWidth - _kCompanyNudge),
+              company,
+              const SizedBox(width: _kCompanyNudge),
+              logoSlot,
+            ],
     );
   }
 
@@ -1048,6 +1060,10 @@ const Color _kHairline = Color(0xFFCBD5E1);
 /// uno y el otro queda vacío, de modo que los datos de la empresa queden
 /// centrados en la hoja sin importar de qué lado esté el logo.
 const double _kLogoSlotWidth = 96;
+
+/// Empujón del bloque de la empresa hacia el lado contrario al logo (mismo
+/// valor que el PDF, para que la vista previa y lo impreso coincidan).
+const double _kCompanyNudge = 20;
 
 /// Porcentaje de descuento como se imprime en la columna %DESC: sin decimales
 /// cuando es redondo (`10%`) y con hasta dos cuando no (`12.5%`).

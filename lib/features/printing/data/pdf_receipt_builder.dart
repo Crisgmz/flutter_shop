@@ -101,6 +101,11 @@ const double _kA4Margin = 36;
 /// queden centrados en la hoja sin importar de qué lado esté el logo.
 const double _kLogoSlotWidth = 96;
 
+/// Empujón del bloque de la empresa hacia el lado contrario al logo, para que
+/// el nombre no quede pegado a la imagen. El hueco del otro costado se reduce
+/// en la misma medida, así que el desplazamiento es exactamente este valor.
+const double _kCompanyNudge = 20;
+
 class PdfReceiptBuilder {
   const PdfReceiptBuilder();
 
@@ -619,7 +624,8 @@ class PdfReceiptBuilder {
   /// `data.logoOnLeft` (espejo de `app_settings.invoice_logo_position`) decide
   /// de qué lado va el logo. El lado opuesto lleva un hueco del mismo ancho
   /// para que el bloque de la empresa quede centrado respecto a la hoja y no
-  /// respecto al espacio sobrante.
+  /// respecto al espacio sobrante, más un [_kCompanyNudge] que lo separa del
+  /// logo para que el nombre no salga pegado a la imagen.
   ///
   /// El número de documento y el bloque fiscal (tipo de comprobante + NCF) ya
   /// no viven aquí: bajaron junto al bloque del cliente ([_clientBlock]).
@@ -630,7 +636,10 @@ class PdfReceiptBuilder {
           ? null
           : pw.Image(
               pw.MemoryImage(logoBytes),
-              height: 62,
+              // Alto del logo impreso. Con el bloque de la empresa corrido
+              // (_kCompanyNudge) quedaba aire alrededor y el logo se veía
+              // más grande de la cuenta.
+              height: 54,
               alignment: data.logoOnLeft
                   ? pw.Alignment.topLeft
                   : pw.Alignment.topRight,
@@ -642,8 +651,18 @@ class PdfReceiptBuilder {
     return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: data.logoOnLeft
-          ? [logoSlot, company, pw.SizedBox(width: _kLogoSlotWidth)]
-          : [pw.SizedBox(width: _kLogoSlotWidth), company, logoSlot],
+          ? [
+              logoSlot,
+              pw.SizedBox(width: _kCompanyNudge),
+              company,
+              pw.SizedBox(width: _kLogoSlotWidth - _kCompanyNudge),
+            ]
+          : [
+              pw.SizedBox(width: _kLogoSlotWidth - _kCompanyNudge),
+              company,
+              pw.SizedBox(width: _kCompanyNudge),
+              logoSlot,
+            ],
     );
   }
 

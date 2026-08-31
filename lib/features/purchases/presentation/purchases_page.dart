@@ -8,6 +8,7 @@ import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
+import '../../../shared/pricing/margin.dart';
 import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
@@ -714,6 +715,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
   final _qtyController = TextEditingController(text: '1');
   final _costController = TextEditingController(text: '0');
   final _taxController = TextEditingController(text: '0');
+  final _marginController = TextEditingController();
   final _priceController = TextEditingController(text: '0');
 
   String? _supplierId;
@@ -764,6 +766,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
             unitCost: item.unitCost,
             taxRate: item.taxRate,
             salePrice: product.price,
+            imeis: List<String>.from(item.imeis),
           ),
         );
       }
@@ -782,6 +785,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
     _qtyController.dispose();
     _costController.dispose();
     _taxController.dispose();
+    _marginController.dispose();
     _priceController.dispose();
     super.dispose();
   }
@@ -1021,6 +1025,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                             );
                             _priceController.text =
                                 product.price.toStringAsFixed(2);
+                            _syncMarginFromPrice();
                           });
                         },
                       ),
@@ -1050,6 +1055,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                               decoration: const InputDecoration(
                                 labelText: 'Costo unitario',
                               ),
+                              onChanged: (_) => _syncPriceFromMargin(),
                             ),
                           ),
                         ],
@@ -1057,6 +1063,21 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                       const SizedBox(height: 10),
                       Row(
                         children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _marginController,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              decoration: const InputDecoration(
+                                labelText: 'Margen %',
+                                hintText: 'Ej: 20',
+                              ),
+                              onChanged: (_) => _syncPriceFromMargin(),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: TextFormField(
                               controller: _taxController,
@@ -1069,20 +1090,18 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _priceController,
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                    decimal: true,
-                                  ),
-                              decoration: const InputDecoration(
-                                labelText: 'Precio venta',
-                              ),
-                            ),
-                          ),
                         ],
+                      ),
+                      const SizedBox(height: 10),
+                      TextFormField(
+                        controller: _priceController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Precio venta',
+                        ),
+                        onChanged: (_) => _syncMarginFromPrice(),
                       ),
                       const SizedBox(height: 10),
                       Align(
@@ -1110,6 +1129,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                                   .toStringAsFixed(2);
                               _priceController.text = product.price
                                   .toStringAsFixed(2);
+                              _syncMarginFromPrice();
                             });
                           },
                         ),
@@ -1136,6 +1156,21 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                           decoration: const InputDecoration(
                             labelText: 'Costo unitario',
                           ),
+                          onChanged: (_) => _syncPriceFromMargin(),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _marginController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: 'Margen %',
+                            hintText: 'Ej: 20',
+                          ),
+                          onChanged: (_) => _syncPriceFromMargin(),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -1160,6 +1195,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                           decoration: const InputDecoration(
                             labelText: 'Precio venta',
                           ),
+                          onChanged: (_) => _syncMarginFromPrice(),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -1266,7 +1302,27 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
     setState(() => _dueDate = picked);
   }
 
-  void _addLine() {
+  /// Costo o margen cambiaron → se reescribe el precio de venta
+  /// (costo + costo × %). Con el margen vacío, el precio se respeta tal cual.
+  void _syncPriceFromMargin() {
+    final marginText = _marginController.text.trim();
+    if (marginText.isEmpty) return;
+    final margin = double.tryParse(marginText);
+    final cost = double.tryParse(_costController.text.trim());
+    if (margin == null || cost == null) return;
+    _priceController.text = priceFromMargin(cost, margin).toStringAsFixed(2);
+  }
+
+  /// El precio de venta se escribió a mano → el margen se ajusta a ese precio.
+  void _syncMarginFromPrice() {
+    final cost = double.tryParse(_costController.text.trim()) ?? 0;
+    final price = double.tryParse(_priceController.text.trim());
+    if (price == null) return;
+    final margin = marginFromPrice(cost, price);
+    _marginController.text = margin == null ? '' : formatMargin(margin);
+  }
+
+  Future<void> _addLine() async {
     final productId = _lineProductId;
     if (productId == null) {
       ScaffoldMessenger.of(
@@ -1289,14 +1345,38 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
 
     final product = widget.products.firstWhere((item) => item.id == productId);
 
+    // Producto con "Agregar IMEI en la compra": se piden los equipos que
+    // entran y la cantidad de la línea pasa a ser la cantidad de IMEIs.
+    var quantity = qty;
+    var imeis = const <String>[];
+    if (product.imeiOnPurchase) {
+      final captured = await showDialog<List<String>>(
+        context: context,
+        builder: (_) => _ImeiCaptureDialog(
+          productName: product.name,
+          initialBoxes: qty.round().clamp(1, 200),
+        ),
+      );
+      if (captured == null || !mounted) return;
+      if (captured.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Escribe al menos un IMEI.')),
+        );
+        return;
+      }
+      imeis = captured;
+      quantity = captured.length.toDouble();
+    }
+
     setState(() {
       _lines.add(
         PurchaseLineInput(
           product: product,
-          quantity: qty,
+          quantity: quantity,
           unitCost: cost,
           taxRate: tax,
           salePrice: price < 0 ? 0 : price,
+          imeis: List<String>.from(imeis),
         ),
       );
 
@@ -1401,13 +1481,40 @@ class _PurchaseLineTileState extends State<_PurchaseLineTile> {
     setState(() {});
   }
 
-  Widget _numField(TextEditingController c, String label) {
+  Widget _numField(
+    TextEditingController c,
+    String label, {
+    bool enabled = true,
+  }) {
     return TextFormField(
       controller: c,
+      enabled: enabled,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       decoration: InputDecoration(labelText: label, isDense: true),
       onChanged: (_) => _apply(),
     );
+  }
+
+  /// Reabre el cuadro de IMEIs de una línea ya agregada. La cantidad queda
+  /// clavada a la cantidad de equipos: un IMEI, una unidad.
+  Future<void> _editImeis() async {
+    final line = widget.line;
+    final captured = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _ImeiCaptureDialog(
+        productName: line.product.name,
+        initialBoxes: line.quantity.round().clamp(1, 200),
+        initialImeis: line.imeis,
+      ),
+    );
+    if (captured == null || !mounted) return;
+    line.imeis
+      ..clear()
+      ..addAll(captured);
+    line.quantity = captured.length.toDouble();
+    _qty.text = _fmt(line.quantity);
+    widget.onChanged();
+    setState(() {});
   }
 
   @override
@@ -1445,7 +1552,13 @@ class _PurchaseLineTileState extends State<_PurchaseLineTile> {
           if (widget.mobile) ...[
             Row(
               children: [
-                Expanded(child: _numField(_qty, 'Cantidad')),
+                Expanded(
+                  child: _numField(
+                    _qty,
+                    'Cantidad',
+                    enabled: line.imeis.isEmpty,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 Expanded(child: _numField(_cost, 'Costo')),
               ],
@@ -1461,7 +1574,13 @@ class _PurchaseLineTileState extends State<_PurchaseLineTile> {
           ] else
             Row(
               children: [
-                Expanded(child: _numField(_qty, 'Cantidad')),
+                Expanded(
+                  child: _numField(
+                    _qty,
+                    'Cantidad',
+                    enabled: line.imeis.isEmpty,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 Expanded(child: _numField(_cost, 'Costo')),
                 const SizedBox(width: 8),
@@ -1470,9 +1589,207 @@ class _PurchaseLineTileState extends State<_PurchaseLineTile> {
                 Expanded(child: _numField(_price, 'Precio venta')),
               ],
             ),
+          if (line.product.imeiOnPurchase || line.imeis.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: line.imeis.isEmpty
+                      ? const Text(
+                          'Sin IMEIs asignados',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTokens.textMuted,
+                          ),
+                        )
+                      : Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final imei in line.imeis)
+                              Chip(
+                                label: Text(
+                                  imei,
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                          ],
+                        ),
+                ),
+                TextButton.icon(
+                  onPressed: _editImeis,
+                  icon: const Icon(Icons.qr_code_2, size: 18),
+                  label: Text('IMEI (${line.imeis.length})'),
+                ),
+              ],
+            ),
+          ],
           const Divider(height: 16),
         ],
       ),
+    );
+  }
+}
+
+/// Cuadro para escribir los IMEIs que entran por la compra. Arranca con una
+/// casilla por cada unidad de la cantidad escrita y el botón `+` agrega otra,
+/// para ir metiendo tantos equipos como haga falta.
+class _ImeiCaptureDialog extends StatefulWidget {
+  const _ImeiCaptureDialog({
+    required this.productName,
+    this.initialBoxes = 1,
+    this.initialImeis = const <String>[],
+  });
+
+  final String productName;
+
+  /// Casillas vacías con las que abre el cuadro (la cantidad de la línea).
+  final int initialBoxes;
+
+  /// IMEIs ya capturados, al reabrir el cuadro para corregirlos.
+  final List<String> initialImeis;
+
+  @override
+  State<_ImeiCaptureDialog> createState() => _ImeiCaptureDialogState();
+}
+
+class _ImeiCaptureDialogState extends State<_ImeiCaptureDialog> {
+  late final List<TextEditingController> _controllers;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialImeis;
+    final count = initial.isNotEmpty
+        ? initial.length
+        : (widget.initialBoxes < 1 ? 1 : widget.initialBoxes);
+    _controllers = List.generate(
+      count,
+      (i) => TextEditingController(text: i < initial.length ? initial[i] : ''),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _controllers) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _addBox() {
+    setState(() => _controllers.add(TextEditingController()));
+  }
+
+  void _removeBox(int index) {
+    if (_controllers.length == 1) {
+      _controllers.first.clear();
+      setState(() {});
+      return;
+    }
+    setState(() => _controllers.removeAt(index).dispose());
+  }
+
+  /// IMEIs escritos, sin vacíos ni repetidos (el orden se respeta).
+  List<String> _collect() {
+    final result = <String>[];
+    for (final controller in _controllers) {
+      final value = controller.text.trim();
+      if (value.isEmpty || result.contains(value)) continue;
+      result.add(value);
+    }
+    return result;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filled = _collect().length;
+    return AlertDialog(
+      title: const Text('IMEI de los equipos'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                widget.productName,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Escribe un IMEI por casilla. El botón + agrega otra casilla; '
+                'la cantidad de la línea será la cantidad de IMEIs.',
+                style: TextStyle(fontSize: 12, color: AppTokens.textMuted),
+              ),
+              const SizedBox(height: 12),
+              for (var i = 0; i < _controllers.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _controllers[i],
+                          autofocus: i == 0,
+                          textInputAction: TextInputAction.next,
+                          onChanged: (_) => setState(() {}),
+                          onSubmitted: (_) {
+                            if (i == _controllers.length - 1) _addBox();
+                          },
+                          decoration: InputDecoration(
+                            labelText: 'IMEI ${i + 1}',
+                            isDense: true,
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Quitar',
+                        onPressed: () => _removeBox(i),
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+                    ],
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _addBox,
+                  icon: const Icon(Icons.add_circle, color: AppTokens.primary),
+                  label: const Text('Agregar IMEI'),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '$filled IMEI${filled == 1 ? '' : 's'} escrito'
+                '${filled == 1 ? '' : 's'}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppTokens.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: filled == 0
+              ? null
+              : () => Navigator.of(context).pop(_collect()),
+          child: const Text('Guardar'),
+        ),
+      ],
     );
   }
 }

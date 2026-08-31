@@ -9,6 +9,7 @@ import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../cash_register/presentation/cash_register_providers.dart';
 import '../data/sales_history_repository.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
@@ -297,7 +298,92 @@ class _FiltersBar extends StatelessWidget {
           active: filter.statuses,
           onChanged: (s) => onChanged((f) => f.copyWith(statuses: s)),
         ),
+        _CashRegisterFilter(
+          selectedId: filter.cashRegisterId,
+          onChanged: (id) => onChanged(
+            (f) => id == null
+                ? f.copyWith(clearCashRegister: true)
+                : f.copyWith(cashRegisterId: id),
+          ),
+        ),
       ],
+    );
+  }
+}
+
+/// Filtro por caja: "Todas" (default) o una caja puntual. Traduce la caja
+/// elegida a sus sesiones en el repositorio.
+class _CashRegisterFilter extends ConsumerWidget {
+  const _CashRegisterFilter({
+    required this.selectedId,
+    required this.onChanged,
+  });
+
+  final String? selectedId;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final registersAsync = ref.watch(cashRegistersProvider);
+    final registers = registersAsync.valueOrNull ?? const [];
+    final selected = registers
+        .where((r) => r.id == selectedId)
+        .map((r) => r.name)
+        .firstOrNull;
+
+    return PopupMenuButton<String?>(
+      tooltip: 'Filtrar por caja',
+      initialValue: selectedId,
+      onSelected: onChanged,
+      itemBuilder: (context) => [
+        const PopupMenuItem<String?>(value: null, child: Text('Todas')),
+        ...registers.map(
+          (register) => PopupMenuItem<String?>(
+            value: register.id,
+            child: Text(register.name),
+          ),
+        ),
+      ],
+      // Contenedor plano (no un botón): el tap lo maneja el PopupMenuButton
+      // que lo envuelve, y un botón anidado se lo comería.
+      child: Container(
+        height: 40,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppTokens.radius),
+          border: Border.all(
+            color: selectedId == null ? AppTokens.border : AppTokens.primary,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.point_of_sale_outlined,
+              size: 16,
+              color: selectedId == null
+                  ? AppTokens.secondaryForeground
+                  : AppTokens.primary,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Caja: ${selected ?? 'Todas'}',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: selectedId == null
+                    ? AppTokens.secondaryForeground
+                    : AppTokens.primary,
+              ),
+            ),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 18,
+              color: AppTokens.mutedForeground,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

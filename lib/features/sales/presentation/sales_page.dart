@@ -14,6 +14,9 @@ import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../clients/data/clients_repository.dart';
 import '../../clients/presentation/client_form_dialog.dart';
 import '../../clients/presentation/clients_providers.dart';
+import '../../inventory/data/inventory_repository.dart';
+import '../../inventory/presentation/inventory_providers.dart';
+import '../../inventory/presentation/product_form_dialog.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
@@ -358,6 +361,30 @@ class _SalesPageState extends ConsumerState<SalesPage> {
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
           ),
           error: (_, _) => const SizedBox.shrink(),
+        ),
+        const SizedBox(width: AppTokens.s10),
+        // Alta de producto sin salir de la venta (igual que el "+" de
+        // cliente): abre el MISMO formulario completo de Inventario.
+        Tooltip(
+          message: 'Nuevo producto',
+          child: InkWell(
+            onTap: _onCreateProductInline,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              height: 48,
+              width: 48,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: const Icon(
+                Icons.add_box_outlined,
+                color: AppTokens.primary,
+                size: 22,
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -1184,6 +1211,57 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo crear el cliente: $e')),
+      );
+    }
+  }
+
+  /// Crea un producto sin salir de la venta y lo mete al carrito. Usa el
+  /// MISMO formulario completo de Inventario (costo, margen, ITBIS, imagen,
+  /// precios por nivel, IMEI…), igual que el alta rápida de cliente.
+  Future<void> _onCreateProductInline() async {
+    List<InventoryCategory> categories;
+    try {
+      categories = await ref.read(inventoryCategoriesProvider.future);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar las categorías: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    final input = await showDialog<InventoryProductInput>(
+      context: context,
+      builder: (_) => ProductFormDialog(categories: categories),
+    );
+    if (input == null || !mounted) return;
+
+    try {
+      final id = await ref.read(inventoryRepositoryProvider).saveProduct(input);
+      ref.invalidate(inventoryProductsProvider);
+      ref.invalidate(salesProductsProvider);
+      // Hay que esperar la recarga: el carrito trabaja con el SalesProduct de
+      // la lista, no con el input del formulario.
+      final products = await ref.read(salesProductsProvider.future);
+      if (!mounted) return;
+      final created = products.where((p) => p.id == id).firstOrNull;
+      if (created != null) {
+        _addProductToCart(created);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            created == null
+                ? 'Producto creado.'
+                : 'Producto creado y agregado a la venta.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo crear el producto: $e')),
       );
     }
   }

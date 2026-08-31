@@ -27,6 +27,7 @@ class PurchaseProduct {
     this.barcode,
     this.unit,
     this.imageUrl,
+    this.imeiOnPurchase = false,
   });
 
   final String id;
@@ -39,6 +40,10 @@ class PurchaseProduct {
   final String? unit;
   final String? imageUrl;
 
+  /// `products.imei_on_purchase`: si está prendido, al agregar este producto a
+  /// una compra hay que escribir los IMEIs de los equipos que entran.
+  final bool imeiOnPurchase;
+
   factory PurchaseProduct.fromMap(Map<String, dynamic> map) {
     return PurchaseProduct(
       id: (map['id'] ?? '').toString(),
@@ -50,6 +55,7 @@ class PurchaseProduct {
       barcode: map['barcode']?.toString(),
       unit: (map['sale_unit'] ?? map['unit'])?.toString(),
       imageUrl: map['image_url']?.toString(),
+      imeiOnPurchase: map['imei_on_purchase'] == true,
     );
   }
 }
@@ -124,7 +130,8 @@ class PurchaseLineInput {
     required this.taxRate,
     this.salePrice = 0,
     this.notes,
-  });
+    List<String>? imeis,
+  }) : imeis = imeis ?? <String>[];
 
   final PurchaseProduct product;
   // Editables en línea desde el diálogo de compra.
@@ -133,6 +140,11 @@ class PurchaseLineInput {
   double taxRate;
   double salePrice;
   final String? notes;
+
+  /// Equipos serializados que entran en esta línea. Solo se llena cuando el
+  /// producto tiene `imei_on_purchase`; la cantidad de la línea es la cantidad
+  /// de IMEIs escritos.
+  final List<String> imeis;
 
   double get lineSubtotal => _round2(quantity * unitCost);
   double get lineTax => _round2(lineSubtotal * (taxRate / 100));
@@ -189,6 +201,7 @@ class PurchaseItemDetail {
     this.productId,
     this.sku,
     this.unitName,
+    this.imeis = const <String>[],
   });
 
   final String? productId;
@@ -201,6 +214,9 @@ class PurchaseItemDetail {
   final double lineTotal;
   final String? sku;
   final String? unitName;
+
+  /// IMEIs que entraron en esta línea (productos con `imei_on_purchase`).
+  final List<String> imeis;
 }
 
 class PurchaseDetail {
@@ -275,7 +291,10 @@ class PurchasesRepository {
 
     final rows = await _client
         .from('products')
-        .select('id, name, cost, price, stock, sku, barcode, sale_unit, unit, image_url')
+        .select(
+          'id, name, cost, price, stock, sku, barcode, sale_unit, unit, '
+          'image_url, imei_on_purchase',
+        )
         .eq('branch_id', branchId)
         .eq('is_active', true)
         .order('name');
@@ -399,6 +418,7 @@ class PurchasesRepository {
 
     await _insertPurchaseItems(purchaseId, branchId, input.items);
     await _applyProductCostsPrices(branchId, input.items);
+    await _applyProductImeis(branchId, input.items);
   }
 
   /// Actualiza una compra existente: reemplaza sus items (el cascade/trigger de
@@ -477,6 +497,7 @@ class PurchasesRepository {
 
     await _insertPurchaseItems(purchaseId, branchId, input.items);
     await _applyProductCostsPrices(branchId, input.items);
+    await _applyProductImeis(branchId, input.items);
   }
 
   /// Elimina una compra. El `ON DELETE CASCADE` borra sus `purchase_items` y el
@@ -532,7 +553,7 @@ class PurchasesRepository {
         .select(
           'product_id, description, product_name_snapshot, sku_snapshot, '
           'unit_name, quantity, unit_cost, tax_rate, line_subtotal, line_tax, '
-          'line_total',
+          'line_total, imeis',
         )
         .eq('purchase_id', purchaseId)
         .eq('branch_id', branchId)
@@ -552,6 +573,12 @@ class PurchasesRepository {
         lineSubtotal: _toDouble(m['line_subtotal']),
         lineTax: _toDouble(m['line_tax']),
         lineTotal: _toDouble(m['line_total']),
+        imeis: m['imeis'] is List
+            ? (m['imeis'] as List)
+                .map((e) => e.toString().trim())
+                .where((e) => e.isNotEmpty)
+                .toList(growable: false)
+            : const <String>[],
       );
     }).toList(growable: false);
 
@@ -686,6 +713,7 @@ class PurchasesRepository {
             'line_subtotal': line.lineSubtotal,
             'line_tax': line.lineTax,
             'line_total': line.lineTotal,
+            'imeis': line.imeis,
             'notes': _nullIfEmpty(line.notes),
           },
         )
@@ -708,6 +736,54 @@ class PurchasesRepository {
           .from('products')
           .update(update)
           .eq('id', line.product.id)
+          .eq('branch_id', branchId);
+    }
+  }
+
+  /// Suma al inventario los IMEIs que entraron por la compra
+  /// (`products.imeis`), que es de donde el POS toma los equipos disponibles
+  /// para vender. Se hace por unión sin repetidos: al editar una compra las
+  /// líneas se borran y se reinsertan, así que reaplicar no duplica, y un
+  /// IMEI ya vendido (que el checkout sacó de la lista) no se resucita porque
+  /// solo se agregan los que trae el payload nuevo.
+  Future<void> _applyProductImeis(
+    String branchId,
+    List<PurchaseLineInput> items,
+  ) async {
+    // Un mismo producto puede venir en varias líneas de la compra.
+    final byProduct = <String, List<String>>{};
+    for (final line in items) {
+      if (line.imeis.isEmpty) continue;
+      byProduct
+          .putIfAbsent(line.product.id, () => <String>[])
+          .addAll(line.imeis);
+    }
+    if (byProduct.isEmpty) return;
+
+    for (final entry in byProduct.entries) {
+      final rows = await _client
+          .from('products')
+          .select('imeis')
+          .eq('id', entry.key)
+          .eq('branch_id', branchId)
+          .limit(1);
+      if (rows.isEmpty) continue;
+
+      final current = Map<String, dynamic>.from(rows.first as Map)['imeis'];
+      final merged = <String>[
+        if (current is List)
+          for (final imei in current)
+            if (imei.toString().trim().isNotEmpty) imei.toString().trim(),
+      ];
+      for (final imei in entry.value) {
+        final clean = imei.trim();
+        if (clean.isNotEmpty && !merged.contains(clean)) merged.add(clean);
+      }
+
+      await _client
+          .from('products')
+          .update({'imeis': merged})
+          .eq('id', entry.key)
           .eq('branch_id', branchId);
     }
   }
