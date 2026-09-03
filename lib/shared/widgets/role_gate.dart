@@ -18,6 +18,9 @@ import '../../features/shell/presentation/shell_providers.dart';
 /// Código del permiso "Ver ganancia" en el catálogo (`permissions.code`).
 const kReportsProfitPermission = 'reports.profit';
 
+/// Código del permiso "Ver cuadre de caja" (`permissions.code`, migración 83).
+const kCashReconciliationPermission = 'cash.reconciliation';
+
 /// Snapshot inmutable del rol del usuario actual, con helpers semánticos.
 class RoleAccess {
   const RoleAccess({
@@ -84,6 +87,21 @@ final canViewProfitProvider = Provider<bool>((ref) {
   final access = ref.watch(roleAccessProvider);
   return access.hasPermission(
     kReportsProfitPermission,
+    roleDefault: access.isAdmin || access.isSupervisor || access.isAccountant,
+  );
+});
+
+/// ¿Puede el usuario ver el cuadre de caja (esperado, diferencia y totales por
+/// método de pago)?
+///
+/// Por rol: admin, supervisor y contador sí; cajero no — cierra a ciegas,
+/// declarando lo que contó sin saber cuánto debería haber. Un override sobre
+/// `cash.reconciliation` manda sobre el rol en ambos sentidos, que es lo que
+/// permite que un negocio sí se lo muestre a su cajero.
+final canViewCashReconciliationProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kCashReconciliationPermission,
     roleDefault: access.isAdmin || access.isSupervisor || access.isAccountant,
   );
 });

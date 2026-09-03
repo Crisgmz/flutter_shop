@@ -4,6 +4,7 @@ import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../shell/presentation/shell_providers.dart';
 import '../data/cash_closure_pdf_builder.dart';
 import '../data/cash_register_repository.dart';
@@ -43,6 +44,8 @@ class _CashClosureDetailDialogState
   Future<void> _print(double widthMm, _DetailBundle bundle) async {
     final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
     final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
+    final canSeeReconciliation =
+        ref.read(canViewCashReconciliationProvider);
 
     await Printing.layoutPdf(
       name: 'cierre-caja-${widget.session.id.substring(0, 8)}',
@@ -53,6 +56,30 @@ class _CashClosureDetailDialogState
         widthMm: widthMm,
         branchName: branchName,
         cashierName: userInfo?.displayName,
+        // Sin permiso de cuadre el papel tampoco lo lleva: si no, el cierre a
+        // ciegas se rompe con solo darle a imprimir.
+        includeReconciliation: canSeeReconciliation,
+      ),
+    );
+  }
+
+  /// Reimprime el comprobante de EFECTIVO CONTADO de un cierre viejo, con el
+  /// desglose por denominación que guardó el cajero (migración 85). Es el
+  /// papel que él firma, no el cuadre: no lleva esperado ni diferencia, así
+  /// que también sirve para quien cierra a ciegas.
+  void _printCashCount() {
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+
+    Printing.layoutPdf(
+      name: 'efectivo-contado-${widget.session.id.substring(0, 8)}',
+      onLayout: (_) => const CashClosurePdfBuilder().buildCashCountBreakdown(
+        denominations: widget.session.closingBreakdown,
+        countedTotal: widget.session.closingAmount ?? 0,
+        widthMm: 80,
+        openedAt: widget.session.openedAt,
+        closedAt: widget.session.closedAt,
+        branchName: branchName,
+        notes: widget.session.notes,
       ),
     );
   }
@@ -94,6 +121,11 @@ class _CashClosureDetailDialogState
             return _DialogBody(
               session: widget.session,
               bundle: bundle,
+              showReconciliation:
+                  ref.watch(canViewCashReconciliationProvider),
+              onPrintCashCount: widget.session.closingBreakdown.isEmpty
+                  ? null
+                  : _printCashCount,
               onPrint58: () => _print(58, bundle),
               onPrint80: () => _print(80, bundle),
             );
@@ -115,12 +147,22 @@ class _DialogBody extends StatelessWidget {
   const _DialogBody({
     required this.session,
     required this.bundle,
+    required this.showReconciliation,
+    required this.onPrintCashCount,
     required this.onPrint58,
     required this.onPrint80,
   });
 
+  /// Si es false se oculta el cuadre (esperado, diferencia, totales por
+  /// método y movimientos) y solo queda apertura, conteo y notas.
+  final bool showReconciliation;
+
   final CashSessionEntity session;
   final _DetailBundle bundle;
+  /// Reimprime el desglose por denominación. Null en cierres viejos, que se
+  /// guardaron antes de que el conteo se persistiera.
+  final VoidCallback? onPrintCashCount;
+
   final VoidCallback onPrint58;
   final VoidCallback onPrint80;
 
@@ -189,31 +231,33 @@ class _DialogBody extends StatelessWidget {
                 // Orden acordado con el dueño: apertura → venta → desglose de
                 // cobro → gastos → salidas de efectivo → esperado.
                 _kv('Apertura', money(session.openingAmount)),
-                _kv('Total de venta', money(metrics.salesTotal)),
-                _kv('Ingreso efectivo', money(metrics.cashPayments)),
-                _kv('Transferencia', money(metrics.transferPayments)),
-                _kv('Tarjeta', money(metrics.cardPayments)),
-                _kv('Crédito', money(metrics.creditGenerated)),
-                _kv('Otro', money(metrics.otherPayments)),
-                _kv('Gastos', money(metrics.totalExpenses)),
-                _kv('  En efectivo', money(metrics.cashExpenses)),
-                const SizedBox(height: 12),
-                // Salidas de efectivo, para poder seguir el cuadre a mano.
-                _kv('Efectivo sacado de caja',
-                    money(metrics.cashWithdrawnForChange)),
-                _kv('Devoluciones', money(metrics.cashRefunds)),
-                // Movimientos manuales: entran al esperado (los depósitos
-                // suman, las sangrías restan). Se listan aquí para poder
-                // seguir el cuadre a mano.
-                _kv('Efectivo agregado', money(metrics.cashDeposits)),
-                _kv('Sangrías', money(metrics.cashWithdrawals)),
-                if (metrics.cashAdjustments != 0)
-                  _kv('Ajustes de caja', money(metrics.cashAdjustments)),
-                _kv('Esperado en caja', money(expectedCash), bold: true),
+                if (showReconciliation) ...[
+                  _kv('Total de venta', money(metrics.salesTotal)),
+                  _kv('Ingreso efectivo', money(metrics.cashPayments)),
+                  _kv('Transferencia', money(metrics.transferPayments)),
+                  _kv('Tarjeta', money(metrics.cardPayments)),
+                  _kv('Crédito', money(metrics.creditGenerated)),
+                  _kv('Otro', money(metrics.otherPayments)),
+                  _kv('Gastos', money(metrics.totalExpenses)),
+                  _kv('  En efectivo', money(metrics.cashExpenses)),
+                  const SizedBox(height: 12),
+                  // Salidas de efectivo, para poder seguir el cuadre a mano.
+                  _kv('Efectivo sacado de caja',
+                      money(metrics.cashWithdrawnForChange)),
+                  _kv('Devoluciones', money(metrics.cashRefunds)),
+                  // Movimientos manuales: entran al esperado (los depósitos
+                  // suman, las sangrías restan). Se listan aquí para poder
+                  // seguir el cuadre a mano.
+                  _kv('Efectivo agregado', money(metrics.cashDeposits)),
+                  _kv('Sangrías', money(metrics.cashWithdrawals)),
+                  if (metrics.cashAdjustments != 0)
+                    _kv('Ajustes de caja', money(metrics.cashAdjustments)),
+                  _kv('Esperado en caja', money(expectedCash), bold: true),
+                ],
                 if (session.closingAmount != null)
                   _kv('Conteo cierre', money(session.closingAmount!),
                       bold: true),
-                if (diff != null)
+                if (showReconciliation && diff != null)
                   _kv(
                     'Diferencia',
                     money(diff),
@@ -221,7 +265,7 @@ class _DialogBody extends StatelessWidget {
                     valueColor:
                         diff < 0 ? AppTokens.destructive : const Color(0xFF16A34A),
                   ),
-                if (bundle.movements.isNotEmpty) ...[
+                if (showReconciliation && bundle.movements.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   _section('Movimientos manuales'),
                   for (final mv in bundle.movements)
@@ -281,6 +325,14 @@ class _DialogBody extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              if (onPrintCashCount != null) ...[
+                OutlinedButton.icon(
+                  onPressed: onPrintCashCount,
+                  icon: const Icon(Icons.calculate_outlined, size: 18),
+                  label: const Text('Desglose de efectivo'),
+                ),
+                const Spacer(),
+              ],
               OutlinedButton.icon(
                 onPressed: onPrint58,
                 icon: const Icon(Icons.receipt_long, size: 18),

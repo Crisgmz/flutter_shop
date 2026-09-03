@@ -65,6 +65,14 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   String _paymentMethod = 'cash';
   String? _clientId;
 
+  /// Nivel de precio elegido A MANO para esta venta ('tier_1'..'tier_10', o
+  /// 'retail' para el precio base). Null = seguir el nivel del cliente.
+  ///
+  /// Existe porque la mayoría de las ventas de mostrador van con "Cliente
+  /// General": sin esto no había forma de cobrar precio mayorista sin cambiar
+  /// el cliente o corregir cada precio a mano.
+  String? _priceTierOverride;
+
   /// Id de la cuenta GUARDADA (venta `pending`) reabierta en este carrito. Si
   /// no es null, al completar/guardar el POS descarta esa pendiente para
   /// devolver su stock reservado y no duplicarla. Viaja en el draft.
@@ -459,6 +467,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                         fontSize: 16,
                       ),
                     ),
+                    _PriceTierSelector(
+                      tiers: _namedPriceTiers(),
+                      selected: _priceTierOverride,
+                      clientTierLabel: _clientTierLabel(),
+                      onChanged: _onPriceTierChanged,
+                    ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       height: 32,
@@ -780,6 +794,55 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     return ref.read(salesClientsByIdProvider)[_clientId!]?.priceTier;
   }
 
+  /// Nivel de precio que rige el carrito: manda el elegido a mano y, si no hay
+  /// ninguno, el del cliente. Es lo que hace que el selector funcione igual
+  /// con "Cliente General" que con un mayorista registrado.
+  String? _effectiveTier() => _priceTierOverride ?? _currentClientTier();
+
+  /// Niveles con nombre configurado en `app_settings.sale_price_types`,
+  /// como pares (tier_N, etiqueta). Los slots sin nombre no se ofrecen.
+  List<MapEntry<String, String>> _namedPriceTiers() {
+    final types =
+        ref.watch(appSettingsProvider).valueOrNull?.salePriceTypes ?? const [];
+    final entries = <MapEntry<String, String>>[];
+    for (var i = 0; i < types.length && i < 10; i++) {
+      final label = types[i].toString().trim();
+      if (label.isEmpty) continue;
+      entries.add(MapEntry('tier_${i + 1}', label));
+    }
+    return entries;
+  }
+
+  /// Etiqueta del nivel que trae el cliente seleccionado, para que la opción
+  /// "por defecto" diga a qué precio va a cobrar realmente.
+  String? _clientTierLabel() {
+    final tier = _currentClientTier();
+    if (tier == null || tier.isEmpty || tier == 'retail') return null;
+    for (final entry in _namedPriceTiers()) {
+      if (entry.key == tier) return entry.value;
+    }
+    return null;
+  }
+
+  /// Cambia el nivel de precio de la venta y reprecia todo el carrito.
+  void _onPriceTierChanged(String? tier) {
+    setState(() {
+      _priceTierOverride = tier;
+      final effective = tier ?? _currentClientTier();
+      for (var i = 0; i < _cart.length; i++) {
+        final item = _cart[i];
+        _cart[i] = SaleCartItem(
+          product: item.product,
+          quantity: item.quantity,
+          unitPrice: item.product.priceFor(effective),
+          discountPct: item.discountPct,
+          imeis: item.imeis,
+        );
+      }
+    });
+    _persistDraft();
+  }
+
   /// Si el setting global "No permitir venta sin stock" está apagado, el
   /// cliente NO bloquea ventas por falta de stock — deja que el RPC lo
   /// valide (o lo permita). Si está prendido, refuerza la validación en UI
@@ -820,8 +883,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       ).showSnackBar(const SnackBar(content: Text('Sin stock suficiente')));
       return;
     }
-    final tier = _currentClientTier();
-    final price = product.priceFor(tier);
+    final price = product.priceFor(_effectiveTier());
     setState(() {
       if (index == -1) {
         _cart.add(
@@ -937,8 +999,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
   /// Agrega (o mezcla) una línea de producto con IMEIs seleccionados.
   void _addImeiToCart(SalesProduct product, List<String> imeis) {
-    final tier = _currentClientTier();
-    final price = product.priceFor(tier);
+    final price = product.priceFor(_effectiveTier());
     setState(() {
       final index = _cart.indexWhere((it) => it.product.id == product.id);
       if (index == -1) {
@@ -1136,13 +1197,17 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// Cuando cambia el cliente, re-precia las líneas del carrito según el
   /// nuevo tier. Si el nuevo cliente es null o "retail", vuelve al precio
   /// base de cada producto.
+  ///
+  /// Un nivel elegido a mano en el selector le gana al del cliente: si el
+  /// cajero puso "mayorista", cambiar de cliente no debe devolver los precios.
   void _onClientChanged(String? newId) {
     setState(() {
       _clientId = newId;
       if (_cart.isEmpty) return;
-      final tier = newId == null
-          ? null
-          : ref.read(salesClientsByIdProvider)[newId]?.priceTier;
+      final tier = _priceTierOverride ??
+          (newId == null
+              ? null
+              : ref.read(salesClientsByIdProvider)[newId]?.priceTier);
       for (var i = 0; i < _cart.length; i++) {
         final item = _cart[i];
         _cart[i] = SaleCartItem(
@@ -1312,6 +1377,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _notesController.clear();
       _clientId = null;
       _paymentMethod = 'cash';
+      _priceTierOverride = null;
       _reopenedHeldSaleId = null;
       _returnOriginalSaleId = null;
       _returnOriginalSaleNumber = null;
@@ -3468,4 +3534,78 @@ class _ClientOption {
   const _ClientOption({required this.id, required this.label});
   final String? id;
   final String label;
+}
+
+/// Selector de nivel de precio del POS. Lista los niveles con nombre en
+/// `app_settings.sale_price_types` ("mayorista", "menorista", …) más la opción
+/// por defecto. Al elegir uno, el carrito se reprecia con el precio de ese
+/// nivel del producto, sin importar qué cliente esté seleccionado.
+///
+/// Si el catálogo no tiene ningún nivel configurado no se muestra nada: sería
+/// un desplegable con una sola opción.
+class _PriceTierSelector extends StatelessWidget {
+  const _PriceTierSelector({
+    required this.tiers,
+    required this.selected,
+    required this.clientTierLabel,
+    required this.onChanged,
+  });
+
+  final List<MapEntry<String, String>> tiers;
+
+  /// Nivel elegido a mano. Null = "por defecto" (el del cliente, o el precio
+  /// base si el cliente no tiene ninguno).
+  final String? selected;
+
+  /// Nivel que trae el cliente, para rotular la opción por defecto.
+  final String? clientTierLabel;
+
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (tiers.isEmpty) return const SizedBox.shrink();
+
+    final defaultLabel = clientTierLabel == null
+        ? 'Precio: por defecto'
+        : 'Precio: $clientTierLabel (cliente)';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      height: 32,
+      margin: const EdgeInsets.only(left: 8),
+      decoration: BoxDecoration(
+        color: selected == null
+            ? const Color(0xFFF1F5F9)
+            : AppTokens.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String?>(
+          value: selected,
+          isDense: true,
+          icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: selected == null
+                ? const Color(0xFF475569)
+                : AppTokens.primary,
+          ),
+          items: [
+            DropdownMenuItem<String?>(
+              value: null,
+              child: Text(defaultLabel),
+            ),
+            for (final tier in tiers)
+              DropdownMenuItem<String?>(
+                value: tier.key,
+                child: Text('Precio: ${tier.value}'),
+              ),
+          ],
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
 }

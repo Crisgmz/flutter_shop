@@ -44,6 +44,10 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
           final accessAsync = ref.watch(shellAccessProfileProvider);
           final role = accessAsync.valueOrNull?.roleCode;
           final canSeeAllCashiers = role == 'admin' || role == 'supervisor';
+          // Mismo permiso que oculta los KPIs: la tabla de sesiones no puede
+          // filtrar el esperado y la diferencia por la puerta de atrás.
+          final canSeeReconciliation =
+              ref.watch(canViewCashReconciliationProvider);
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -68,15 +72,21 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                         ),
                       )
                     : DataTable(
-                        columns: const [
-                          DataColumn(label: Text('Apertura')),
-                          DataColumn(label: Text('Cierre')),
-                          DataColumn(label: Text('Estado')),
-                          DataColumn(label: Text('Monto apertura'), numeric: true),
-                          DataColumn(label: Text('Esperado'), numeric: true),
-                          DataColumn(label: Text('Conteo cierre'), numeric: true),
-                          DataColumn(label: Text('Diferencia'), numeric: true),
-                          DataColumn(label: Text('Acciones')),
+                        columns: [
+                          const DataColumn(label: Text('Apertura')),
+                          const DataColumn(label: Text('Cierre')),
+                          const DataColumn(label: Text('Estado')),
+                          const DataColumn(
+                              label: Text('Monto apertura'), numeric: true),
+                          if (canSeeReconciliation)
+                            const DataColumn(
+                                label: Text('Esperado'), numeric: true),
+                          const DataColumn(
+                              label: Text('Conteo cierre'), numeric: true),
+                          if (canSeeReconciliation)
+                            const DataColumn(
+                                label: Text('Diferencia'), numeric: true),
+                          const DataColumn(label: Text('Acciones')),
                         ],
                         rows: data.recentSessions
                             .map(
@@ -93,27 +103,30 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                     status: session.isOpen ? 'open' : 'closed',
                                   )),
                                   DataCell(Text(money(session.openingAmount))),
-                                  DataCell(_expectedCell(
-                                    session,
-                                    data.expectedByOpenSessionId,
-                                  )),
+                                  if (canSeeReconciliation)
+                                    DataCell(_expectedCell(
+                                      session,
+                                      data.expectedByOpenSessionId,
+                                    )),
                                   DataCell(Text(
                                     session.closingAmount == null
                                         ? '-'
                                         : money(session.closingAmount!),
                                   )),
-                                  DataCell(Text(
-                                    session.differenceAmount == null
-                                        ? '-'
-                                        : money(session.differenceAmount!),
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                      color: session.differenceAmount != null &&
-                                              session.differenceAmount! < 0
-                                          ? AppTokens.destructive
-                                          : null,
-                                    ),
-                                  )),
+                                  if (canSeeReconciliation)
+                                    DataCell(Text(
+                                      session.differenceAmount == null
+                                          ? '-'
+                                          : money(session.differenceAmount!),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color:
+                                            session.differenceAmount != null &&
+                                                    session.differenceAmount! < 0
+                                                ? AppTokens.destructive
+                                                : null,
+                                      ),
+                                    )),
                                   DataCell(
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
@@ -291,6 +304,12 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     final expectedCash =
         metrics?.expectedCashFromOpening(openSession.openingAmount);
 
+    // Cierre a ciegas: sin el permiso de cuadre, el cajero no ve ni el
+    // esperado ni los totales por método. Solo cuenta su efectivo y lo
+    // declara — que es exactamente el punto de que no sepa si sobra.
+    final canSeeReconciliation =
+        ref.watch(canViewCashReconciliationProvider);
+
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -342,6 +361,9 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
             style: const TextStyle(color: AppTokens.mutedForeground),
           ),
           const SizedBox(height: AppTokens.s16),
+          if (!canSeeReconciliation)
+            _BlindCloseNotice(openingAmount: openSession.openingAmount)
+          else
           LayoutBuilder(
             builder: (context, constraints) {
               final cards = [
@@ -520,7 +542,19 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
       ref.invalidate(cashRegisterDataProvider);
       ref.invalidate(myOpenCashSessionsProvider);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Caja cerrada correctamente.')),
+        SnackBar(
+          content: const Text('Caja cerrada correctamente.'),
+          // El cajero se queda con su comprobante firmado de lo que entregó.
+          // Es lo único que puede imprimir cuando no ve el cuadre, y por eso
+          // se ofrece acá mismo y no en el detalle del cierre.
+          action: input.denominations.isEmpty
+              ? null
+              : SnackBarAction(
+                  label: 'Imprimir desglose',
+                  onPressed: () => _printCashCount(input),
+                ),
+          duration: const Duration(seconds: 8),
+        ),
       );
     } catch (error) {
       if (!mounted) return;
@@ -528,6 +562,30 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
         context,
       ).showSnackBar(SnackBar(content: Text('No se pudo cerrar caja: $error')));
     }
+  }
+
+  /// Imprime el comprobante de EFECTIVO CONTADO del cierre recién hecho:
+  /// denominaciones, total y líneas de firma. Sin esperado ni diferencia, así
+  /// que sirve igual para un cajero que cierra a ciegas.
+  ///
+  /// Como en `_onReprint`, `Printing.layoutPdf` se llama de una sin awaits
+  /// previos para no perder el "user gesture" que exige el navegador.
+  void _printCashCount(CloseCashInput input) {
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
+
+    Printing.layoutPdf(
+      name: 'efectivo-contado',
+      onLayout: (_) => const CashClosurePdfBuilder().buildCashCountBreakdown(
+        denominations: input.denominations,
+        countedTotal: input.closingAmount,
+        widthMm: 80,
+        closedAt: DateTime.now(),
+        branchName: branchName,
+        cashierName: userInfo?.displayName,
+        notes: input.notes,
+      ),
+    );
   }
 
   Future<void> _onViewDetail(CashSessionEntity session) async {
@@ -554,6 +612,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
     final repo = ref.read(cashRegisterRepositoryProvider);
     final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
     final userInfo = ref.read(shellUserInfoProvider).valueOrNull;
+    final canSeeReconciliation = ref.read(canViewCashReconciliationProvider);
 
     try {
       await Printing.layoutPdf(
@@ -568,6 +627,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
             widthMm: widthMm,
             branchName: branchName,
             cashierName: userInfo?.displayName,
+            includeReconciliation: canSeeReconciliation,
           );
         },
       );
@@ -1045,6 +1105,12 @@ class _CloseSessionDialogState extends State<_CloseSessionDialog> {
       CloseCashInput(
         closingAmount: _total,
         notes: _notesController.text,
+        // El desglose viaja con el cierre para poder imprimir el comprobante
+        // de efectivo contado que firma el cajero.
+        denominations: {
+          for (final d in _denoms)
+            if (_qtyOf(d) > 0) d: _qtyOf(d),
+        },
       ),
     );
   }
@@ -1182,6 +1248,61 @@ class _AllCashiersPanel extends ConsumerWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// Lo que ve el cajero cuando no tiene permiso de cuadre: sabe con cuánto
+/// abrió (su responsabilidad) y nada más. Sin esperado, sin totales por
+/// método, sin diferencia.
+class _BlindCloseNotice extends StatelessWidget {
+  const _BlindCloseNotice({required this.openingAmount});
+
+  final double openingAmount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppTokens.s16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(AppTokens.radius),
+        border: Border.all(color: AppTokens.border),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.lock_outline,
+            size: 20,
+            color: AppTokens.mutedForeground,
+          ),
+          const SizedBox(width: AppTokens.s12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Apertura: ${money(openingAmount)}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'Al cerrar, cuenta el efectivo por denominación y decláralo. '
+                  'Puedes imprimir tu desglose.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTokens.mutedForeground,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

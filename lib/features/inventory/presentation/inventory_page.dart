@@ -11,6 +11,7 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../settings/presentation/app_settings_providers.dart';
 import '../data/file_io_helper.dart';
 import '../data/inventory_excel_service.dart';
 import '../data/inventory_repository.dart';
@@ -1769,11 +1770,26 @@ class _ImportInventoryDialogState
 
       final isCsv = (_pickedName ?? '').toLowerCase().endsWith('.csv');
       final service = InventoryExcelService();
+      // Los productos importados nacen con el mismo default global de ITBIS
+      // que los creados a mano (app_settings.tax_default_price_includes_tax).
+      final taxIncluded = ref
+              .read(appSettingsProvider)
+              .valueOrNull
+              ?.taxDefaultPriceIncludesTax ??
+          false;
       final InventoryImportParseResult parsed;
       try {
         parsed = isCsv
-            ? service.parseImportCsv(bytes: bytes, categories: categories)
-            : service.parseImport(bytes: bytes, categories: categories);
+            ? service.parseImportCsv(
+                bytes: bytes,
+                categories: categories,
+                defaultPriceIncludesTax: taxIncluded,
+              )
+            : service.parseImport(
+                bytes: bytes,
+                categories: categories,
+                defaultPriceIncludesTax: taxIncluded,
+              );
       } catch (error) {
         _snack('Archivo inválido: $error');
         return;

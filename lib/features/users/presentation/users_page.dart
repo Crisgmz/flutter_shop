@@ -105,6 +105,10 @@ class _UsersPageState extends ConsumerState<UsersPage> {
         children: [
           _buildFilterBar(showInactive),
           const SizedBox(height: AppTokens.s24),
+          // Empleados que existen pero el RLS esconde por no tener sucursal.
+          // Sin este aviso el admin cree que la creación falló (o que hay un
+          // tope de usuarios) cuando en realidad están ahí, invisibles.
+          _OrphanEmployeesBanner(onAttached: _refresh),
           usersAsync.when(
             data: (users) {
               final filtered = users
@@ -502,6 +506,7 @@ class _UsersPageState extends ConsumerState<UsersPage> {
   Future<void> _refresh() async {
     ref.invalidate(usersListProvider);
     ref.invalidate(usersBranchOptionsProvider);
+    ref.invalidate(orphanEmployeesProvider);
   }
 
   Future<void> _onCreateUser() async {
@@ -2299,5 +2304,125 @@ class _ModulePermissionsCard extends StatelessWidget {
   static String _capitalize(String value) {
     if (value.isEmpty) return value;
     return value[0].toUpperCase() + value.substring(1);
+  }
+}
+
+/// Aviso de empleados sin sucursal asignada.
+///
+/// Un perfil sin `users_branches` activa existe en la base pero el RLS de
+/// `profiles` no lo devuelve, así que el listado se queda corto sin explicar
+/// por qué — el síntoma que se reportó como "no coge más de 5 usuarios".
+/// Este banner los saca a la luz y permite devolverlos a la sucursal actual.
+class _OrphanEmployeesBanner extends ConsumerStatefulWidget {
+  const _OrphanEmployeesBanner({required this.onAttached});
+
+  final Future<void> Function() onAttached;
+
+  @override
+  ConsumerState<_OrphanEmployeesBanner> createState() =>
+      _OrphanEmployeesBannerState();
+}
+
+class _OrphanEmployeesBannerState
+    extends ConsumerState<_OrphanEmployeesBanner> {
+  final Set<String> _working = {};
+
+  Future<void> _attach(OrphanEmployee employee) async {
+    setState(() => _working.add(employee.id));
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref
+          .read(usersRepositoryProvider)
+          .attachEmployeeToBranch(userId: employee.id);
+      await widget.onAttached();
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('${employee.fullName} ya aparece en el listado.'),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('No se pudo asignar: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _working.remove(employee.id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final orphans = ref.watch(orphanEmployeesProvider).valueOrNull;
+    if (orphans == null || orphans.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: AppTokens.s16),
+      padding: const EdgeInsets.all(AppTokens.s16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(AppTokens.radius),
+        border: Border.all(color: AppTokens.warning),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded,
+                  size: 20, color: AppTokens.warning),
+              const SizedBox(width: AppTokens.s8),
+              Expanded(
+                child: Text(
+                  orphans.length == 1
+                      ? '1 usuario creado sin sucursal'
+                      : '${orphans.length} usuarios creados sin sucursal',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Existen en el sistema pero no salen en el listado porque no '
+            'están asignados a ninguna sucursal. Asígnalos a esta sucursal '
+            'para poder administrarlos.',
+            style: TextStyle(fontSize: 12, color: AppTokens.mutedForeground),
+          ),
+          const SizedBox(height: AppTokens.s12),
+          for (final employee in orphans)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      employee.email.isEmpty
+                          ? employee.fullName
+                          : '${employee.fullName} · ${employee.email}',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(width: AppTokens.s8),
+                  OutlinedButton(
+                    onPressed: _working.contains(employee.id)
+                        ? null
+                        : () => _attach(employee),
+                    child: Text(
+                      _working.contains(employee.id)
+                          ? 'Asignando…'
+                          : 'Asignar a esta sucursal',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }

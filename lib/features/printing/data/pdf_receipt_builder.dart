@@ -142,32 +142,71 @@ class PdfReceiptBuilder {
     return doc.save();
   }
 
+  /// Largo máximo de una página de ticket antes de partirlo en varias.
+  ///
+  /// Los drivers de impresora térmica en Windows traen un tamaño de papel fijo
+  /// (típicamente 80 × 297 mm). Un ticket más largo que eso se imprime
+  /// truncado: salen los primeros ítems y se pierden los totales. Al pasar de
+  /// este largo, el ticket se reparte en varias páginas que sí entran.
+  static const _thermalMaxPageHeight = 297 * PdfPageFormat.mm;
+
   /// Construye el PDF en formato ticket térmico ~80mm de ancho.
   /// Layout vertical: logo → empresa centrada → bloque metadata derecha →
   /// "Factura a:" → cliente → items → totales → barcode.
+  ///
+  /// Una venta corta sale como una sola página del alto justo del contenido
+  /// (rollo continuo, sin papel de más). Una factura larga se pagina, porque
+  /// si no la impresora la corta a la mitad.
   Future<Uint8List> buildThermalBytes(PrintDocumentData data) async {
-    final doc = pw.Document(
+    final logoBytes =
+        await _shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
+
+    // 80mm = 226.77pt. Primer intento: altura infinita, que el paquete resuelve
+    // midiendo el contenido — es lo que da el ticket ajustado.
+    final singlePage = pw.Document(
       title: data.documentNumber,
       author: data.branch.name,
     );
-
-    // 80mm = 226.77pt; usamos altura infinita (roll continuo).
-    final format = PdfPageFormat(
-      80 * PdfPageFormat.mm,
-      double.infinity,
-      marginAll: 8 * PdfPageFormat.mm,
-    );
-
-    final logoBytes = await _shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
-
-    doc.addPage(
+    singlePage.addPage(
       pw.Page(
-        pageFormat: format,
+        pageFormat: PdfPageFormat(
+          80 * PdfPageFormat.mm,
+          double.infinity,
+          marginAll: 8 * PdfPageFormat.mm,
+        ),
         build: (context) => _buildThermalContent(data, logoBytes),
       ),
     );
+    final singleBytes = await singlePage.save();
 
-    return doc.save();
+    // `save()` ya resolvió el alto real: recién ahora se sabe si el ticket
+    // cabe de una tirada.
+    final pages = singlePage.document.pdfPageList.pages;
+    final height = pages.isEmpty ? 0.0 : pages.first.pageFormat.height;
+    if (height <= _thermalMaxPageHeight) {
+      return singleBytes;
+    }
+
+    // Ticket largo: se reparte en páginas de alto fijo. `MultiPage` corta entre
+    // bloques, así que los totales nunca quedan fuera del papel.
+    final paged = pw.Document(
+      title: data.documentNumber,
+      author: data.branch.name,
+    );
+    paged.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat(
+          80 * PdfPageFormat.mm,
+          _thermalMaxPageHeight,
+          marginAll: 8 * PdfPageFormat.mm,
+        ),
+        // Sin tope práctico: una factura de mayoreo puede llevar decenas de
+        // líneas y el default de 20 páginas lanzaría excepción.
+        maxPages: 200,
+        build: (context) => _thermalBlocks(data, logoBytes),
+      ),
+    );
+    return paged.save();
   }
 
   pw.Widget _buildContent(
@@ -220,6 +259,19 @@ class PdfReceiptBuilder {
   // ────────────────────────────────────────────────────────────────────────
 
   pw.Widget _buildThermalContent(PrintDocumentData data, Uint8List? logoBytes) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: _thermalBlocks(data, logoBytes),
+    );
+  }
+
+  /// Los bloques del ticket, en orden, sin envolverlos en un Column. Los
+  /// necesita sueltos `MultiPage`, que reparte la lista entre páginas cuando
+  /// el ticket es más largo de lo que el rollo imprime de una vez.
+  List<pw.Widget> _thermalBlocks(
+    PrintDocumentData data,
+    Uint8List? logoBytes,
+  ) {
     final mutedColor = PdfColors.grey700;
     final base = const pw.TextStyle(fontSize: 8.5);
     final muted = pw.TextStyle(fontSize: 8.5, color: mutedColor);
@@ -243,9 +295,7 @@ class PdfReceiptBuilder {
             ? 'Se facturará como:'
             : 'Tipo comprobante:';
 
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-      children: [
+    return [
         // ── 1) Encabezado centrado: logo + empresa + dirección + teléfono ──
         if (logoBytes != null)
           pw.Center(
@@ -407,8 +457,7 @@ class PdfReceiptBuilder {
             ),
           ),
         ],
-      ],
-    );
+    ];
   }
 
   /// Bloque e-CF de la representación impresa: QR de verificación DGII,

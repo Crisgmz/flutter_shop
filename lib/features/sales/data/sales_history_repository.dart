@@ -1,5 +1,25 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'sales_repository.dart' show SalePaymentLine;
+
+export 'sales_repository.dart' show SalePaymentLine;
+
+/// Resultado de reescribir la forma de cobro de una venta ([SalesHistoryRepository.setSalePayments]).
+class SalePaymentsResult {
+  const SalePaymentsResult({
+    required this.status,
+    required this.paidAmount,
+    required this.balanceDue,
+  });
+
+  final String status;
+  final double paidAmount;
+  final double balanceDue;
+
+  /// La venta quedó con saldo: aparece en Cuentas por cobrar.
+  bool get isCredit => balanceDue > 0;
+}
+
 class SalesHistoryRow {
   SalesHistoryRow({
     required this.id,
@@ -510,18 +530,28 @@ class SalesHistoryRepository {
       }
     }
 
-    // Método de pago primario: tomamos el de la primera fila de payments.
-    // Si la venta tiene varios pagos con métodos distintos, la UI lo va a
-    // mostrar como el primero registrado.
+    // TODAS las filas de pago de la venta: el editor necesita el desglose
+    // completo para poder corregirlo sin aplastar un pago mixto.
     final paymentRows = await _client
         .from('payments')
-        .select('payment_method')
+        .select('payment_method, amount')
         .eq('sale_id', saleId)
-        .order('created_at')
-        .limit(1);
-    final paymentMethod = paymentRows.isEmpty
-        ? null
-        : (paymentRows.first as Map)['payment_method']?.toString();
+        .eq('branch_id', branchId)
+        .order('created_at');
+
+    final payments = paymentRows
+        .map((row) {
+          final item = Map<String, dynamic>.from(row as Map);
+          return SalesHistoryPayment(
+            method: (item['payment_method'] ?? 'cash').toString(),
+            amount: _d(item['amount']),
+          );
+        })
+        .toList(growable: false);
+
+    // Método primario (el primero registrado), que es lo que muestran el
+    // listado y la reimpresión cuando no hace falta el desglose.
+    final paymentMethod = payments.isEmpty ? null : payments.first.method;
 
     return SalesHistoryDetail(
       sale: SalesHistoryRow.fromMap({
@@ -537,6 +567,7 @@ class SalesHistoryRepository {
       subtotal: _d(sale['subtotal']),
       taxAmount: _d(sale['tax_amount']),
       paymentMethod: paymentMethod,
+      payments: payments,
     );
   }
 
@@ -613,6 +644,11 @@ class SalesHistoryRepository {
 
   /// Cambia el método de pago de todos los `payments` de una venta.
   /// Llama al RPC `update_sale_payment_method` que valida acceso y rol.
+  ///
+  /// Solo corrige la ETIQUETA del método sin tocar montos ni estado. Para
+  /// cambiar cómo se cobró de verdad (pasar a crédito, dividir en varios
+  /// métodos, cobrar un crédito) usar [setSalePayments], que además recalcula
+  /// balance, estado y saldo del cliente.
   Future<int> updateSalePaymentMethod({
     required String saleId,
     required String paymentMethod,
@@ -626,6 +662,35 @@ class SalesHistoryRepository {
     );
     if (result is int) return result;
     return int.tryParse(result?.toString() ?? '') ?? 0;
+  }
+
+  /// Reemplaza la forma de cobro completa de una venta (migración 82).
+  ///
+  /// [payments] son las líneas {método, monto} que quedan cobradas. Lo que no
+  /// cubran queda como saldo pendiente: la venta pasa a `credit`, entra en
+  /// Cuentas por cobrar y suma al balance del cliente. Una lista vacía deja la
+  /// venta entera a crédito.
+  Future<SalePaymentsResult> setSalePayments({
+    required String saleId,
+    required List<SalePaymentLine> payments,
+    int? creditDueDays,
+  }) async {
+    final result = await _client.rpc(
+      'set_sale_payments',
+      params: {
+        'p_sale_id': saleId,
+        'p_payments':
+            payments.map((p) => p.toJson()).toList(growable: false),
+        'p_credit_due_days': ?creditDueDays,
+      },
+    );
+
+    final map = Map<String, dynamic>.from(result as Map);
+    return SalePaymentsResult(
+      status: (map['status'] ?? '').toString(),
+      paidAmount: _d(map['paid_amount']),
+      balanceDue: _d(map['balance_due']),
+    );
   }
 
   /// Cantidad de líneas por documento. Sirve igual para `sale_items`
@@ -781,6 +846,14 @@ class SalesHistoryRepository {
   }
 }
 
+/// Una fila de `payments` de la venta, para el editor de forma de cobro.
+class SalesHistoryPayment {
+  const SalesHistoryPayment({required this.method, required this.amount});
+
+  final String method;
+  final double amount;
+}
+
 class SalesHistoryDetail {
   SalesHistoryDetail({
     required this.sale,
@@ -788,6 +861,7 @@ class SalesHistoryDetail {
     required this.subtotal,
     required this.taxAmount,
     this.paymentMethod,
+    this.payments = const <SalesHistoryPayment>[],
   });
 
   final SalesHistoryRow sale;
@@ -798,6 +872,11 @@ class SalesHistoryDetail {
   /// Método de pago primario de la venta (de la primera fila en `payments`).
   /// Null si la venta no tiene pagos registrados todavía.
   final String? paymentMethod;
+
+  /// TODAS las filas de `payments` de la venta. Una venta con pago mixto tiene
+  /// varias; el editor las carga tal cual para no destruir el desglose al
+  /// guardar (antes solo se leía la primera y se reescribían todas iguales).
+  final List<SalesHistoryPayment> payments;
 }
 
 class SalesEditResult {

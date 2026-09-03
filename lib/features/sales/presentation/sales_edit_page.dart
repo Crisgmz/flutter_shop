@@ -11,6 +11,8 @@ import '../data/sales_history_repository.dart';
 import '../data/sales_repository.dart';
 import '../domain/sale_checkout_service.dart'
     show fromCents, grossCents, taxCents, toCents;
+import '../../cash_register/presentation/cash_register_providers.dart';
+import '../../cobros/presentation/cobros_providers.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
@@ -97,6 +99,37 @@ class _EditCartItem {
       };
 }
 
+/// Una línea de cobro editable (monto + método), equivalente a las filas del
+/// diálogo "Completar venta" del POS.
+class _PayLine {
+  _PayLine({required this.method, double amount = 0})
+      : amount = TextEditingController(text: _fmtAmount(amount));
+
+  String method;
+  final TextEditingController amount;
+
+  double get value =>
+      double.tryParse(amount.text.trim().replaceAll(',', '')) ?? 0;
+
+  void dispose() => amount.dispose();
+
+  static String _fmtAmount(double v) {
+    if (v <= 0) return '';
+    return v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+  }
+}
+
+/// Métodos que se pueden cobrar. `credit` no está: lo que no cubran estas
+/// líneas queda automáticamente como saldo pendiente, que es lo mismo pero
+/// sin pedirle al usuario que cuadre dos veces el mismo número.
+const List<MapEntry<String, String>> _payMethods = [
+  MapEntry('cash', 'Efectivo'),
+  MapEntry('transfer', 'Transferencia'),
+  MapEntry('card', 'Tarjeta'),
+  MapEntry('mobile', 'Pago móvil'),
+  MapEntry('other', 'Otro'),
+];
+
 class SalesEditPage extends ConsumerStatefulWidget {
   const SalesEditPage({super.key, required this.saleId});
 
@@ -115,16 +148,73 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
   final List<_EditCartItem> _items = [];
   final _notesCtrl = TextEditingController();
   String? _clientId;
-  String _paymentMethod = 'cash';
-  String _originalPaymentMethod = 'cash';
   bool _initialized = false;
   bool _submitting = false;
+
+  /// Cómo quedó cobrada la venta. Se hidrata con las filas reales de
+  /// `payments` y se reescribe entera al guardar si el usuario la tocó.
+  final List<_PayLine> _payLines = [];
+
+  /// Mientras nadie toque la forma de cobro no se manda nada al backend: el
+  /// RPC de edición ya ajusta solo el pago de una venta pagada cuando cambia
+  /// el total, y así una venta con abonos no se pisa por abrir el editor.
+  bool _paymentsTouched = false;
 
   @override
   void dispose() {
     _notesCtrl.dispose();
+    for (final line in _payLines) {
+      line.dispose();
+    }
     super.dispose();
   }
+
+  /// Total ya cobrado según las líneas de pago.
+  double get _paid =>
+      _payLines.fold<double>(0, (s, l) => s + (l.value > 0 ? l.value : 0));
+
+  /// Lo que queda debiendo: pasa a Cuentas por cobrar al guardar.
+  double get _pending {
+    final diff = _round2(_total - _paid);
+    return diff > 0 ? diff : 0;
+  }
+
+  bool get _overpaid => _round2(_paid) > _round2(_total);
+
+  void _addPayLine() => setState(() {
+        _paymentsTouched = true;
+        // La línea nueva arranca con lo que falta por cobrar: es el reparto
+        // que el cajero quiere el 90% de las veces.
+        _payLines.add(_PayLine(method: 'cash', amount: _pending));
+      });
+
+  void _removePayLine(int i) => setState(() {
+        _paymentsTouched = true;
+        _payLines.removeAt(i).dispose();
+      });
+
+  /// Deja la venta entera a crédito: sin líneas de cobro, todo el total queda
+  /// pendiente. Es el caso que reportó el usuario (se facturó en efectivo por
+  /// error y en realidad se fio).
+  void _allOnCredit() => setState(() {
+        _paymentsTouched = true;
+        for (final line in _payLines) {
+          line.dispose();
+        }
+        _payLines.clear();
+      });
+
+  /// Marca la venta como cobrada por completo en un solo método.
+  void _markFullyPaid() => setState(() {
+        _paymentsTouched = true;
+        final method = _payLines.isEmpty ? 'cash' : _payLines.first.method;
+        for (final line in _payLines) {
+          line.dispose();
+        }
+        _payLines
+          ..clear()
+          ..add(_PayLine(method: method, amount: _total));
+      });
 
   double get _subtotal =>
       _items.fold<double>(0, (s, it) => s + it.lineSubtotal);
@@ -158,8 +248,19 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
     }
     _clientId = detail.sale.clientId;
     _notesCtrl.text = detail.sale.notes ?? '';
-    _paymentMethod = detail.paymentMethod ?? 'cash';
-    _originalPaymentMethod = _paymentMethod;
+
+    // Forma de cobro: una línea por cada fila real de `payments`. Una venta a
+    // crédito no tiene ninguna, y así arranca con todo pendiente.
+    for (final payment in detail.payments) {
+      _payLines.add(
+        _PayLine(
+          method: _payMethods.any((m) => m.key == payment.method)
+              ? payment.method
+              : 'other',
+          amount: payment.amount,
+        ),
+      );
+    }
   }
 
   Future<void> _addProduct() async {
@@ -227,6 +328,33 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
       }
     }
 
+    // Cobrar de más no tiene forma de guardarse: el vuelto se maneja en el
+    // POS al facturar, no corrigiendo una venta ya hecha.
+    if (_overpaid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Los pagos (${money(_paid)}) superan el total de la venta '
+            '(${money(_total)}).',
+          ),
+        ),
+      );
+      return;
+    }
+
+    // Un saldo pendiente hay que poder cobrárselo a alguien.
+    if (_paymentsTouched && _pending > 0 && _clientId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Una venta con saldo pendiente necesita un cliente. Selecciona el '
+            'cliente o cobra el total.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() => _submitting = true);
     try {
       final repo = ref.read(salesHistoryRepositoryProvider);
@@ -239,23 +367,40 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
         clearNotes: _notesCtrl.text.trim().isEmpty,
       );
 
-      // Si el método de pago cambió, actualizar los payments en una segunda
-      // llamada (el RPC editSale no lo modifica).
-      if (_paymentMethod != _originalPaymentMethod) {
-        await repo.updateSalePaymentMethod(
+      // La forma de cobro va en una segunda llamada: `editSale` recalcula
+      // items y totales, pero no sabe nada de cómo se cobró. Este RPC reescribe
+      // los pagos y con ellos el estado, el balance y el saldo del cliente —
+      // por eso una venta que pasa a crédito ahora sí cae en Cuentas por cobrar.
+      SalePaymentsResult? paymentsResult;
+      if (_paymentsTouched) {
+        paymentsResult = await repo.setSalePayments(
           saleId: widget.saleId,
-          paymentMethod: _paymentMethod,
+          payments: [
+            for (final line in _payLines)
+              if (line.value > 0)
+                SalePaymentLine(method: line.method, amount: line.value),
+          ],
         );
       }
       if (!mounted) return;
       ref.invalidate(salesHistoryPageProvider);
       ref.invalidate(salesHistoryDetailProvider(_detailKey));
       ref.invalidate(salesProductsProvider);
+      // El saldo cambió: Cuentas por cobrar y la caja tienen que releer.
+      if (_paymentsTouched) {
+        ref.invalidate(cobrosReceivablesProvider);
+        ref.invalidate(cobrosPaymentsProvider);
+        ref.invalidate(cashRegisterDataProvider);
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: AppTokens.success,
           content: Text(
-            'Venta actualizada · Total ${money(result.totalAmount)}',
+            paymentsResult != null && paymentsResult.isCredit
+                ? 'Venta actualizada · Total ${money(result.totalAmount)} · '
+                    'Pendiente ${money(paymentsResult.balanceDue)} en Cuentas '
+                    'por cobrar'
+                : 'Venta actualizada · Total ${money(result.totalAmount)}',
             style: const TextStyle(color: AppTokens.successForeground),
           ),
         ),
@@ -330,15 +475,22 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
                 items: _items,
                 clientId: _clientId,
                 notesCtrl: _notesCtrl,
-                paymentMethod: _paymentMethod,
+                payLines: _payLines,
+                paid: _paid,
+                pending: _pending,
                 clientsAsync: clientsAsync,
                 subtotal: _subtotal,
                 discount: _discount,
                 tax: _tax,
                 total: _total,
                 onClientChanged: (v) => setState(() => _clientId = v),
-                onPaymentMethodChanged: (v) =>
-                    setState(() => _paymentMethod = v),
+                onAddPayLine: _addPayLine,
+                onRemovePayLine: _removePayLine,
+                onPaymentsChanged: () => setState(() {
+                  _paymentsTouched = true;
+                }),
+                onAllOnCredit: _allOnCredit,
+                onFullyPaid: _markFullyPaid,
                 onAddProduct: _addProduct,
                 onRemoveItem: (i) => setState(() => _items.removeAt(i)),
                 onItemChanged: () => setState(() {}),
@@ -387,14 +539,20 @@ class _EditForm extends StatelessWidget {
     required this.items,
     required this.clientId,
     required this.notesCtrl,
-    required this.paymentMethod,
+    required this.payLines,
+    required this.paid,
+    required this.pending,
     required this.clientsAsync,
     required this.subtotal,
     required this.discount,
     required this.tax,
     required this.total,
     required this.onClientChanged,
-    required this.onPaymentMethodChanged,
+    required this.onAddPayLine,
+    required this.onRemovePayLine,
+    required this.onPaymentsChanged,
+    required this.onAllOnCredit,
+    required this.onFullyPaid,
     required this.onAddProduct,
     required this.onRemoveItem,
     required this.onItemChanged,
@@ -404,7 +562,12 @@ class _EditForm extends StatelessWidget {
   final List<_EditCartItem> items;
   final String? clientId;
   final TextEditingController notesCtrl;
-  final String paymentMethod;
+
+  /// Líneas de cobro (pago mixto). Vacío = la venta queda entera a crédito.
+  final List<_PayLine> payLines;
+
+  final double paid;
+  final double pending;
   final AsyncValue<List<SalesClient>> clientsAsync;
   final double subtotal;
 
@@ -416,7 +579,11 @@ class _EditForm extends StatelessWidget {
   final double tax;
   final double total;
   final ValueChanged<String?> onClientChanged;
-  final ValueChanged<String> onPaymentMethodChanged;
+  final VoidCallback onAddPayLine;
+  final ValueChanged<int> onRemovePayLine;
+  final VoidCallback onPaymentsChanged;
+  final VoidCallback onAllOnCredit;
+  final VoidCallback onFullyPaid;
   final VoidCallback onAddProduct;
   final ValueChanged<int> onRemoveItem;
   final VoidCallback onItemChanged;
@@ -434,24 +601,16 @@ class _EditForm extends StatelessWidget {
           onChanged: onClientChanged,
         ),
         const SizedBox(height: AppTokens.s16),
-        DropdownButtonFormField<String>(
-          initialValue: paymentMethod,
-          decoration: const InputDecoration(
-            labelText: 'Método de pago',
-            isDense: true,
-            border: OutlineInputBorder(),
-          ),
-          items: const [
-            DropdownMenuItem(value: 'cash', child: Text('Efectivo')),
-            DropdownMenuItem(value: 'transfer', child: Text('Transferencia')),
-            DropdownMenuItem(value: 'card', child: Text('Tarjeta')),
-            DropdownMenuItem(value: 'mobile', child: Text('Pago móvil')),
-            DropdownMenuItem(value: 'mixed', child: Text('Mixto')),
-            DropdownMenuItem(value: 'credit', child: Text('Crédito')),
-          ],
-          onChanged: (v) {
-            if (v != null) onPaymentMethodChanged(v);
-          },
+        _PaymentLinesCard(
+          lines: payLines,
+          total: total,
+          paid: paid,
+          pending: pending,
+          onAdd: onAddPayLine,
+          onRemove: onRemovePayLine,
+          onChanged: onPaymentsChanged,
+          onAllOnCredit: onAllOnCredit,
+          onFullyPaid: onFullyPaid,
         ),
         const SizedBox(height: AppTokens.s16),
         Row(
@@ -1124,6 +1283,205 @@ class _ProductPickerDialogState extends State<_ProductPickerDialog> {
           child: const Text('Cancelar'),
         ),
       ],
+    );
+  }
+}
+
+double _round2(double value) => (value * 100).roundToDouble() / 100;
+
+/// Editor de la forma de cobro: una fila por método, igual que el diálogo
+/// "Completar venta" del POS. La diferencia es que acá lo que no se cobra no
+/// es vuelto sino saldo pendiente, y eso es lo que manda la venta a Cuentas
+/// por cobrar.
+class _PaymentLinesCard extends StatelessWidget {
+  const _PaymentLinesCard({
+    required this.lines,
+    required this.total,
+    required this.paid,
+    required this.pending,
+    required this.onAdd,
+    required this.onRemove,
+    required this.onChanged,
+    required this.onAllOnCredit,
+    required this.onFullyPaid,
+  });
+
+  final List<_PayLine> lines;
+  final double total;
+  final double paid;
+  final double pending;
+  final VoidCallback onAdd;
+  final ValueChanged<int> onRemove;
+  final VoidCallback onChanged;
+  final VoidCallback onAllOnCredit;
+  final VoidCallback onFullyPaid;
+
+  @override
+  Widget build(BuildContext context) {
+    final overpaid = _round2(paid) > _round2(total);
+
+    return Container(
+      padding: const EdgeInsets.all(AppTokens.s12),
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTokens.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Text(
+                'Forma de cobro',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: onFullyPaid,
+                icon: const Icon(Icons.check_circle_outline, size: 16),
+                label: const Text('Cobrada completa'),
+              ),
+              TextButton.icon(
+                onPressed: onAllOnCredit,
+                icon: const Icon(Icons.schedule, size: 16),
+                label: const Text('Todo a crédito'),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppTokens.s8),
+          if (lines.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(AppTokens.s12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Text(
+                'Sin cobros registrados: la venta queda completa a crédito y '
+                'pasa a Cuentas por cobrar.',
+                style: TextStyle(fontSize: 12),
+              ),
+            )
+          else
+            for (var i = 0; i < lines.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppTokens.s8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 5,
+                      child: TextField(
+                        controller: lines[i].amount,
+                        keyboardType:
+                            const TextInputType.numberWithOptions(decimal: true),
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[0-9.]'),
+                          ),
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: 'Monto',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                          prefixText: 'RD\$ ',
+                        ),
+                        onChanged: (_) => onChanged(),
+                      ),
+                    ),
+                    const SizedBox(width: AppTokens.s8),
+                    Expanded(
+                      flex: 4,
+                      child: DropdownButtonFormField<String>(
+                        initialValue: lines[i].method,
+                        decoration: const InputDecoration(
+                          labelText: 'Método',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final m in _payMethods)
+                            DropdownMenuItem(
+                              value: m.key,
+                              child: Text(m.value),
+                            ),
+                        ],
+                        onChanged: (v) {
+                          if (v == null) return;
+                          lines[i].method = v;
+                          onChanged();
+                        },
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Quitar método',
+                      onPressed: () => onRemove(i),
+                      icon: const Icon(Icons.close, size: 18),
+                      color: AppTokens.error,
+                    ),
+                  ],
+                ),
+              ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Agregar método de pago'),
+            ),
+          ),
+          const Divider(height: AppTokens.s20),
+          _PayKV('Total de la venta', money(total)),
+          _PayKV('Cobrado', money(paid)),
+          if (overpaid)
+            _PayKV(
+              'Sobra',
+              money(_round2(paid - total)),
+              color: AppTokens.error,
+              bold: true,
+            )
+          else if (pending > 0)
+            _PayKV(
+              'Pendiente (a crédito)',
+              money(pending),
+              color: AppTokens.warning,
+              bold: true,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PayKV extends StatelessWidget {
+  const _PayKV(this.label, this.value, {this.color, this.bold = false});
+
+  final String label;
+  final String value;
+  final Color? color;
+  final bool bold;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      fontSize: 13,
+      color: color,
+      fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: color ?? AppTokens.mutedForeground,
+            ),
+          ),
+          Text(value, style: style),
+        ],
+      ),
     );
   }
 }

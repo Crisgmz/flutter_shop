@@ -440,6 +440,33 @@ class UsersRepository {
     );
   }
 
+  /// Empleados que existen en `profiles` pero no tienen ninguna sucursal
+  /// activa. El RLS de `profiles` los esconde del listado normal, así que sin
+  /// este RPC (migración 84) no hay forma de saber que están ahí — es el caso
+  /// de "creé el usuario, funcionó, pero no aparece".
+  Future<List<OrphanEmployee>> fetchOrphanEmployees() async {
+    final rows = await _client.rpc('list_orphan_employees');
+    if (rows is! List) return const [];
+    return rows
+        .map(
+          (row) =>
+              OrphanEmployee.fromMap(Map<String, dynamic>.from(row as Map)),
+        )
+        .toList(growable: false);
+  }
+
+  /// Adjunta un empleado huérfano a una sucursal para devolverlo al listado.
+  /// Sin `branchId` usa la sucursal activa.
+  Future<void> attachEmployeeToBranch({
+    required String userId,
+    String? branchId,
+  }) async {
+    await _client.rpc('attach_employee_to_branch', params: {
+      'p_user_id': userId,
+      'p_branch_id': ?branchId,
+    });
+  }
+
   Future<void> createEmployee(CreateEmployeeInput input) async {
     await _client.rpc(
       'create_employee_user',
@@ -455,6 +482,31 @@ class UsersRepository {
       },
     );
   }
+}
+
+/// Empleado sin sucursal asignada: existe pero el listado no lo puede mostrar.
+class OrphanEmployee {
+  const OrphanEmployee({
+    required this.id,
+    required this.fullName,
+    required this.email,
+    required this.role,
+    required this.isActive,
+  });
+
+  final String id;
+  final String fullName;
+  final String email;
+  final String role;
+  final bool isActive;
+
+  factory OrphanEmployee.fromMap(Map<String, dynamic> map) => OrphanEmployee(
+        id: (map['id'] ?? '').toString(),
+        fullName: (map['full_name'] ?? 'Sin nombre').toString(),
+        email: (map['email'] ?? '').toString(),
+        role: (map['role'] ?? '').toString(),
+        isActive: map['is_active'] == true,
+      );
 }
 
 String? _nullIfEmpty(String? value) {

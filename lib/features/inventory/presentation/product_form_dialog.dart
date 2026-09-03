@@ -114,7 +114,14 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
         (ref.read(appSettingsProvider).valueOrNull?.invDefaultIsService ??
             false);
     _isTaxExempt = product?.isTaxExempt ?? false;
-    _priceIncludesTax = product?.priceIncludesTax ?? false;
+    // Igual que "es servicio": producto nuevo arranca con el default global
+    // (app_settings.tax_default_price_includes_tax). Al editar manda el producto.
+    _priceIncludesTax = product?.priceIncludesTax ??
+        (ref
+                .read(appSettingsProvider)
+                .valueOrNull
+                ?.taxDefaultPriceIncludesTax ??
+            false);
     // Un servicio no lleva control de inventario.
     _trackInventory = product?.trackInventory ?? !_isService;
     _imeis.addAll(product?.imeis ?? const <String>[]);

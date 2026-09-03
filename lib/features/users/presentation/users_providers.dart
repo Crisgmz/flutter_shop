@@ -23,3 +23,16 @@ final usersBranchOptionsProvider = FutureProvider<List<BranchOption>>((
   final repository = ref.watch(usersRepositoryProvider);
   return repository.fetchActiveBranches();
 });
+
+/// Empleados que quedaron sin sucursal y por eso no salen en el listado
+/// (migración 84). Nunca lanza: si el RPC todavía no está en la base, devuelve
+/// vacío y la pantalla se comporta como antes.
+final orphanEmployeesProvider =
+    FutureProvider<List<OrphanEmployee>>((ref) async {
+  final repository = ref.watch(usersRepositoryProvider);
+  try {
+    return await repository.fetchOrphanEmployees();
+  } catch (_) {
+    return const <OrphanEmployee>[];
+  }
+});

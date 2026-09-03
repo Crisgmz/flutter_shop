@@ -12,6 +12,7 @@ class CashSessionEntity {
     required this.notes,
     required this.closedAt,
     this.cashRegisterId,
+    this.closingBreakdown = const <int, int>{},
   });
 
   final String id;
@@ -27,6 +28,10 @@ class CashSessionEntity {
   /// Caja sobre la que se abrió la sesión. Null para sesiones legacy
   /// abiertas antes del migration de cash_registers.
   final String? cashRegisterId;
+
+  /// Conteo del cierre por denominación (migración 85). Vacío en las sesiones
+  /// cerradas antes de que se guardara el desglose.
+  final Map<int, int> closingBreakdown;
 
   bool get isOpen => status == 'open';
 
@@ -45,6 +50,7 @@ class CashSessionEntity {
       closingAmount: map['closing_amount'] == null
           ? null
           : _toDouble(map['closing_amount']),
+      closingBreakdown: _parseBreakdown(map['closing_breakdown']),
       differenceAmount: map['difference_amount'] == null
           ? null
           : _toDouble(map['difference_amount']),
@@ -358,10 +364,18 @@ class CashMovementEntity {
 }
 
 class CloseCashInput {
-  CloseCashInput({required this.closingAmount, this.notes});
+  CloseCashInput({
+    required this.closingAmount,
+    this.notes,
+    this.denominations = const <int, int>{},
+  });
 
   final double closingAmount;
   final String? notes;
+
+  /// Desglose del conteo: denominación → cantidad de billetes/monedas. Sirve
+  /// para imprimir el comprobante de efectivo contado que firma el cajero.
+  final Map<int, int> denominations;
 }
 
 class CashRegisterRepository {
@@ -574,6 +588,14 @@ class CashRegisterRepository {
           'expected_amount': expected,
           'closing_amount': closingAmount,
           'difference_amount': difference,
+          // Desglose por denominación: sin esto el comprobante que firma el
+          // cajero solo se puede imprimir en el momento del cierre.
+          'closing_breakdown': input.denominations.isEmpty
+              ? null
+              : {
+                  for (final entry in input.denominations.entries)
+                    entry.key.toString(): entry.value,
+                },
           'notes': _nullIfEmpty(input.notes) ?? openSession.notes,
         })
         .eq('id', openSession.id)
@@ -592,7 +614,7 @@ class CashRegisterRepository {
       final rows = await _client
           .from('cash_sessions')
           .select(
-            'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes, cash_register_id',
+            'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, closing_breakdown, notes, cash_register_id',
           )
           .eq('id', activeSessionId)
           .eq('branch_id', branchId)
@@ -615,7 +637,7 @@ class CashRegisterRepository {
     final rows = await _client
         .from('cash_sessions')
         .select(
-          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes, cash_register_id',
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, closing_breakdown, notes, cash_register_id',
         )
         .eq('branch_id', branchId)
         .eq('status', 'open')
@@ -636,7 +658,7 @@ class CashRegisterRepository {
     final rows = await _client
         .from('cash_sessions')
         .select(
-          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, notes',
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, closing_breakdown, notes',
         )
         .eq('branch_id', branchId)
         .eq('opened_by', userId)
@@ -1270,6 +1292,18 @@ double _toDouble(dynamic value) {
   if (value is double) return value;
   if (value is int) return value.toDouble();
   return double.tryParse(value.toString()) ?? 0;
+}
+
+/// `closing_breakdown` llega como {"2000": 45, ...}: claves string en JSON.
+Map<int, int> _parseBreakdown(dynamic raw) {
+  if (raw is! Map) return const <int, int>{};
+  final result = <int, int>{};
+  raw.forEach((key, value) {
+    final denom = int.tryParse(key.toString());
+    final qty = value is int ? value : int.tryParse(value.toString());
+    if (denom != null && qty != null && qty > 0) result[denom] = qty;
+  });
+  return result;
 }
 
 double _round2(double value) => (value * 100).roundToDouble() / 100;

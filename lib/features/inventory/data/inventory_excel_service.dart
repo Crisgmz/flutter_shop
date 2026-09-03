@@ -117,6 +117,7 @@ class InventoryExcelService {
   InventoryImportParseResult parseImport({
     required Uint8List bytes,
     required List<InventoryCategory> categories,
+    bool defaultPriceIncludesTax = false,
   }) {
     final excel = Excel.decodeBytes(bytes);
     final sheet = excel.tables[_productSheet];
@@ -163,7 +164,9 @@ class InventoryExcelService {
           return _cellToString(row[idx]);
         }
 
-        inputs.add(_rowToInput(cell, categoryByName));
+        inputs.add(
+          _rowToInput(cell, categoryByName, defaultPriceIncludesTax),
+        );
       } catch (error) {
         errors.add(_rowError(rowNumber, error));
       }
@@ -182,6 +185,7 @@ class InventoryExcelService {
   InventoryImportParseResult parseImportCsv({
     required Uint8List bytes,
     required List<InventoryCategory> categories,
+    bool defaultPriceIncludesTax = false,
   }) {
     final rows = _parseCsv(_decodeText(bytes));
     if (rows.isEmpty) {
@@ -225,7 +229,9 @@ class InventoryExcelService {
           return row[idx];
         }
 
-        inputs.add(_rowToInput(cell, categoryByName));
+        inputs.add(
+          _rowToInput(cell, categoryByName, defaultPriceIncludesTax),
+        );
       } catch (error) {
         errors.add(_rowError(rowNumber, error));
       }
@@ -252,6 +258,7 @@ class InventoryExcelService {
   InventoryProductInput _rowToInput(
     String? Function(String key) raw,
     Map<String, InventoryCategory> categoryByName,
+    bool defaultPriceIncludesTax,
   ) {
     String? str(String key) {
       final value = raw(key)?.trim();
@@ -320,6 +327,7 @@ class InventoryExcelService {
       isActive: _parseBool(str('activo')) ?? true,
       isService: _parseBool(str('es_servicio')) ?? false,
       isTaxExempt: _parseBool(str('exento_itbis')) ?? false,
+      priceIncludesTax: defaultPriceIncludesTax,
       trackInventory: _parseBool(str('rastrear_inventario')) ?? true,
       allowNegativeStock: _parseBool(str('permite_negativo')) ?? false,
       sizeLabel: str('talla'),
