@@ -147,6 +147,36 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                                             minHeight: 32,
                                           ),
                                         ),
+                                        // El desglose firmado del cajero:
+                                        // solo tiene sentido con la caja ya
+                                        // cerrada y con conteo guardado
+                                        // (migración 85). Sin permiso de
+                                        // cuadre es lo único que puede
+                                        // reimprimir, y por eso vive acá y no
+                                        // solo en el snackbar del cierre.
+                                        if (!session.isOpen &&
+                                            session.closingBreakdown
+                                                .isNotEmpty) ...[
+                                          const SizedBox(width: 4),
+                                          IconButton(
+                                            tooltip: 'Imprimir desglose',
+                                            onPressed: () =>
+                                                _printSessionCashCount(
+                                              session,
+                                            ),
+                                            icon: const Icon(
+                                              Icons.calculate_outlined,
+                                              size: 18,
+                                            ),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(
+                                              minWidth: 32,
+                                              minHeight: 32,
+                                            ),
+                                          ),
+                                        ],
                                         if (!session.isOpen) ...[
                                           const SizedBox(width: 4),
                                           PopupMenuButton<double>(
@@ -584,6 +614,32 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
         branchName: branchName,
         cashierName: userInfo?.displayName,
         notes: input.notes,
+      ),
+    );
+  }
+
+  /// Reimprime el comprobante de EFECTIVO CONTADO de una sesión ya cerrada,
+  /// usando el desglose por denominación que quedó guardado en el cierre.
+  ///
+  /// Es el mismo papel que ofrece el snackbar al cerrar, pero sin depender de
+  /// que el cajero lo alcance en esos segundos: si se le fue, lo saca de la
+  /// tabla. No lleva esperado ni diferencia, así que respeta el cierre ciego.
+  ///
+  /// No se pasa `cashierName`: la tabla lista sesiones de la sucursal, y el
+  /// usuario logueado no siempre es quien cerró esa caja.
+  void _printSessionCashCount(CashSessionEntity session) {
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+
+    Printing.layoutPdf(
+      name: 'efectivo-contado-${session.id.substring(0, 8)}',
+      onLayout: (_) => const CashClosurePdfBuilder().buildCashCountBreakdown(
+        denominations: session.closingBreakdown,
+        countedTotal: session.closingAmount ?? 0,
+        widthMm: 80,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+        branchName: branchName,
+        notes: session.notes,
       ),
     );
   }
