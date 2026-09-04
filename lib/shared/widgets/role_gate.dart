@@ -21,6 +21,11 @@ const kReportsProfitPermission = 'reports.profit';
 /// Código del permiso "Ver cuadre de caja" (`permissions.code`, migración 83).
 const kCashReconciliationPermission = 'cash.reconciliation';
 
+/// Código del permiso "Anular Ventas" (`permissions.code`). Existía en el
+/// catálogo desde la migración estructural, pero nadie lo consultaba: hasta la
+/// migración 88 el botón de anular no tenía gate y el RPC tampoco miraba el rol.
+const kSalesVoidPermission = 'sales.void';
+
 /// Códigos del módulo Gastos (`permissions.code`, migración 86).
 const kExpensesViewPermission = 'expenses.view';
 const kExpensesCreatePermission = 'expenses.create';
@@ -146,6 +151,21 @@ final canDeleteExpenseProvider = Provider<bool>((ref) {
   return access.hasPermission(
     kExpensesDeletePermission,
     roleDefault: access.canDeleteRecord,
+  );
+});
+
+/// ¿Puede el usuario anular una venta?
+///
+/// Por rol: admin y supervisor. Un override sobre `sales.void` manda sobre el
+/// rol en ambos sentidos — sirve tanto para dárselo a un cajero de confianza
+/// como para quitárselo a un supervisor. `void_sale_with_stock_return` resuelve
+/// el permiso con esta misma lógica, así que ocultar el botón y bloquear el RPC
+/// dicen lo mismo.
+final canVoidSaleProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kSalesVoidPermission,
+    roleDefault: access.canVoidSale,
   );
 });
 

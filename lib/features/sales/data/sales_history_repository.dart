@@ -313,9 +313,18 @@ class SalesHistoryRepository {
       // Venta: ganancia = subtotal − COGS. Devolución: el subtotal ya viene
       // NEGADO desde la vista, así que sumar el costo devuelto deja la
       // ganancia en negativo (que es lo correcto: se revierte la utilidad).
+      //
+      // Una venta ANULADA no dejó utilidad: se cobró y se devolvió. Antes daba
+      // igual porque anular borraba sus líneas y el COGS salía 0 — o sea que
+      // la fila mostraba `subtotal − 0`, la ganancia completa de una venta que
+      // no existió. Desde la migración 88 las líneas se conservan, así que hay
+      // que decirlo explícitamente en vez de depender de que no hubiera datos.
       final cogs = cogsById[id] ?? 0;
       final subtotal = _d(m['subtotal']);
-      m['profit'] = isReturn ? subtotal + cogs : subtotal - cogs;
+      final isVoided = (m['status'] ?? '').toString() == 'voided';
+      m['profit'] = isVoided
+          ? 0.0
+          : (isReturn ? subtotal + cogs : subtotal - cogs);
       // En una devolución el "cobro" es por dónde salió el reembolso.
       m['payment_method'] =
           isReturn ? _s(m['refund_method']) : methodBySale[id];

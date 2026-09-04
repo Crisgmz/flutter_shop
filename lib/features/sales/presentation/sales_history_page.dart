@@ -613,6 +613,18 @@ class _RowActions extends ConsumerWidget {
       );
     }
 
+    // Una venta anulada ya no se toca: editarla o volver a anularla solo
+    // devuelve un error del RPC. Se queda en el historial para consultarla e
+    // imprimirla — que desde la migración 88 vuelve a mostrar sus artículos.
+    final isVoided = row.status == 'voided';
+    // Anular devuelve stock y borra los pagos: es una acción de gerencia. El
+    // RPC exige el mismo permiso, así que esto oculta el botón en vez de
+    // dejar que el usuario lo apriete y choque contra un error.
+    final canVoid = ref.watch(canVoidSaleProvider);
+    // Editar la venta completa ya lo bloqueaba el RPC (admin o supervisor);
+    // el gate evita el error confuso de apretar y que no pase nada.
+    final canEdit = ref.watch(roleAccessProvider).canVoidSale;
+
     return Wrap(
       spacing: 4,
       children: [
@@ -628,29 +640,32 @@ class _RowActions extends ConsumerWidget {
           visualDensity: VisualDensity.compact,
           onPressed: () => _reprint(context, ref, row.id),
         ),
-        IconButton(
-          tooltip: 'Editar notas / cliente',
-          icon: const Icon(Icons.edit_outlined, size: 18),
-          visualDensity: VisualDensity.compact,
-          onPressed: () => _editMetadata(context, ref, row),
-        ),
-        IconButton(
-          tooltip: 'Editar venta completa',
-          icon: const Icon(Icons.edit_note, size: 20),
-          visualDensity: VisualDensity.compact,
-          onPressed: () =>
-              context.go('/ventas/historial/${row.id}/editar'),
-        ),
-        IconButton(
-          tooltip: 'Eliminar (anular y devolver stock)',
-          icon: const Icon(
-            Icons.delete_outline,
-            size: 18,
-            color: AppTokens.error,
+        if (!isVoided)
+          IconButton(
+            tooltip: 'Editar notas / cliente',
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _editMetadata(context, ref, row),
           ),
-          visualDensity: VisualDensity.compact,
-          onPressed: () => _voidSale(context, ref, row),
-        ),
+        if (!isVoided && canEdit)
+          IconButton(
+            tooltip: 'Editar venta completa',
+            icon: const Icon(Icons.edit_note, size: 20),
+            visualDensity: VisualDensity.compact,
+            onPressed: () =>
+                context.go('/ventas/historial/${row.id}/editar'),
+          ),
+        if (!isVoided && canVoid)
+          IconButton(
+            tooltip: 'Eliminar (anular y devolver stock)',
+            icon: const Icon(
+              Icons.delete_outline,
+              size: 18,
+              color: AppTokens.error,
+            ),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _voidSale(context, ref, row),
+          ),
       ],
     );
   }

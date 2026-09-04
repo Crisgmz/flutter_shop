@@ -1801,6 +1801,23 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         );
         return;
       }
+      // Una venta anulada ya devolvió su stock y su dinero al anularse:
+      // devolverla otra vez lo haría por partida doble. Hasta la migración 88
+      // el caso se caía solo (anular borraba las líneas, así que no había nada
+      // que cargar); ahora que la factura anulada conserva su detalle, el
+      // rechazo es explícito — aquí y en el RPC `process_return`.
+      if (result.status == 'voided') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'La venta ${result.saleNumber} está anulada: su stock y su '
+              'dinero ya se devolvieron al anularla.',
+            ),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+        return;
+      }
       if (result.items.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
