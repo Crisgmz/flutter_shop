@@ -21,6 +21,12 @@ const kReportsProfitPermission = 'reports.profit';
 /// Código del permiso "Ver cuadre de caja" (`permissions.code`, migración 83).
 const kCashReconciliationPermission = 'cash.reconciliation';
 
+/// Códigos del módulo Gastos (`permissions.code`, migración 86).
+const kExpensesViewPermission = 'expenses.view';
+const kExpensesCreatePermission = 'expenses.create';
+const kExpensesEditPermission = 'expenses.edit';
+const kExpensesDeletePermission = 'expenses.delete';
+
 /// Snapshot inmutable del rol del usuario actual, con helpers semánticos.
 class RoleAccess {
   const RoleAccess({
@@ -103,6 +109,43 @@ final canViewCashReconciliationProvider = Provider<bool>((ref) {
   return access.hasPermission(
     kCashReconciliationPermission,
     roleDefault: access.isAdmin || access.isSupervisor || access.isAccountant,
+  );
+});
+
+/// ¿Puede el usuario registrar un gasto nuevo?
+///
+/// Por rol: los cuatro roles pueden — el gasto lo hace quien está en la caja,
+/// y ese dinero sale de la caja que el propio cajero cuadra. Un override sobre
+/// `expenses.create` manda sobre el rol en ambos sentidos, que es lo que
+/// permite al dueño quitárselo a un cajero puntual.
+final canCreateExpenseProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(kExpensesCreatePermission, roleDefault: true);
+});
+
+/// ¿Puede el usuario corregir un gasto ya registrado?
+///
+/// Por rol: admin, supervisor y contador sí; cajero no — registra el gasto
+/// pero no lo retoca después.
+final canEditExpenseProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kExpensesEditPermission,
+    roleDefault: access.isAdmin || access.isSupervisor || access.isAccountant,
+  );
+});
+
+/// ¿Puede el usuario borrar un gasto?
+///
+/// Por rol: solo admin y supervisor. La RLS de `public.expenses` exige lo
+/// mismo (`can_manage_branch_data()`), así que conceder el override a un
+/// cajero le muestra el botón pero la base de datos sigue rechazando el
+/// borrado.
+final canDeleteExpenseProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kExpensesDeletePermission,
+    roleDefault: access.canDeleteRecord,
   );
 });
 

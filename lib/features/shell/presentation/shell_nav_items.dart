@@ -125,7 +125,8 @@ const expensesNavItem = NavItem(
   path: '/gastos',
   label: 'Gastos',
   icon: Icons.wallet_outlined,
-  allowedRoles: {'admin', 'supervisor', 'accountant'},
+  allowedRoles: {'admin', 'supervisor', 'cashier', 'accountant'},
+  permissionCode: 'expenses.view',
 );
 const cashRegisterNavItem = NavItem(
   path: '/caja',

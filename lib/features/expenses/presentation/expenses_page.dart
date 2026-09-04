@@ -12,6 +12,7 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
+import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../inventory/data/file_io_helper.dart';
@@ -39,6 +40,9 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
   Widget build(BuildContext context) {
     final expensesAsync = ref.watch(expensesListProvider);
     final query = ref.watch(expensesSearchProvider).trim().toLowerCase();
+    final canCreate = ref.watch(canCreateExpenseProvider);
+    final canEdit = ref.watch(canEditExpenseProvider);
+    final canDelete = ref.watch(canDeleteExpenseProvider);
 
     return ModulePage(
       title: 'Gastos',
@@ -54,12 +58,14 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
         ),
         const SizedBox(width: AppTokens.s8),
         _buildExportMenu(),
-        const SizedBox(width: AppTokens.s8),
-        FilledButton.icon(
-          onPressed: _onNewExpense,
-          icon: const Icon(Icons.add_card_outlined, size: 18),
-          label: const Text('Nuevo gasto'),
-        ),
+        if (canCreate) ...[
+          const SizedBox(width: AppTokens.s8),
+          FilledButton.icon(
+            onPressed: _onNewExpense,
+            icon: const Icon(Icons.add_card_outlined, size: 18),
+            label: const Text('Nuevo gasto'),
+          ),
+        ],
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -137,8 +143,12 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
                                       )),
                                       DataCell(_ExpenseRowActions(
                                         onPrint: () => _onPrintExpense(expense),
-                                        onEdit: () => _onEditExpense(expense),
-                                        onDelete: () => _onDeleteExpense(expense),
+                                        onEdit: canEdit
+                                            ? () => _onEditExpense(expense)
+                                            : null,
+                                        onDelete: canDelete
+                                            ? () => _onDeleteExpense(expense)
+                                            : null,
                                       )),
                                     ],
                                   ),
@@ -881,6 +891,10 @@ class _NewExpenseDialogState extends State<_NewExpenseDialog> {
 }
 
 /// Botones de acción por fila de gasto: imprimir comprobante, editar, eliminar.
+///
+/// `onEdit` y `onDelete` en `null` ocultan el botón: el cajero registra gastos
+/// pero no los corrige ni los borra (ver `canEditExpenseProvider` y
+/// `canDeleteExpenseProvider`).
 class _ExpenseRowActions extends StatelessWidget {
   const _ExpenseRowActions({
     required this.onPrint,
@@ -889,8 +903,8 @@ class _ExpenseRowActions extends StatelessWidget {
   });
 
   final VoidCallback onPrint;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -905,23 +919,25 @@ class _ExpenseRowActions extends StatelessWidget {
           constraints: const BoxConstraints(),
           padding: const EdgeInsets.all(6),
         ),
-        IconButton(
-          tooltip: 'Editar',
-          onPressed: onEdit,
-          icon: const Icon(Icons.edit_outlined, size: 18),
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(),
-          padding: const EdgeInsets.all(6),
-        ),
-        IconButton(
-          tooltip: 'Eliminar',
-          onPressed: onDelete,
-          icon: const Icon(Icons.delete_outline_rounded, size: 18),
-          color: AppTokens.destructive,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(),
-          padding: const EdgeInsets.all(6),
-        ),
+        if (onEdit != null)
+          IconButton(
+            tooltip: 'Editar',
+            onPressed: onEdit,
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(),
+            padding: const EdgeInsets.all(6),
+          ),
+        if (onDelete != null)
+          IconButton(
+            tooltip: 'Eliminar',
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+            color: AppTokens.destructive,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(),
+            padding: const EdgeInsets.all(6),
+          ),
       ],
     );
   }
