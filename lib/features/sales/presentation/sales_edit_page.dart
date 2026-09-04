@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
+import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../data/sales_history_repository.dart';
@@ -408,9 +409,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
       context.go('/ventas/historial');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo guardar: $e')),
-      );
+      AppSnackBar.error(context, 'No se pudo guardar', e);
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
