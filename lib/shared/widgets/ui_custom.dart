@@ -257,6 +257,8 @@ class SectionHeader extends StatelessWidget {
 class DataTableShell extends StatelessWidget {
   final Widget child;
   final String? title;
+  /// Control opcional a la derecha del título (filtros, selectores).
+  final Widget? trailing;
   /// Set to false when using FlexTable — it fills width on its own and
   /// must not be wrapped in a horizontal SingleChildScrollView.
   final bool scrollable;
@@ -265,6 +267,7 @@ class DataTableShell extends StatelessWidget {
     super.key,
     required this.child,
     this.title,
+    this.trailing,
     this.scrollable = true,
   });
 
@@ -290,14 +293,21 @@ class DataTableShell extends StatelessWidget {
           if (title != null) ...[
             Padding(
               padding: const EdgeInsets.all(AppTokens.s20),
-              child: Text(
-                title!,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: AppTokens.foreground,
-                  letterSpacing: -0.4,
-                ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title!,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: AppTokens.foreground,
+                        letterSpacing: -0.4,
+                      ),
+                    ),
+                  ),
+                  ?trailing,
+                ],
               ),
             ),
             const Divider(height: 1, color: AppTokens.border),

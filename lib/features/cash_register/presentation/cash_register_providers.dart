@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../auth/presentation/auth_providers.dart';
+import '../../shell/presentation/shell_providers.dart';
 import '../data/cash_register_repository.dart';
 
 final cashRegisterRepositoryProvider = Provider<CashRegisterRepository>((ref) {
@@ -8,13 +9,36 @@ final cashRegisterRepositoryProvider = Provider<CashRegisterRepository>((ref) {
   return CashRegisterRepository(client);
 });
 
+/// Caja elegida a mano en el panel "Sesiones recientes".
+///
+/// - `null` → seguir la caja activa del POS (comportamiento por defecto:
+///   estando en la caja 1 no salen los cierres de la caja 2).
+/// - [kAllCashRegisters] → todas las cajas de la sucursal.
+/// - cualquier otro valor → ese `cash_register_id`.
+///
+/// Solo admin/supervisor pueden cambiarlo; el cajero queda fijo en su caja.
+final recentSessionsRegisterFilterProvider = StateProvider<String?>(
+  (ref) => null,
+);
+
 final cashRegisterDataProvider = FutureProvider<CashRegisterData>((ref) async {
   // La pantalla de Caja opera sobre la caja ACTIVA seleccionada en el POS, no
   // sobre "la última abierta". Sin esto, un usuario con varias cajas abiertas
   // veía/operaba siempre la más reciente (cajas "ligadas").
   final activeSessionId = ref.watch(activeCashSessionIdProvider);
+  final registerFilter = ref.watch(recentSessionsRegisterFilterProvider);
+  // Admin/supervisor ven los cierres de todos los cajeros de la sucursal: un
+  // dueño que nunca abre caja tenía el panel vacío aunque su gente cerrara
+  // turnos todos los días.
+  final role = await ref.watch(
+    shellAccessProfileProvider.selectAsync((a) => a.roleCode),
+  );
   final repository = ref.watch(cashRegisterRepositoryProvider);
-  return repository.fetchData(activeSessionId: activeSessionId);
+  return repository.fetchData(
+    activeSessionId: activeSessionId,
+    registerFilter: registerFilter,
+    allCashiers: role == 'admin' || role == 'supervisor',
+  );
 });
 
 /// Vista admin/supervisor: todas las cajas abiertas en la sucursal con

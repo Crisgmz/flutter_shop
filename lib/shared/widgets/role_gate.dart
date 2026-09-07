@@ -26,6 +26,10 @@ const kCashReconciliationPermission = 'cash.reconciliation';
 /// migración 88 el botón de anular no tenía gate y el RPC tampoco miraba el rol.
 const kSalesVoidPermission = 'sales.void';
 
+/// Código del permiso "Editar precio en la venta" (`permissions.code`,
+/// migración 89). Sin él, el precio de la línea del carrito es de solo lectura.
+const kSalesEditPricePermission = 'sales.edit_price';
+
 /// Códigos del módulo Gastos (`permissions.code`, migración 86).
 const kExpensesViewPermission = 'expenses.view';
 const kExpensesCreatePermission = 'expenses.create';
@@ -166,6 +170,20 @@ final canVoidSaleProvider = Provider<bool>((ref) {
   return access.hasPermission(
     kSalesVoidPermission,
     roleDefault: access.canVoidSale,
+  );
+});
+
+/// ¿Puede el usuario sobrescribir el precio de una línea del carrito?
+///
+/// Por rol: admin y supervisor. El cajero vende al precio del catálogo (o al
+/// del nivel de precio del cliente) y ve el campo bloqueado. Un override sobre
+/// `sales.edit_price` manda sobre el rol en ambos sentidos, que es lo que
+/// permite dárselo a un cajero de confianza.
+final canEditSalePriceProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kSalesEditPricePermission,
+    roleDefault: access.canEditPrices,
   );
 });
 

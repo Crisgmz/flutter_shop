@@ -42,7 +42,7 @@ PrintDocumentData _sale(int lines) => PrintDocumentData(
     );
 
 void main() {
-  const maxHeight = 297 * PdfPageFormat.mm;
+  const a4Height = 297 * PdfPageFormat.mm;
 
   group('ticket térmico', () {
     test('una venta corta sale en una sola página ajustada al contenido',
@@ -52,31 +52,29 @@ void main() {
 
       expect(heights, hasLength(1));
       // Ajustada al contenido: ni de 297mm fijos ni recortada.
-      expect(heights.single, lessThan(maxHeight));
+      expect(heights.single, lessThan(a4Height));
       expect(heights.single, greaterThan(0));
     });
 
-    test('una factura larga se pagina en vez de cortarse', () async {
-      // 14 líneas es el caso reportado: el ticket salía sin totales porque el
-      // driver de la térmica trunca todo lo que pase de su largo de papel.
+    test('una factura larga sale de una sola tirada, no en hojas', () async {
+      // El rollo térmico es papel continuo: la factura tiene que salir entera
+      // de un tirón. Partirla en hojas de 297mm imprimía la misma venta en dos
+      // pedazos separados.
       final bytes = await const PdfReceiptBuilder().buildThermalBytes(_sale(14));
       final heights = _pageHeights(bytes);
 
-      expect(heights.length, greaterThan(1));
-      for (final h in heights) {
-        expect(h, closeTo(maxHeight, 0.5));
-      }
+      expect(heights, hasLength(1));
+      expect(heights.single, greaterThan(a4Height));
     });
 
-    test('el ticket crece en páginas, no en alto, al sumar líneas', () async {
-      final builder = const PdfReceiptBuilder();
+    test('el ticket crece en alto, no en páginas, al sumar líneas', () async {
+      const builder = PdfReceiptBuilder();
       final medium = _pageHeights(await builder.buildThermalBytes(_sale(14)));
       final long = _pageHeights(await builder.buildThermalBytes(_sale(40)));
 
-      expect(long.length, greaterThan(medium.length));
-      for (final h in long) {
-        expect(h, closeTo(maxHeight, 0.5));
-      }
+      expect(medium, hasLength(1));
+      expect(long, hasLength(1));
+      expect(long.single, greaterThan(medium.single));
     });
   });
 }

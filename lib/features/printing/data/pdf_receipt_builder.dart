@@ -142,21 +142,21 @@ class PdfReceiptBuilder {
     return doc.save();
   }
 
-  /// Largo máximo de una página de ticket antes de partirlo en varias.
-  ///
-  /// Los drivers de impresora térmica en Windows traen un tamaño de papel fijo
-  /// (típicamente 80 × 297 mm). Un ticket más largo que eso se imprime
-  /// truncado: salen los primeros ítems y se pierden los totales. Al pasar de
-  /// este largo, el ticket se reparte en varias páginas que sí entran.
-  static const _thermalMaxPageHeight = 297 * PdfPageFormat.mm;
+  /// Techo duro del formato PDF: 14 400 pt (200 pulgadas) de lado. Una página
+  /// más larga que eso no la abre ningún visor, así que una factura
+  /// descomunal (cientos de líneas) se reparte en páginas de este largo. Es
+  /// una red de seguridad, no el caso normal.
+  static const _pdfMaxPageHeight = 14400.0;
 
   /// Construye el PDF en formato ticket térmico ~80mm de ancho.
   /// Layout vertical: logo → empresa centrada → bloque metadata derecha →
   /// "Factura a:" → cliente → items → totales → barcode.
   ///
-  /// Una venta corta sale como una sola página del alto justo del contenido
-  /// (rollo continuo, sin papel de más). Una factura larga se pagina, porque
-  /// si no la impresora la corta a la mitad.
+  /// SIEMPRE una sola página del alto justo del contenido: el rollo térmico es
+  /// papel continuo y la factura tiene que salir de una tirada, sin cortes en
+  /// el medio. Para que el navegador no la vuelva a partir, el papel de la
+  /// impresora en Windows debe estar en rollo/alto personalizado y no en el
+  /// típico 80 × 297 mm fijo.
   Future<Uint8List> buildThermalBytes(PrintDocumentData data) async {
     final logoBytes =
         await _shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
@@ -179,16 +179,16 @@ class PdfReceiptBuilder {
     );
     final singleBytes = await singlePage.save();
 
-    // `save()` ya resolvió el alto real: recién ahora se sabe si el ticket
-    // cabe de una tirada.
+    // `save()` ya resolvió el alto real. Solo se pagina si el ticket pasa el
+    // techo del propio formato PDF.
     final pages = singlePage.document.pdfPageList.pages;
     final height = pages.isEmpty ? 0.0 : pages.first.pageFormat.height;
-    if (height <= _thermalMaxPageHeight) {
+    if (height <= _pdfMaxPageHeight) {
       return singleBytes;
     }
 
-    // Ticket largo: se reparte en páginas de alto fijo. `MultiPage` corta entre
-    // bloques, así que los totales nunca quedan fuera del papel.
+    // Factura desmedida: se reparte en páginas del largo máximo. `MultiPage`
+    // corta entre bloques, así que los totales nunca quedan fuera del papel.
     final paged = pw.Document(
       title: data.documentNumber,
       author: data.branch.name,
@@ -197,7 +197,7 @@ class PdfReceiptBuilder {
       pw.MultiPage(
         pageFormat: PdfPageFormat(
           80 * PdfPageFormat.mm,
-          _thermalMaxPageHeight,
+          _pdfMaxPageHeight,
           marginAll: 8 * PdfPageFormat.mm,
         ),
         // Sin tope práctico: una factura de mayoreo puede llevar decenas de

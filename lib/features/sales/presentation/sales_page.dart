@@ -17,6 +17,7 @@ import '../../clients/presentation/clients_providers.dart';
 import '../../inventory/data/inventory_repository.dart';
 import '../../inventory/presentation/inventory_providers.dart';
 import '../../inventory/presentation/product_form_dialog.dart';
+import '../../printing/data/printing.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
@@ -1499,16 +1500,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   Future<void> _onCompletePressed() async {
     if (_cart.isEmpty) return;
     if (!_assertFiscalClient()) return;
+    // El cobro de contado se resuelve entero dentro del cuadro: cobra y ahí
+    // mismo muestra la factura para imprimir. Solo el crédito sale de vuelta,
+    // porque antes de registrarlo hay que preguntar el plazo.
     final result = await showDialog<_PaymentResult>(
       context: context,
-      builder: (_) => _PaymentDialog(total: _cartTotal),
+      barrierDismissible: false,
+      builder: (_) => _PaymentDialog(
+        total: _cartTotal,
+        onCheckout: (payments) =>
+            _checkout(asCredit: false, payments: payments),
+      ),
     );
     if (result == null || !mounted) return;
-    if (result.asCredit) {
-      await _confirmCreditCheckout();
-    } else {
-      await _checkout(asCredit: false, payments: result.payments);
-    }
+    if (result.asCredit) await _confirmCreditCheckout();
   }
 
   /// Abre un diálogo que pide los días de plazo (default desde settings) y
@@ -1592,24 +1597,33 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     );
 
     if (confirmed == true) {
-      await _checkout(asCredit: true, creditDueDays: parseDays());
+      final job = await _checkout(asCredit: true, creditDueDays: parseDays());
+      // La venta a crédito no pasa por el cuadro de cobro, así que la factura
+      // se muestra acá.
+      if (job != null && mounted) {
+        await PrintReceiptDialog.show(context, job);
+      }
     }
     controller.dispose();
   }
 
-  Future<void> _checkout({
+  /// Registra la venta y devuelve el comprobante listo para imprimir, ya con
+  /// NCF y número asignados por el backend. Devuelve null si la venta falló
+  /// (el error se le muestra al usuario acá mismo) o si el negocio tiene
+  /// apagada la impresión automática: en ambos casos no hay nada que mostrar.
+  Future<PreparedPrintJobData?> _checkout({
     required bool asCredit,
     int? creditDueDays,
     List<SalePaymentLine> payments = const [],
   }) async {
-    if (_cart.isEmpty) return;
+    if (_cart.isEmpty) return null;
     if (asCredit && _clientId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Para ventas a crédito debe seleccionar un cliente.'),
         ),
       );
-      return;
+      return null;
     }
 
     // app_settings.inv_disallow_below_cost — bloquea registrar la venta si
@@ -1628,7 +1642,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
               ),
             ),
           );
-          return;
+          return null;
         }
       }
     }
@@ -1670,66 +1684,31 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _clearCart();
       ref.invalidate(salesProductsProvider);
 
-      if (!mounted) return;
+      if (!mounted) return null;
 
-      final printJob = result.preparedPrintJob;
+      // La confirmación es el propio toast: el diálogo "¡Venta exitosa!" era
+      // un clic más entre venta y venta sin decir nada que no diga el aviso.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTokens.success,
+          content: Text(
+            result.ncf != null
+                ? 'Venta #${result.saleNumber} registrada. NCF: ${result.ncf}'
+                : 'Venta #${result.saleNumber} registrada.',
+            style: const TextStyle(color: AppTokens.successForeground),
+          ),
+        ),
+      );
+
+      // app_settings.receipt_print_after_sale apagado = el negocio no imprime
+      // al vender; sin comprobante que mostrar, no hay fase de impresión.
       final printAfterSale = settings?.receiptPrintAfterSale ?? true;
-      final disableConfirmation =
-          settings?.saleDisableCompleteConfirmation ?? true;
-
-      // Auto-imprimir si app_settings.receipt_print_after_sale = true.
-      if (printJob != null && printAfterSale) {
-        await PrintReceiptDialog.show(context, printJob);
-        if (!mounted) return;
-      }
-
-      // Si app_settings.sale_disable_complete_confirmation = true, mostrar
-      // solo un toast y no bloquear con un diálogo.
-      if (disableConfirmation) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: AppTokens.success,
-            content: Text(
-              result.ncf != null
-                  ? 'Venta #${result.saleNumber} registrada. NCF: ${result.ncf}'
-                  : 'Venta #${result.saleNumber} registrada.',
-              style: const TextStyle(color: AppTokens.successForeground),
-            ),
-          ),
-        );
-      } else {
-        await showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('¡Venta exitosa!'),
-            content: Text(
-              result.ncf != null
-                  ? 'Venta #${result.saleNumber} registrada correctamente.\n'
-                        'Comprobante NCF: ${result.ncf}'
-                  : 'Venta #${result.saleNumber} registrada correctamente.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cerrar'),
-              ),
-              if (printJob != null && !printAfterSale)
-                FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    PrintReceiptDialog.show(context, printJob);
-                  },
-                  icon: const Icon(Icons.receipt_long_outlined, size: 18),
-                  label: const Text('Ver recibo'),
-                ),
-            ],
-          ),
-        );
-      }
+      return printAfterSale ? result.preparedPrintJob : null;
     } catch (e) {
       if (mounted) {
         AppSnackBar.error(context, 'No se pudo procesar la venta', e);
       }
+      return null;
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -2239,12 +2218,28 @@ class _PaymentResult {
   final bool asCredit;
 }
 
-/// Página 2 (diálogo) de cobro: métodos de pago divididos que suman el total.
-/// Devuelve un [_PaymentResult] al confirmar, o null si se cancela.
+/// Cuadro de cobro del POS, en dos fases dentro del MISMO diálogo:
+///
+///   1. Métodos de pago divididos que suman el total.
+///   2. La factura ya emitida (con su NCF y número reales) lista para
+///      imprimir.
+///
+/// Antes eran dos diálogos encadenados —cobrar, que se cerrara, que abriera la
+/// vista previa— más un tercero de "venta exitosa". En una caja con fila eso
+/// es tiempo perdido en cada venta.
+///
+/// La venta a crédito no pasa por acá: se resuelve con [_PaymentResult] hacia
+/// afuera, porque antes hay que preguntar el plazo.
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({required this.total});
+  const _PaymentDialog({required this.total, required this.onCheckout});
 
   final double total;
+
+  /// Ejecuta el cobro contra la base. Devuelve el trabajo de impresión ya con
+  /// NCF y número de factura, o null si la venta falló (el error se le muestra
+  /// al usuario por su cuenta) o si el negocio no imprime comprobante.
+  final Future<PreparedPrintJobData?> Function(List<SalePaymentLine> payments)
+  onCheckout;
 
   @override
   State<_PaymentDialog> createState() => _PaymentDialogState();
@@ -2253,6 +2248,10 @@ class _PaymentDialog extends StatefulWidget {
 class _PaymentDialogState extends State<_PaymentDialog> {
   final List<_PayLine> _lines = [];
   bool _touched = false;
+
+  /// Fase 2: cobro hecho y factura lista. Null mientras se está cobrando.
+  PreparedPrintJobData? _printJob;
+  bool _submitting = false;
 
   static const List<MapEntry<String, String>> _methods = [
     MapEntry('cash', 'Efectivo'),
@@ -2329,8 +2328,31 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     _sync();
   });
 
+  /// Cobra sin cerrar el diálogo y, si la venta salió, cambia a la fase de
+  /// impresión. Si el negocio no imprime comprobante no hay segunda fase: el
+  /// cuadro se cierra solo, que es lo mismo que hacía el flujo viejo.
+  Future<void> _onConfirm() async {
+    setState(() => _submitting = true);
+    final job = await widget.onCheckout(_payments());
+    if (!mounted) return;
+    if (job == null) {
+      // Venta fallida (error ya mostrado) o sin comprobante que imprimir. En
+      // ambos casos el POS ya reaccionó por fuera; acá solo se cierra.
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() {
+      _submitting = false;
+      _printJob = job;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Fase 2: la factura ya existe, solo queda imprimirla. Mismo cuadro.
+    final job = _printJob;
+    if (job != null) return ReceiptPreviewDialogBody(printData: job);
+
     const contentPad = EdgeInsets.symmetric(horizontal: 10, vertical: 8);
     OutlineInputBorder border() => OutlineInputBorder(
       borderRadius: BorderRadius.circular(8),
@@ -2507,25 +2529,40 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _submitting ? null : () => Navigator.of(context).pop(),
           child: const Text('Cancelar'),
         ),
         FilledButton.icon(
           style: FilledButton.styleFrom(
             backgroundColor: const Color(0xFF22C55E),
           ),
-          onPressed: (_valid || _anyCredit)
-              ? () => Navigator.of(context).pop(
-                  _PaymentResult(
-                    payments: _anyCredit ? const [] : _payments(),
-                    asCredit: _anyCredit,
+          onPressed: _submitting || !(_valid || _anyCredit)
+              ? null
+              : () {
+                  // A crédito hay que preguntar el plazo antes de cobrar, y
+                  // eso vive en el POS: se devuelve el resultado y el flujo
+                  // sigue afuera.
+                  if (_anyCredit) {
+                    Navigator.of(context).pop(
+                      const _PaymentResult(payments: [], asCredit: true),
+                    );
+                    return;
+                  }
+                  _onConfirm();
+                },
+          icon: _submitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
                   ),
                 )
-              : null,
-          icon: const Icon(Icons.check_circle_outline, size: 18),
-          label: const Text(
-            'Confirmar venta',
-            style: TextStyle(fontWeight: FontWeight.w700),
+              : const Icon(Icons.check_circle_outline, size: 18),
+          label: Text(
+            _submitting ? 'Cobrando...' : 'Confirmar venta',
+            style: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
       ],
@@ -2944,10 +2981,22 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
     return v.toStringAsFixed(2);
   }
 
+  /// Devuelve el número tecleado a la cantidad real de la línea cuando el POS
+  /// rechazó el cambio (p. ej. "Sin stock suficiente"): si no, el carrito
+  /// muestra una cantidad que no es la que se va a facturar.
+  void _resyncQty() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final actual = _fmtNum(widget.item.quantity);
+      if (_qtyCtrl.text != actual) _qtyCtrl.text = actual;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
     final isReturn = ref.watch(posModeProvider) == PosMode.returnMode;
+    final canEditPrice = ref.watch(canEditSalePriceProvider);
     final bgColor = isReturn
         ? const Color(0xFFFEF2F2)
         : const Color(0xFFF8FAFC);
@@ -3066,6 +3115,9 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                   label: 'Precio',
                   controller: _priceCtrl,
                   suffix: r'$',
+                  // Sin `sales.edit_price` el cajero vende al precio del
+                  // catálogo: ve el precio pero no lo puede sobrescribir.
+                  enabled: canEditPrice,
                   onSubmit: (raw) {
                     final v = double.tryParse(raw) ?? item.unitPrice;
                     widget.onPriceChanged(v);
@@ -3073,23 +3125,28 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                 ),
               ),
               const SizedBox(width: 6),
-              Expanded(
-                // Línea con IMEIs: la cantidad es igual a los equipos
-                // elegidos, así que no se teclea — se abre el selector.
-                child: item.imeis.isNotEmpty
-                    ? _QuantityByImeiField(
-                        quantity: item.quantity,
-                        onTap: widget.onPickImeis,
-                      )
-                    : _CartField(
-                        label: 'Cantidad',
-                        controller: _qtyCtrl,
-                        onSubmit: (raw) {
-                          final v = double.tryParse(raw) ?? item.quantity;
-                          widget.onQuantityChanged(v);
-                        },
-                      ),
-              ),
+              // Línea con IMEIs: la cantidad es igual a los equipos
+              // elegidos, así que no se teclea — se abre el selector.
+              if (item.imeis.isNotEmpty)
+                Expanded(
+                  child: _QuantityByImeiField(
+                    quantity: item.quantity,
+                    onTap: widget.onPickImeis,
+                  ),
+                )
+              else
+                _CartQtyStepper(
+                  controller: _qtyCtrl,
+                  onDecrease: () =>
+                      widget.onQuantityChanged(item.quantity - 1),
+                  onIncrease: () =>
+                      widget.onQuantityChanged(item.quantity + 1),
+                  onSubmit: (raw) {
+                    final v = double.tryParse(raw) ?? item.quantity;
+                    widget.onQuantityChanged(v);
+                    _resyncQty();
+                  },
+                ),
               const SizedBox(width: 6),
               Expanded(
                 child: _CartField(
@@ -3209,12 +3266,16 @@ class _CartField extends StatefulWidget {
     required this.controller,
     required this.onSubmit,
     this.suffix,
+    this.enabled = true,
   });
 
   final String label;
   final TextEditingController controller;
   final ValueChanged<String> onSubmit;
   final String? suffix;
+
+  /// `false` deja el valor a la vista pero no editable (falta de permiso).
+  final bool enabled;
 
   @override
   State<_CartField> createState() => _CartFieldState();
@@ -3258,9 +3319,14 @@ class _CartFieldState extends State<_CartField> {
         TextField(
           controller: widget.controller,
           focusNode: _focus,
+          enabled: widget.enabled,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           textAlignVertical: TextAlignVertical.center,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: widget.enabled ? null : const Color(0xFF64748B),
+          ),
           onSubmitted: widget.onSubmit,
           decoration: InputDecoration(
             isDense: true,
@@ -3281,11 +3347,140 @@ class _CartFieldState extends State<_CartField> {
               borderRadius: BorderRadius.circular(6),
               borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
             ),
+            disabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
             filled: true,
-            fillColor: Colors.white,
+            fillColor: widget.enabled ? Colors.white : const Color(0xFFF1F5F9),
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Cantidad de una línea del carrito: botones − / + con el número al centro,
+/// igual que en cotizaciones. El número también se puede teclear, que es lo
+/// único práctico cuando se venden decenas de unidades de un mismo artículo.
+class _CartQtyStepper extends StatefulWidget {
+  const _CartQtyStepper({
+    required this.controller,
+    required this.onDecrease,
+    required this.onIncrease,
+    required this.onSubmit,
+  });
+
+  final TextEditingController controller;
+  final VoidCallback onDecrease;
+  final VoidCallback onIncrease;
+  final ValueChanged<String> onSubmit;
+
+  @override
+  State<_CartQtyStepper> createState() => _CartQtyStepperState();
+}
+
+class _CartQtyStepperState extends State<_CartQtyStepper> {
+  late final FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _focus = FocusNode();
+    _focus.addListener(_onFocus);
+  }
+
+  void _onFocus() {
+    if (_focus.hasFocus) {
+      // Entrar al campo selecciona el valor: teclear reemplaza en vez de
+      // quedar "112" al escribir un 12 sobre un 1.
+      widget.controller.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: widget.controller.text.length,
+      );
+    } else {
+      widget.onSubmit(widget.controller.text);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Cantidad',
+          style: TextStyle(
+            fontSize: 10,
+            color: Color(0xFF64748B),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _QtyStepBtn(icon: Icons.remove, onTap: widget.onDecrease),
+            SizedBox(
+              width: 38,
+              child: TextField(
+                controller: widget.controller,
+                focusNode: _focus,
+                textAlign: TextAlign.center,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+                onSubmitted: widget.onSubmit,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(vertical: 6),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                ),
+              ),
+            ),
+            _QtyStepBtn(icon: Icons.add, onTap: widget.onIncrease),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Botón cuadrado de − / + del stepper de cantidad.
+class _QtyStepBtn extends StatelessWidget {
+  const _QtyStepBtn({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        width: 26,
+        height: 30,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Icon(icon, size: 15, color: const Color(0xFF64748B)),
+      ),
     );
   }
 }

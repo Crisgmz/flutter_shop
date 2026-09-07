@@ -7,7 +7,7 @@ import '../../features/printing/data/printing.dart';
 import '../formatters/formatters.dart';
 import 'app_snackbar.dart';
 
-class PrintReceiptDialog extends StatefulWidget {
+class PrintReceiptDialog extends StatelessWidget {
   const PrintReceiptDialog({super.key, required this.printData});
 
   final PreparedPrintJobData printData;
@@ -20,10 +20,27 @@ class PrintReceiptDialog extends StatefulWidget {
   }
 
   @override
-  State<PrintReceiptDialog> createState() => _PrintReceiptDialogState();
+  Widget build(BuildContext context) =>
+      ReceiptPreviewDialogBody(printData: printData);
 }
 
-class _PrintReceiptDialogState extends State<PrintReceiptDialog> {
+/// Cuerpo del cuadro de vista previa: selector Ticket/A4, el papel dibujado y
+/// los botones Cerrar/Imprimir.
+///
+/// Vive aparte de [PrintReceiptDialog] porque el POS lo monta como segunda
+/// fase del mismo cuadro de cobro (cobrar e imprimir sin abrir y cerrar dos
+/// diálogos), en vez de abrir un diálogo nuevo encima.
+class ReceiptPreviewDialogBody extends StatefulWidget {
+  const ReceiptPreviewDialogBody({super.key, required this.printData});
+
+  final PreparedPrintJobData printData;
+
+  @override
+  State<ReceiptPreviewDialogBody> createState() =>
+      _ReceiptPreviewDialogBodyState();
+}
+
+class _ReceiptPreviewDialogBodyState extends State<ReceiptPreviewDialogBody> {
   late PrintPaperSize _selectedSize;
 
   @override

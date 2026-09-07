@@ -1557,13 +1557,6 @@ class _SalesReceiptSection extends StatelessWidget {
           onSave: onSave,
         ),
         _BoolRow(
-          label: 'Desactivar confirmación de venta completada',
-          column: 'sale_disable_complete_confirmation',
-          value: settings.saleDisableCompleteConfirmation,
-          isReadOnly: isReadOnly,
-          onSave: onSave,
-        ),
-        _BoolRow(
           label: 'Desactivar la venta rápida',
           column: 'sale_disable_quick_sale',
           value: settings.saleDisableQuickSale,

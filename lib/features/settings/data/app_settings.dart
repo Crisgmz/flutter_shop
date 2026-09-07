@@ -125,6 +125,10 @@ class AppSettings {
       _bool('sale_strip_customer_contact', false);
   bool get saleHideRecentForCustomer =>
       _bool('sale_hide_recent_for_customer', false);
+  /// Obsoleto: el POS ya no muestra el diálogo "¡Venta exitosa!" — la
+  /// confirmación es el toast que aparece al registrar la venta. La columna
+  /// sigue en la base para no romper instalaciones viejas.
+  @Deprecated('El diálogo de confirmación de venta ya no existe.')
   bool get saleDisableCompleteConfirmation =>
       _bool('sale_disable_complete_confirmation', true);
   bool get saleDisableQuickSale => _bool('sale_disable_quick_sale', false);

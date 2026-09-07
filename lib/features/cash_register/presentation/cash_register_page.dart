@@ -63,6 +63,11 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
               const SizedBox(height: AppTokens.s24),
               DataTableShell(
                 title: 'Sesiones recientes',
+                // El cajero queda amarrado a su caja; el que supervisa puede
+                // saltar a otra o ver todas.
+                trailing: canSeeAllCashiers
+                    ? const _RecentSessionsRegisterFilter()
+                    : null,
                 child: data.recentSessions.isEmpty
                     ? const Padding(
                         padding: EdgeInsets.all(AppTokens.s20),
@@ -73,6 +78,8 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                       )
                     : DataTable(
                         columns: [
+                          if (canSeeAllCashiers)
+                            const DataColumn(label: Text('Cajero')),
                           const DataColumn(label: Text('Apertura')),
                           const DataColumn(label: Text('Cierre')),
                           const DataColumn(label: Text('Estado')),
@@ -92,6 +99,11 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                             .map(
                               (session) => DataRow(
                                 cells: [
+                                  if (canSeeAllCashiers)
+                                    DataCell(Text(
+                                      data.cashierNameBySessionId[session.id] ??
+                                          '-',
+                                    )),
                                   DataCell(Text(formatDateTime(session.openedAt))),
                                   DataCell(Text(
                                     session.closedAt == null
@@ -1358,6 +1370,59 @@ class _BlindCloseNotice extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Selector de caja del panel "Sesiones recientes".
+///
+/// Por defecto sigue la caja que el usuario tiene abierta en el POS: estando
+/// en la caja 1 no deben aparecer los cierres de la caja 2. Admin y supervisor
+/// pueden saltar a otra caja o ver todas.
+class _RecentSessionsRegisterFilter extends ConsumerWidget {
+  const _RecentSessionsRegisterFilter();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final registers = ref.watch(cashRegistersProvider).valueOrNull ?? const [];
+    final selected = ref.watch(recentSessionsRegisterFilterProvider);
+    // Una caja que ya no está en el catálogo (desactivada) dejaría el
+    // Dropdown con un value fuera de sus items y eso lanza en build.
+    final value = selected == null ||
+            selected == kAllCashRegisters ||
+            registers.any((r) => r.id == selected)
+        ? selected
+        : null;
+
+    return DropdownButtonHideUnderline(
+      child: DropdownButton<String?>(
+        value: value,
+        isDense: true,
+        borderRadius: BorderRadius.circular(AppTokens.radius),
+        style: const TextStyle(
+          fontSize: 13,
+          color: AppTokens.foreground,
+          fontWeight: FontWeight.w600,
+        ),
+        onChanged: (next) => ref
+            .read(recentSessionsRegisterFilterProvider.notifier)
+            .state = next,
+        items: [
+          const DropdownMenuItem<String?>(
+            value: null,
+            child: Text('Caja en uso'),
+          ),
+          const DropdownMenuItem<String?>(
+            value: kAllCashRegisters,
+            child: Text('Todas las cajas'),
+          ),
+          for (final register in registers)
+            DropdownMenuItem<String?>(
+              value: register.id,
+              child: Text(register.name),
+            ),
         ],
       ),
     );

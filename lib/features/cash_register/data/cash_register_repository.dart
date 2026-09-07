@@ -1,5 +1,8 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+/// Valor del filtro de caja que significa "no recortar por caja".
+const kAllCashRegisters = '__all__';
+
 class CashSessionEntity {
   CashSessionEntity({
     required this.id,
@@ -12,6 +15,7 @@ class CashSessionEntity {
     required this.notes,
     required this.closedAt,
     this.cashRegisterId,
+    this.openedBy,
     this.closingBreakdown = const <int, int>{},
   });
 
@@ -28,6 +32,10 @@ class CashSessionEntity {
   /// Caja sobre la que se abrió la sesión. Null para sesiones legacy
   /// abiertas antes del migration de cash_registers.
   final String? cashRegisterId;
+
+  /// Usuario que abrió la sesión. Se usa para rotular la fila con el nombre
+  /// del cajero cuando la lista mezcla varios (vista admin/supervisor).
+  final String? openedBy;
 
   /// Conteo del cierre por denominación (migración 85). Vacío en las sesiones
   /// cerradas antes de que se guardara el desglose.
@@ -56,6 +64,7 @@ class CashSessionEntity {
           : _toDouble(map['difference_amount']),
       notes: map['notes']?.toString(),
       cashRegisterId: _nullIfEmpty(map['cash_register_id']?.toString()),
+      openedBy: _nullIfEmpty(map['opened_by']?.toString()),
     );
   }
 }
@@ -168,11 +177,17 @@ class CashRegisterData {
     required this.recentSessions,
     this.pettyCashExpensesToday = 0,
     this.expectedByOpenSessionId = const {},
+    this.cashierNameBySessionId = const {},
   });
 
   final CashSessionEntity? openSession;
   final CashSessionMetrics? openMetrics;
   final List<CashSessionEntity> recentSessions;
+
+  /// Nombre del cajero que abrió cada sesión de `recentSessions`. Solo se
+  /// llena cuando la lista trae sesiones de varios usuarios (admin/supervisor):
+  /// sin esto las filas de distintos cajeros son indistinguibles.
+  final Map<String, String> cashierNameBySessionId;
 
   /// Esperado REAL (fórmula completa de `expectedCashFromOpening`) por cada
   /// sesión ABIERTA de `recentSessions`.
@@ -443,7 +458,18 @@ class CashRegisterRepository {
   /// cajas abiertas a la vez, el cuadre/movimientos/cierre deben operar sobre
   /// ESA caja, no sobre "la última abierta". Si es null o ya no está abierta,
   /// cae a la última sesión abierta del usuario.
-  Future<CashRegisterData> fetchData({String? activeSessionId}) async {
+  /// [registerFilter]: caja por la que se recortan las "Sesiones recientes".
+  /// `null` = seguir la caja que el usuario tiene activa en el POS (default:
+  /// estando en la caja 1 no deben salir los cierres de la caja 2);
+  /// [kAllCashRegisters] = no recortar.
+  ///
+  /// [allCashiers]: `true` para admin/supervisor, que deben ver los cierres de
+  /// todos los cajeros de la sucursal. Un cajero solo ve los suyos.
+  Future<CashRegisterData> fetchData({
+    String? activeSessionId,
+    String? registerFilter,
+    bool allCashiers = false,
+  }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       return CashRegisterData(
@@ -455,7 +481,21 @@ class CashRegisterRepository {
 
     final openSession =
         await _fetchActiveOrLatestOpenSession(branchId, activeSessionId);
-    final recentSessions = await _fetchRecentSessions(branchId);
+    // Sin caja activa (ni elección manual) no hay caja por la cual recortar:
+    // se muestran todas en vez de dejar el panel vacío.
+    final registerId = switch (registerFilter) {
+      kAllCashRegisters => null,
+      null => openSession?.cashRegisterId,
+      final id => id,
+    };
+    final recentSessions = await _fetchRecentSessions(
+      branchId,
+      cashRegisterId: registerId,
+      allCashiers: allCashiers,
+    );
+    final cashierNameBySessionId = allCashiers
+        ? await _fetchCashierNames(recentSessions)
+        : const <String, String>{};
     final pettyCashExpensesToday = await _fetchPettyCashExpensesToday(branchId);
 
     CashSessionMetrics? metrics;
@@ -490,6 +530,7 @@ class CashRegisterRepository {
       recentSessions: recentSessions,
       pettyCashExpensesToday: pettyCashExpensesToday,
       expectedByOpenSessionId: Map.unmodifiable(expectedByOpenSessionId),
+      cashierNameBySessionId: cashierNameBySessionId,
     );
   }
 
@@ -651,19 +692,33 @@ class CashRegisterRepository {
     );
   }
 
-  /// Últimas 15 sesiones DEL USUARIO ACTUAL en la sucursal.
-  Future<List<CashSessionEntity>> _fetchRecentSessions(String branchId) async {
+  /// Sesiones para el panel "Sesiones recientes".
+  ///
+  /// [cashRegisterId] recorta a una sola caja (null = todas). [allCashiers]
+  /// levanta el filtro por usuario: sin él un admin que nunca abrió caja veía
+  /// el panel vacío aunque sus cajeros tuvieran cierres.
+  Future<List<CashSessionEntity>> _fetchRecentSessions(
+    String branchId, {
+    String? cashRegisterId,
+    bool allCashiers = false,
+  }) async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) return const [];
-    final rows = await _client
+    var query = _client
         .from('cash_sessions')
         .select(
-          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, closing_breakdown, notes',
+          'id, status, opened_at, closed_at, opening_amount, expected_amount, closing_amount, difference_amount, closing_breakdown, notes, cash_register_id, opened_by',
         )
-        .eq('branch_id', branchId)
-        .eq('opened_by', userId)
+        .eq('branch_id', branchId);
+    if (!allCashiers) {
+      query = query.eq('opened_by', userId);
+    }
+    if (cashRegisterId != null) {
+      query = query.eq('cash_register_id', cashRegisterId);
+    }
+    final rows = await query
         .order('opened_at', ascending: false)
-        .limit(15);
+        .limit(allCashiers ? 50 : 15);
 
     return rows
         .map(
@@ -671,6 +726,29 @@ class CashRegisterRepository {
               CashSessionEntity.fromMap(Map<String, dynamic>.from(item as Map)),
         )
         .toList(growable: false);
+  }
+
+  /// Nombre del cajero de cada sesión, en una sola query contra `profiles`.
+  Future<Map<String, String>> _fetchCashierNames(
+    List<CashSessionEntity> sessions,
+  ) async {
+    final ids = <String>{
+      for (final s in sessions)
+        if (s.openedBy != null && s.openedBy!.isNotEmpty) s.openedBy!,
+    };
+    if (ids.isEmpty) return const {};
+    final rows = await _client
+        .from('profiles')
+        .select('id, full_name')
+        .inFilter('id', ids.toList());
+    final byId = <String, String>{
+      for (final r in rows)
+        ((r as Map)['id'] ?? '').toString(): ((r)['full_name'] ?? '').toString(),
+    };
+    return {
+      for (final s in sessions)
+        if (s.openedBy != null) s.id: byId[s.openedBy] ?? 'Cajero',
+    };
   }
 
   /// Métricas (cobros, gastos, breakdown efectivo) para una sesión específica.
