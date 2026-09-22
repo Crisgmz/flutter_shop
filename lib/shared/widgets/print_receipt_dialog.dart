@@ -420,7 +420,7 @@ class _ThermalPreview extends StatelessWidget {
         for (final item in d.items)
           TableRow(
             children: [
-              _Cell(item.description, style: _mono),
+              _ThermalItemCell(item: item, style: _mono),
               _Cell(moneyPlain(item.unitPrice),
                   style: _mono, align: Alignment.centerRight),
               _Cell(_qtyLabel(item.quantity),
@@ -488,6 +488,63 @@ class _Cell extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
       child: Align(alignment: align, child: Text(text, style: style)),
+    );
+  }
+}
+
+/// Bloque de IMEIs: la etiqueta a la izquierda y un código por renglón,
+/// alineados debajo del primero. Espeja `PdfReceiptBuilder._imeiBlock`.
+///
+///     IMEI: 234327423942
+///           234324324234
+class _ImeiBlock extends StatelessWidget {
+  const _ImeiBlock({required this.imeis, required this.style});
+
+  final List<String> imeis;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('IMEI: ', style: style),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final imei in imeis) Text(imei, style: style),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Celda de nombre del ticket: el artículo y, debajo, sus IMEIs.
+class _ThermalItemCell extends StatelessWidget {
+  const _ThermalItemCell({required this.item, required this.style});
+
+  final PrintDocumentItem item;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    if (item.imeis.isEmpty) return _Cell(item.description, style: style);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(item.description, style: style),
+          _ImeiBlock(
+            imeis: item.imeis,
+            style: style.copyWith(fontSize: (style.fontSize ?? 10.5) - 0.5),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -819,12 +876,21 @@ class _A4Preview extends StatelessWidget {
               it.descriptionTitle,
               style: const TextStyle(fontSize: 9.5),
             ),
-            // IMEIs: envuelven, igual que en el PDF.
+            // Texto extra pegado al nombre: comprobantes viejos, de cuando
+            // el IMEI viajaba dentro de la descripción.
             for (final detail in it.descriptionDetails)
               Padding(
                 padding: const EdgeInsets.only(top: 1),
                 child: Text(
                   detail,
+                  style: const TextStyle(fontSize: 8, color: _kInkMuted),
+                ),
+              ),
+            if (it.imeis.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: _ImeiBlock(
+                  imeis: it.imeis,
                   style: const TextStyle(fontSize: 8, color: _kInkMuted),
                 ),
               ),

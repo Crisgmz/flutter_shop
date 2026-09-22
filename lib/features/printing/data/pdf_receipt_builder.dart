@@ -582,7 +582,7 @@ class PdfReceiptBuilder {
         for (final item in data.items)
           pw.TableRow(
             children: [
-              _thermalCell(item.description, style: base),
+              _thermalItemCell(item, style: base),
               _thermalCell(
                 moneyPlain(item.unitPrice),
                 style: base,
@@ -601,6 +601,60 @@ class PdfReceiptBuilder {
             ],
           ),
       ],
+    );
+  }
+
+  /// Bloque de IMEIs: la etiqueta a la izquierda y un código por renglón,
+  /// alineados debajo del primero.
+  ///
+  ///     IMEI: 234327423942
+  ///           234324324234
+  ///
+  /// Nunca en una sola tirada separada por comas: al envolver quedaban
+  /// códigos partidos a la mitad y no se sabía dónde empieza cada uno.
+  pw.Widget _imeiBlock(
+    List<String> imeis, {
+    required double fontSize,
+    PdfColor color = PdfColors.grey700,
+  }) {
+    final style = pw.TextStyle(fontSize: fontSize, color: color);
+    return pw.Row(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text('IMEI: ', style: style),
+        pw.Expanded(
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              for (final imei in imeis) pw.Text(imei, style: style),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Celda de nombre del ticket: el artículo y, debajo, sus IMEIs.
+  pw.Widget _thermalItemCell(
+    PrintDocumentItem item, {
+    required pw.TextStyle style,
+  }) {
+    if (item.imeis.isEmpty) {
+      return _thermalCell(item.description, style: style);
+    }
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 4, horizontal: 3),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(item.description, style: style),
+          _imeiBlock(
+            item.imeis,
+            fontSize: (style.fontSize ?? 9) - 0.5,
+            color: PdfColors.black,
+          ),
+        ],
+      ),
     );
   }
 
@@ -1028,9 +1082,8 @@ class PdfReceiptBuilder {
               maxLines: size > _kMinItemFontSize ? 1 : 2,
               softWrap: size <= _kMinItemFontSize,
             ),
-            // IMEIs de la línea. Envuelven en los renglones que hagan falta:
-            // un celular vendido sin su IMEI en la factura no sirve de
-            // garantía.
+            // Texto extra pegado al nombre: comprobantes viejos, de cuando el
+            // IMEI viajaba dentro de la descripción.
             for (final detail in it.descriptionDetails)
               pw.Padding(
                 padding: const pw.EdgeInsets.only(top: 1),
@@ -1041,6 +1094,11 @@ class PdfReceiptBuilder {
                     color: PdfColors.grey700,
                   ),
                 ),
+              ),
+            if (it.imeis.isNotEmpty)
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 1),
+                child: _imeiBlock(it.imeis, fontSize: 8),
               ),
             if (_hasText(it.notes))
               pw.Padding(

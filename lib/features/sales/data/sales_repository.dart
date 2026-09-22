@@ -1006,18 +1006,15 @@ class SalesRepository {
           .map((row) => Map<String, dynamic>.from(row as Map))
           .map(
             (item) => SalePrintItemSource(
-              description: () {
-                final base = (item['description'] ?? '').toString();
-                final imeis = item['imeis'] is List
-                    ? (item['imeis'] as List)
-                        .map((e) => e.toString())
-                        .where((e) => e.trim().isNotEmpty)
-                        .toList()
-                    : const <String>[];
-                return imeis.isEmpty
-                    ? base
-                    : '$base\nIMEI: ${imeis.join(", ")}';
-              }(),
+              description: (item['description'] ?? '').toString(),
+              // Van aparte del nombre: el comprobante los imprime uno debajo
+              // del otro, no en una tirada de números separados por coma.
+              imeis: item['imeis'] is List
+                  ? (item['imeis'] as List)
+                      .map((e) => e.toString().trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList(growable: false)
+                  : const <String>[],
               quantity: _toDouble(item['quantity']),
               unitPrice: _toDouble(item['unit_price']),
               // Regla de cuadre: line_subtotal es la BASE IMPONIBLE (precio ×

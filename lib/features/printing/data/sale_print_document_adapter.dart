@@ -129,6 +129,7 @@ class SalePrintItemSource {
     this.notes,
     this.lineDiscount = 0,
     this.isService,
+    this.imeis = const <String>[],
   });
 
   final String description;
@@ -146,6 +147,9 @@ class SalePrintItemSource {
 
   /// `products.is_service` de la línea. Null si el producto ya no existe.
   final bool? isService;
+
+  /// IMEIs de los equipos vendidos en esta línea.
+  final List<String> imeis;
 }
 
 class SalePrintPaymentSource {
@@ -239,6 +243,7 @@ class SalePrintDocumentAdapter {
               sku: _nullIfBlank(item.sku),
               unitLabel: _nullIfBlank(item.unitLabel),
               notes: _nullIfBlank(item.notes),
+              imeis: item.imeis,
             ),
           )
           .toList(growable: false),

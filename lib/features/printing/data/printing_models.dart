@@ -163,6 +163,7 @@ class PrintDocumentItem {
     this.notes,
     this.lineDiscount = 0,
     this.isService,
+    this.imeis = const <String>[],
   });
 
   final String description;
@@ -182,6 +183,11 @@ class PrintDocumentItem {
 
   /// Descuento aplicado a la línea (monto, no porcentaje). 0 = sin descuento.
   final double lineDiscount;
+
+  /// IMEIs de los equipos de la línea. Van como lista y no pegados al nombre
+  /// para que cada uno salga en su propio renglón: un IMEI partido a la mitad
+  /// no sirve para reclamar la garantía.
+  final List<String> imeis;
 
   /// Primer renglón de la descripción: el nombre del artículo.
   String get descriptionTitle {

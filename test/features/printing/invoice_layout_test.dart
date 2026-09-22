@@ -43,12 +43,12 @@ void main() {
       ),
       items: [
         PrintDocumentItem(
-          // Así arma la venta la descripción de una línea con equipos
-          // serializados: el nombre y, en otro renglón, sus IMEIs.
-          description: withImei
-              ? 'Bomba Iberia de jacuzzi 2 hp 110v\n'
-                  'IMEI: 238120938129, 1234567, 7687799090'
-              : 'Bomba Iberia de jacuzzi 2 hp 110v',
+          description: 'Bomba Iberia de jacuzzi 2 hp 110v',
+          // Los IMEIs viajan como lista, no pegados al nombre: el comprobante
+          // imprime uno por renglón.
+          imeis: withImei
+              ? const ['238120938129', '351234567890', '768779909012']
+              : const [],
           quantity: 2,
           unitPrice: 7500,
           // 15,000 bruto con 1,500 de descuento = 10%.
@@ -91,14 +91,20 @@ void main() {
       expect(bytes.length, greaterThan(1000));
     });
 
-    test('la descripción separa el nombre de los IMEIs', () {
-      final item = buildDocument(withImei: true).items.first;
-
-      expect(item.descriptionTitle, 'Bomba Iberia de jacuzzi 2 hp 110v');
-      expect(
-        item.descriptionDetails,
-        ['IMEI: 238120938129, 1234567, 7687799090'],
+    test('un nombre con renglones extra se separa del título', () {
+      // Compatibilidad con comprobantes viejos, guardados cuando el IMEI
+      // viajaba dentro de la descripción.
+      const legacy = PrintDocumentItem(
+        description: 'celular pop 7\nIMEI: 12345, 8975667',
+        quantity: 1,
+        unitPrice: 1,
+        lineSubtotal: 1,
+        lineTax: 0,
+        lineTotal: 1,
       );
+
+      expect(legacy.descriptionTitle, 'celular pop 7');
+      expect(legacy.descriptionDetails, ['IMEI: 12345, 8975667']);
       expect(buildDocument().items.first.descriptionDetails, isEmpty);
     });
 
@@ -116,7 +122,11 @@ void main() {
   });
 
   group('vista previa en pantalla', () {
-    Future<void> pumpPreview(WidgetTester tester, PrintDocumentData document) async {
+    Future<void> pumpPreview(
+      WidgetTester tester,
+      PrintDocumentData document, {
+      PrintPaperSize paperSize = PrintPaperSize.a4,
+    }) async {
       tester.view.physicalSize = const Size(1600, 1400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
@@ -127,11 +137,11 @@ void main() {
             body: PrintReceiptDialog(
               printData: PreparedPrintJobData(
                 document: document,
-                paperSize: PrintPaperSize.a4,
+                paperSize: paperSize,
                 job: PrintJobDraft(
                   branchId: 'branch-1',
                   documentType: document.documentType,
-                  paperSize: PrintPaperSize.a4,
+                  paperSize: paperSize,
                   payload: const {},
                 ),
                 dispatchPayload: const {},
@@ -161,10 +171,28 @@ void main() {
       await pumpPreview(tester, buildDocument(withImei: true));
 
       expect(find.text('Bomba Iberia de jacuzzi 2 hp 110v'), findsOneWidget);
-      expect(
-        find.text('IMEI: 238120938129, 1234567, 7687799090'),
-        findsOneWidget,
+      expect(find.text('IMEI: '), findsOneWidget);
+      // Cada equipo en su propio renglón: la etiqueta una sola vez y los
+      // códigos completos, sin comas ni cortes a la mitad.
+      for (final imei in const [
+        '238120938129',
+        '351234567890',
+        '768779909012',
+      ]) {
+        expect(find.text(imei), findsOneWidget);
+      }
+      expect(find.textContaining('238120938129, '), findsNothing);
+    });
+
+    testWidgets('el ticket también lista un IMEI por renglón', (tester) async {
+      await pumpPreview(
+        tester,
+        buildDocument(withImei: true),
+        paperSize: PrintPaperSize.thermal80mm,
       );
+
+      expect(find.text('IMEI: '), findsOneWidget);
+      expect(find.text('351234567890'), findsOneWidget);
     });
 
     testWidgets('sin descuentos no imprime la columna %DESC', (tester) async {

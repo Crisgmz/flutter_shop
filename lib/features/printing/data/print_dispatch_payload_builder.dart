@@ -141,6 +141,7 @@ class PrintDispatchPayloadBuilder {
                 'sku': item.sku,
                 'unit_label': item.unitLabel,
                 'notes': item.notes,
+                'imeis': item.imeis,
               },
             )
             .toList(growable: false),
