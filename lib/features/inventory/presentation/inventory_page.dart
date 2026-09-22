@@ -1811,7 +1811,10 @@ class _ImportInventoryDialogState
       final repository = ref.read(inventoryRepositoryProvider);
       final InventoryBulkUpsertResult result;
       try {
-        result = await repository.bulkUpsertProducts(parsed.inputs);
+        result = await repository.bulkUpsertProducts(
+          parsed.inputs,
+          columns: parsed.columns,
+        );
       } catch (error) {
         _snack('Error durante la importación: $error');
         return;
@@ -1870,9 +1873,10 @@ class _ImportInventoryDialogState
               _stepHeader(
                 'Paso 2',
                 'Sube el archivo lleno (.xlsx o .csv) para crear y actualizar. '
-                    'La columna "sku" decide: si existe se actualiza, si no, se '
-                    'crea. Si tu Excel da error al leerse, guárdalo como CSV y '
-                    'súbelo.',
+                    'Los productos que ya existen se reconocen por su id, SKU, '
+                    'código de barras o nombre y solo se ajustan sus valores; '
+                    'los que no se encuentran se crean. Si tu Excel da error al '
+                    'leerse, guárdalo como CSV y súbelo.',
               ),
               const SizedBox(height: AppTokens.s12),
               Row(

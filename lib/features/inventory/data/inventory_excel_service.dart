@@ -37,6 +37,10 @@ const List<String> _productHeaders = [
   'variante',
   'imagen_url',
   'notas',
+  // Identificador interno del producto. Va al final a propósito: es lo que
+  // permite reconocer el producto al volver a subir el archivo aunque no
+  // tenga SKU ni código de barras.
+  'id',
 ];
 
 const List<String> _instructions = [
@@ -44,7 +48,10 @@ const List<String> _instructions = [
   '',
   '1. La hoja "Productos" es la única que el sistema lee al importar.',
   '2. La columna "nombre", "precio" y "costo" son obligatorias.',
-  '3. La columna "sku" se usa como llave: si ya existe en tu sucursal, el producto se actualiza; si no existe (o está vacío), se crea uno nuevo.',
+  '3. Para saber si un producto ya existe, el sistema lo busca en este orden: columna "id", luego "sku", luego "codigo_barras" y por último el "nombre" exacto. Si lo encuentra, lo actualiza; si no, crea uno nuevo.',
+  '3.1. La columna "id" la llena el sistema al exportar. NO la borres ni la cambies. Para un producto nuevo déjala vacía.',
+  '3.2. Al actualizar, solo se cambian las columnas que trae el archivo. Si borras una columna completa, ese dato se queda como está en el sistema.',
+  '3.3. Si cambias el "stock", el sistema registra el ajuste en el historial de movimientos del producto.',
   '4. La columna "categoria" debe coincidir (sin distinguir mayúsculas) con un nombre de la hoja "Categorias". Si la categoría no existe, la fila se rechaza.',
   '5. Los campos sí/no aceptan: si, sí, no, true, false, 1, 0.',
   '6. Los números pueden usar punto o coma como separador decimal.',
@@ -66,11 +73,18 @@ class InventoryImportParseResult {
     required this.inputs,
     required this.errors,
     required this.totalRows,
+    this.columns = const <String>{},
   });
 
   final List<InventoryProductInput> inputs;
   final List<InventoryImportRowError> errors;
   final int totalRows;
+
+  /// Encabezados que trae el archivo (en minúsculas). Al actualizar un
+  /// producto existente solo se tocan estas columnas: una columna que el
+  /// archivo no trae no puede pisar el dato con su valor por defecto (p. ej.
+  /// dejar el stock en 0 porque la hoja solo traía nombre y precio).
+  final Set<String> columns;
 }
 
 class InventoryExcelService {
@@ -176,6 +190,7 @@ class InventoryExcelService {
       inputs: inputs,
       errors: errors,
       totalRows: totalRows,
+      columns: headerIndex.keys.toSet(),
     );
   }
 
@@ -241,6 +256,7 @@ class InventoryExcelService {
       inputs: inputs,
       errors: errors,
       totalRows: totalRows,
+      columns: headerIndex.keys.toSet(),
     );
   }
 
@@ -309,6 +325,7 @@ class InventoryExcelService {
     }
 
     return InventoryProductInput(
+      id: str('id'),
       name: name,
       sku: str('sku'),
       barcode: str('codigo_barras'),
@@ -476,6 +493,7 @@ class InventoryExcelService {
       '',
       '',
       'Producto de ejemplo — bórralo antes de importar',
+      '',
     ];
     for (var i = 0; i < values.length; i++) {
       sheet
@@ -514,6 +532,7 @@ class InventoryExcelService {
       product.variantName ?? '',
       product.imageUrl ?? '',
       product.notes ?? '',
+      product.id,
     ];
     for (var i = 0; i < values.length; i++) {
       sheet
@@ -592,6 +611,8 @@ class InventoryExcelService {
       case 'notas':
       case 'imagen_url':
         return 32;
+      case 'id':
+        return 38;
       case 'categoria':
       case 'marca':
       case 'modelo':
@@ -614,7 +635,16 @@ class InventoryExcelService {
     if (value == null) return null;
     if (value is TextCellValue) return value.value.text;
     if (value is IntCellValue) return value.value.toString();
-    if (value is DoubleCellValue) return value.value.toString();
+    if (value is DoubleCellValue) {
+      // Excel guarda como número cualquier celda que parezca uno. Un SKU o un
+      // código de barras 12345 volvía como "12345.0" y ya no coincidía con el
+      // del sistema: el producto se creaba otra vez en vez de actualizarse.
+      final v = value.value;
+      if (v.isFinite && v == v.truncateToDouble() && v.abs() < 1e15) {
+        return v.toInt().toString();
+      }
+      return v.toString();
+    }
     if (value is BoolCellValue) return value.value ? 'true' : 'false';
     if (value is FormulaCellValue) return value.formula;
     return value.toString();

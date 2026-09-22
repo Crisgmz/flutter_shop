@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'inventory_import_matcher.dart';
+
 class InventoryCategory {
   InventoryCategory({
     required this.id,
@@ -626,33 +628,69 @@ class InventoryRepository {
     return delta;
   }
 
+  /// Columnas del archivo de importación → columnas de `products` que se
+  /// escriben al ACTUALIZAR un producto existente. Lo que no está acá no se
+  /// toca nunca desde un archivo: `price_includes_tax` (antes se pisaba con el
+  /// default global y cambiaba el sentido de todos los precios), los niveles
+  /// de precio 4 a 10 (el archivo no los trae y quedaban en null), la unidad
+  /// de compra y los IMEIs. `stock` va aparte: se ajusta con un movimiento.
+  static const _importUpdateColumns = <String, List<String>>{
+    'sku': ['sku'],
+    'nombre': ['name'],
+    'codigo_barras': ['barcode'],
+    'codigo_interno': ['internal_code'],
+    'categoria': ['category_id'],
+    'marca': ['brand'],
+    'modelo': ['model'],
+    'unidad': ['unit', 'sale_unit'],
+    'costo': ['cost'],
+    'precio': ['price'],
+    'precio_2': ['price_tier_1'],
+    'precio_3': ['price_tier_2'],
+    'precio_4': ['price_tier_3'],
+    'itbis_porcentaje': ['tax_rate'],
+    'exento_itbis': ['is_tax_exempt'],
+    'stock_minimo': ['min_stock'],
+    'nivel_reorden': ['reorder_level'],
+    'stock_maximo': ['max_stock'],
+    'rastrear_inventario': ['track_inventory'],
+    'permite_negativo': ['allow_negative_stock'],
+    'es_servicio': ['is_service'],
+    'activo': ['is_active'],
+    'talla': ['size_label'],
+    'variante': ['variant_name'],
+    'imagen_url': ['image_url'],
+    'notas': ['notes'],
+  };
+
+  /// Crea o actualiza productos desde el archivo de inventario.
+  ///
+  /// Un producto que ya existe se reconoce, en este orden, por: `id` (lo trae
+  /// el archivo exportado), SKU, código de barras y, como último recurso, el
+  /// nombre exacto. Antes solo se miraba el SKU, así que todo producto sin SKU
+  /// se volvía a crear en cada re-importación y el inventario quedaba
+  /// duplicado.
+  ///
+  /// [columns]: encabezados que trae el archivo. Al actualizar solo se
+  /// escriben esas columnas; `null` = todas las del archivo estándar. El stock
+  /// no se pisa: la diferencia se registra como ajuste en
+  /// `inventory_movements`, igual que el ajuste manual, y queda en el kardex.
   Future<InventoryBulkUpsertResult> bulkUpsertProducts(
-    List<InventoryProductInput> inputs,
-  ) async {
+    List<InventoryProductInput> inputs, {
+    Set<String>? columns,
+  }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
     }
 
-    final skus = <String>{};
-    for (final input in inputs) {
-      final sku = input.sku?.trim();
-      if (sku != null && sku.isNotEmpty) skus.add(sku);
-    }
-
-    final existingBySku = <String, String>{};
-    if (skus.isNotEmpty) {
-      final rows = await _client
-          .from('products')
-          .select('id, sku')
-          .eq('branch_id', branchId)
-          .inFilter('sku', skus.toList(growable: false));
-      for (final row in rows) {
-        final sku = row['sku']?.toString();
-        final id = row['id']?.toString();
-        if (sku != null && id != null) existingBySku[sku] = id;
-      }
-    }
+    final index = await _fetchImportIndex(branchId);
+    final present = columns ?? {..._importUpdateColumns.keys, 'stock'};
+    final updateColumns = <String>{
+      for (final header in present) ...?_importUpdateColumns[header],
+    };
+    final updateStock = present.contains('stock');
+    final userId = _client.auth.currentUser?.id;
 
     var inserted = 0;
     var updated = 0;
@@ -661,33 +699,90 @@ class InventoryRepository {
     for (var i = 0; i < inputs.length; i++) {
       final input = inputs[i];
       try {
-        final sku = input.sku?.trim();
-        final existingId = (sku != null && sku.isNotEmpty)
-            ? existingBySku[sku]
-            : null;
+        final match = index.resolve(
+          id: input.id,
+          sku: input.sku,
+          barcode: input.barcode,
+          name: input.name,
+        );
+        if (match.ambiguous > 1) {
+          throw Exception(
+            'Hay ${match.ambiguous} productos llamados "${input.name.trim()}" '
+            'y la fila no trae id, SKU ni código de barras para saber cuál es. '
+            'Exporta el inventario otra vez (el archivo nuevo trae la columna '
+            '"id") o ponle SKU a la fila.',
+          );
+        }
+
         final payload = _buildProductPayload(input);
         // El import no maneja IMEIs: no tocar la columna para no borrarlos,
         // ni apagar el "pedir IMEI en la compra" de los productos existentes.
         payload.remove('imeis');
         payload.remove('imei_on_purchase');
-        if (existingId == null) {
+
+        final existing = match.product;
+        if (existing == null) {
           payload['branch_id'] = branchId;
-          await _client.from('products').insert(payload);
+          final row = await _client
+              .from('products')
+              .insert(payload)
+              .select('id')
+              .single();
+          // Registrarlo ya: si el mismo producto aparece dos veces en el
+          // archivo, la segunda fila lo actualiza en vez de crearlo otra vez.
+          index.add(
+            ImportedProductRef(
+              id: row['id'].toString(),
+              name: input.name,
+              sku: input.sku,
+              barcode: input.barcode,
+              stock: input.stock,
+            ),
+          );
           inserted++;
-        } else {
+          continue;
+        }
+
+        final changes = <String, dynamic>{
+          for (final column in updateColumns)
+            if (payload.containsKey(column)) column: payload[column],
+        };
+        if (changes.isNotEmpty) {
           await _client
               .from('products')
-              .update(payload)
-              .eq('id', existingId)
+              .update(changes)
+              .eq('id', existing.id)
               .eq('branch_id', branchId);
-          updated++;
         }
+
+        if (updateStock) {
+          final delta =
+              double.parse((input.stock - existing.stock).toStringAsFixed(3));
+          if (delta != 0) {
+            // El trigger de inventory_movements suma/resta sobre
+            // products.stock, así que el stock final queda en lo que dice el
+            // archivo y el ajuste aparece en el historial del producto.
+            await _client.from('inventory_movements').insert({
+              'branch_id': branchId,
+              'product_id': existing.id,
+              'movement_type': delta > 0 ? 'adjustment_in' : 'adjustment_out',
+              'quantity': delta.abs(),
+              'reason': 'Importación de inventario',
+              'reference_type': 'inventory_import',
+              'notes': 'Stock ajustado de ${_fmtQty(existing.stock)} a '
+                  '${_fmtQty(input.stock)} al subir el archivo.',
+              'recorded_by': userId,
+            });
+            existing.stock = input.stock;
+          }
+        }
+        updated++;
       } catch (error) {
         errors.add(
           InventoryBulkUpsertError(
             inputIndex: i,
             productName: input.name,
-            message: error.toString(),
+            message: error.toString().replaceFirst('Exception: ', ''),
           ),
         );
       }
@@ -698,6 +793,43 @@ class InventoryRepository {
       updated: updated,
       errors: errors,
     );
+  }
+
+  static String _fmtQty(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(3);
+
+  /// Todos los productos de la sucursal (id, llaves y stock) para reconocer
+  /// las filas del archivo. Paginado: con miles de productos una sola
+  /// consulta se corta en el tope de 1000 filas y el resto se tomaría por
+  /// nuevo.
+  Future<InventoryImportIndex> _fetchImportIndex(String branchId) async {
+    const pageSize = 1000;
+    final index = InventoryImportIndex();
+    var from = 0;
+    while (true) {
+      final page = await _client
+          .from('products')
+          .select('id, name, sku, barcode, stock')
+          .eq('branch_id', branchId)
+          .order('id')
+          .range(from, from + pageSize - 1);
+      if (page.isEmpty) break;
+      for (final raw in page) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        index.add(
+          ImportedProductRef(
+            id: row['id'].toString(),
+            name: (row['name'] ?? '').toString(),
+            sku: row['sku']?.toString(),
+            barcode: row['barcode']?.toString(),
+            stock: (row['stock'] as num?)?.toDouble() ?? 0,
+          ),
+        );
+      }
+      from += page.length;
+      if (page.length < pageSize) break;
+    }
+    return index;
   }
 
   Map<String, dynamic> _buildProductPayload(InventoryProductInput input) {
