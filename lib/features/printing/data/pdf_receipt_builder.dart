@@ -1010,9 +1010,10 @@ class PdfReceiptBuilder {
     // ese piso, y ahí sí se permite un segundo renglón antes que imprimirlo
     // ilegible o cortado.
     pw.Widget descriptionCell(PrintDocumentItem it) {
+      final title = it.descriptionTitle;
       final size = _fitFontSize(
         context,
-        it.description,
+        title,
         maxWidth: descriptionWidth,
         baseFontSize: 9,
       );
@@ -1022,11 +1023,25 @@ class PdfReceiptBuilder {
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
             pw.Text(
-              it.description,
+              title,
               style: pw.TextStyle(fontSize: size),
               maxLines: size > _kMinItemFontSize ? 1 : 2,
               softWrap: size <= _kMinItemFontSize,
             ),
+            // IMEIs de la línea. Envuelven en los renglones que hagan falta:
+            // un celular vendido sin su IMEI en la factura no sirve de
+            // garantía.
+            for (final detail in it.descriptionDetails)
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 1),
+                child: pw.Text(
+                  detail,
+                  style: const pw.TextStyle(
+                    fontSize: 8,
+                    color: PdfColors.grey700,
+                  ),
+                ),
+              ),
             if (_hasText(it.notes))
               pw.Padding(
                 padding: const pw.EdgeInsets.only(top: 1),

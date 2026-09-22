@@ -18,6 +18,7 @@ void main() {
     bool withDiscount = false,
     bool? isService,
     bool? secondIsService,
+    bool withImei = false,
   }) {
     return PrintDocumentData(
       logoOnLeft: logoOnLeft,
@@ -42,7 +43,12 @@ void main() {
       ),
       items: [
         PrintDocumentItem(
-          description: 'Bomba Iberia de jacuzzi 2 hp 110v',
+          // Así arma la venta la descripción de una línea con equipos
+          // serializados: el nombre y, en otro renglón, sus IMEIs.
+          description: withImei
+              ? 'Bomba Iberia de jacuzzi 2 hp 110v\n'
+                  'IMEI: 238120938129, 1234567, 7687799090'
+              : 'Bomba Iberia de jacuzzi 2 hp 110v',
           quantity: 2,
           unitPrice: 7500,
           // 15,000 bruto con 1,500 de descuento = 10%.
@@ -77,6 +83,23 @@ void main() {
             await const PdfReceiptBuilder().buildBytes(buildDocument(logoOnLeft: left));
         expect(bytes.length, greaterThan(1000));
       }
+    });
+
+    test('A4 se genera con los IMEIs de la línea', () async {
+      final bytes = await const PdfReceiptBuilder()
+          .buildBytes(buildDocument(withImei: true));
+      expect(bytes.length, greaterThan(1000));
+    });
+
+    test('la descripción separa el nombre de los IMEIs', () {
+      final item = buildDocument(withImei: true).items.first;
+
+      expect(item.descriptionTitle, 'Bomba Iberia de jacuzzi 2 hp 110v');
+      expect(
+        item.descriptionDetails,
+        ['IMEI: 238120938129, 1234567, 7687799090'],
+      );
+      expect(buildDocument().items.first.descriptionDetails, isEmpty);
     });
 
     test('A4 se genera con la columna %DESC', () async {
@@ -130,6 +153,18 @@ void main() {
       // Número de documento y NCF salieron del encabezado, siguen impresos.
       expect(find.text('FA-000005'), findsOneWidget);
       expect(find.text('NCF: B0200000003'), findsOneWidget);
+    });
+
+    testWidgets('el A4 muestra los IMEIs, no solo el ticket', (tester) async {
+      // Reportado: la misma factura sacaba los IMEIs en la térmica pero no en
+      // la A4, porque la A4 dibujaba solo el primer renglón de la descripción.
+      await pumpPreview(tester, buildDocument(withImei: true));
+
+      expect(find.text('Bomba Iberia de jacuzzi 2 hp 110v'), findsOneWidget);
+      expect(
+        find.text('IMEI: 238120938129, 1234567, 7687799090'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('sin descuentos no imprime la columna %DESC', (tester) async {

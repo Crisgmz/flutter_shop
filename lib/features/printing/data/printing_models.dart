@@ -183,6 +183,28 @@ class PrintDocumentItem {
   /// Descuento aplicado a la línea (monto, no porcentaje). 0 = sin descuento.
   final double lineDiscount;
 
+  /// Primer renglón de la descripción: el nombre del artículo.
+  String get descriptionTitle {
+    final newline = description.indexOf('\n');
+    return newline < 0 ? description : description.substring(0, newline);
+  }
+
+  /// Renglones extra de la descripción, hoy los IMEIs de los equipos
+  /// vendidos ("IMEI: 3581…, 3581…"). La factura A4 dibuja el nombre en un
+  /// solo renglón para que cuadre con precio y cantidad; si no pinta estos
+  /// aparte, el IMEI se pierde de la factura grande aunque sí salga en el
+  /// ticket.
+  List<String> get descriptionDetails {
+    final newline = description.indexOf('\n');
+    if (newline < 0) return const [];
+    return description
+        .substring(newline + 1)
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+  }
+
   /// Porcentaje de descuento de la línea, reconstruido desde el monto igual
   /// que lo hace el carrito al reabrir una venta guardada: la base de datos
   /// guarda `discount_amount`, no el porcentaje. Devuelve 0 si la línea no

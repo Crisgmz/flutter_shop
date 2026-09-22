@@ -815,7 +815,19 @@ class _A4Preview extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _oneLine(it.description, style: const TextStyle(fontSize: 9.5)),
+            _oneLine(
+              it.descriptionTitle,
+              style: const TextStyle(fontSize: 9.5),
+            ),
+            // IMEIs: envuelven, igual que en el PDF.
+            for (final detail in it.descriptionDetails)
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Text(
+                  detail,
+                  style: const TextStyle(fontSize: 8, color: _kInkMuted),
+                ),
+              ),
             if (_hasText(it.notes))
               Padding(
                 padding: const EdgeInsets.only(top: 1),
