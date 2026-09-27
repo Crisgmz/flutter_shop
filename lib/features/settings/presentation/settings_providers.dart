@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../auth/presentation/auth_providers.dart';
+import '../data/ecf_request_repository.dart';
 import '../data/settings_repository.dart';
 
 final settingsRepositoryProvider = Provider<SettingsRepository>((ref) {
@@ -25,4 +26,21 @@ final companyEcfSettingsProvider =
     FutureProvider<CompanyEcfSettings?>((ref) async {
   final repository = ref.watch(settingsRepositoryProvider);
   return repository.fetchCompanyEcfSettings();
+});
+
+/// Solicitud de facturación electrónica de la empresa: en qué etapa va, con
+/// qué datos y con qué secuencias e-NCF.
+///
+/// Va contra la Edge Function `ecf-onboarding` y no contra una tabla: la
+/// etapa se DERIVA en el servidor de lo que ya existe (empresa registrada,
+/// certificación, secuencias, modalidad). Un estado guardado aparte se
+/// desincroniza.
+final ecfRequestRepositoryProvider = Provider<EcfRequestRepository>((ref) {
+  final client = ref.watch(supabaseClientProvider);
+  return EcfRequestRepository(client);
+});
+
+final ecfRequestStatusProvider = FutureProvider<EcfRequestStatus>((ref) async {
+  final repository = ref.watch(ecfRequestRepositoryProvider);
+  return repository.status();
 });

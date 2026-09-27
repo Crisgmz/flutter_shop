@@ -1174,10 +1174,11 @@ class ReportsRepository {
     }
 
     final registerNames = <String, String>{};
+    final registerIds = <String, String>{};
     if (sessionIds.isNotEmpty) {
       final sessions = await _client
           .from('cash_sessions')
-          .select('id, cash_registers(name)')
+          .select('id, cash_register_id, cash_registers(name)')
           .inFilter('id', sessionIds.toList(growable: false));
       for (final raw in sessions) {
         final row = Map<String, dynamic>.from(raw as Map);
@@ -1186,6 +1187,10 @@ class ReportsRepository {
         final name = reg is Map ? reg['name']?.toString() : null;
         if (id != null && name != null && name.isNotEmpty) {
           registerNames[id] = name;
+        }
+        final registerId = row['cash_register_id']?.toString();
+        if (id != null && registerId != null && registerId.isNotEmpty) {
+          registerIds[id] = registerId;
         }
       }
     }
@@ -1238,6 +1243,9 @@ class ReportsRepository {
       final sessionId = m['cash_session_id']?.toString();
       if (sessionId != null && registerNames.containsKey(sessionId)) {
         m['cash_register_name'] = registerNames[sessionId];
+      }
+      if (sessionId != null && registerIds.containsKey(sessionId)) {
+        m['cash_register_id'] = registerIds[sessionId];
       }
       final saleId = m['id']?.toString();
       m['profit'] = _toDouble(m['subtotal']) - (cogsBySale[saleId] ?? 0);
@@ -2105,6 +2113,7 @@ class SaleDetailRow {
     this.clientName,
     this.cashierName,
     this.cashRegisterName,
+    this.cashRegisterId,
   });
 
   factory SaleDetailRow.fromMap(Map<String, dynamic> map) {
@@ -2128,6 +2137,7 @@ class SaleDetailRow {
       clientName: clients is Map ? clients['full_name']?.toString() : null,
       cashierName: profiles is Map ? profiles['full_name']?.toString() : null,
       cashRegisterName: map['cash_register_name']?.toString(),
+      cashRegisterId: map['cash_register_id']?.toString(),
     );
   }
 
@@ -2147,6 +2157,10 @@ class SaleDetailRow {
   final String? clientName;
   final String? cashierName;
   final String? cashRegisterName;
+
+  /// Caja (`cash_registers.id`) de la sesión en que se hizo la venta. Null si
+  /// la venta no quedó ligada a una sesión de caja.
+  final String? cashRegisterId;
 }
 
 class HourlySalesRow {

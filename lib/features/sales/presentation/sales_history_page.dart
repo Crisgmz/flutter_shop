@@ -9,7 +9,7 @@ import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
-import '../../cash_register/presentation/cash_register_providers.dart';
+import '../../cash_register/presentation/cash_register_filter_chip.dart';
 import '../data/sales_history_repository.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
@@ -298,7 +298,7 @@ class _FiltersBar extends StatelessWidget {
           active: filter.statuses,
           onChanged: (s) => onChanged((f) => f.copyWith(statuses: s)),
         ),
-        _CashRegisterFilter(
+        CashRegisterFilterChip(
           selectedId: filter.cashRegisterId,
           onChanged: (id) => onChanged(
             (f) => id == null
@@ -307,83 +307,6 @@ class _FiltersBar extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// Filtro por caja: "Todas" (default) o una caja puntual. Traduce la caja
-/// elegida a sus sesiones en el repositorio.
-class _CashRegisterFilter extends ConsumerWidget {
-  const _CashRegisterFilter({
-    required this.selectedId,
-    required this.onChanged,
-  });
-
-  final String? selectedId;
-  final ValueChanged<String?> onChanged;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final registersAsync = ref.watch(cashRegistersProvider);
-    final registers = registersAsync.valueOrNull ?? const [];
-    final selected = registers
-        .where((r) => r.id == selectedId)
-        .map((r) => r.name)
-        .firstOrNull;
-
-    return PopupMenuButton<String?>(
-      tooltip: 'Filtrar por caja',
-      initialValue: selectedId,
-      onSelected: onChanged,
-      itemBuilder: (context) => [
-        const PopupMenuItem<String?>(value: null, child: Text('Todas')),
-        ...registers.map(
-          (register) => PopupMenuItem<String?>(
-            value: register.id,
-            child: Text(register.name),
-          ),
-        ),
-      ],
-      // Contenedor plano (no un botón): el tap lo maneja el PopupMenuButton
-      // que lo envuelve, y un botón anidado se lo comería.
-      child: Container(
-        height: 40,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(AppTokens.radius),
-          border: Border.all(
-            color: selectedId == null ? AppTokens.border : AppTokens.primary,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.point_of_sale_outlined,
-              size: 16,
-              color: selectedId == null
-                  ? AppTokens.secondaryForeground
-                  : AppTokens.primary,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'Caja: ${selected ?? 'Todas'}',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: selectedId == null
-                    ? AppTokens.secondaryForeground
-                    : AppTokens.primary,
-              ),
-            ),
-            const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 18,
-              color: AppTokens.mutedForeground,
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -559,14 +482,24 @@ class _RowActions extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Devoluciones: no se editan ni se anulan (para revertirlas hay que hacer
-    // una venta nueva). Solo se puede ver el detalle. Tampoco se reimprimen:
-    // el preparador de impresión solo entiende la tabla `sales`.
+    // una venta nueva). Se ven y se imprimen como NOTA DE CRÉDITO.
     if (row.isReturn) {
-      return IconButton(
-        tooltip: 'Ver detalle de la devolución',
-        icon: const Icon(Icons.visibility_outlined, size: 18),
-        visualDensity: VisualDensity.compact,
-        onPressed: () => _showDetail(context, ref, row),
+      return Wrap(
+        spacing: 4,
+        children: [
+          IconButton(
+            tooltip: 'Ver detalle de la devolución',
+            icon: const Icon(Icons.visibility_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _showDetail(context, ref, row),
+          ),
+          IconButton(
+            tooltip: 'Imprimir nota de crédito',
+            icon: const Icon(Icons.print_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _printReturn(context, ref, row.id),
+          ),
+        ],
       );
     }
 
@@ -820,6 +753,31 @@ class _RowActions extends ConsumerWidget {
     );
   }
 
+  Future<void> _printReturn(
+    BuildContext context,
+    WidgetRef ref,
+    String returnId,
+  ) async {
+    try {
+      final job = await ref
+          .read(salesRepositoryProvider)
+          .prepareReturnPrintJob(returnId: returnId);
+      if (!context.mounted) return;
+      if (job == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se encontró la devolución.')),
+        );
+        return;
+      }
+      await PrintReceiptDialog.show(context, job);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al preparar impresión: $e')),
+      );
+    }
+  }
+
   Future<void> _reprint(
     BuildContext context,
     WidgetRef ref,
@@ -883,6 +841,19 @@ class _RowActions extends ConsumerWidget {
 // ─────────────────────────────────────────────────────────────────────────
 // Dialogo: detalle de venta
 // ─────────────────────────────────────────────────────────────────────────
+
+/// Abre el detalle de una venta (o devolución, con [isReturn]) desde otra
+/// pantalla — por ejemplo el historial del producto en Inventario.
+Future<void> showSaleDetailDialog(
+  BuildContext context, {
+  required String docId,
+  bool isReturn = false,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _SaleDetailDialog(docId: docId, isReturn: isReturn),
+  );
+}
 
 class _SaleDetailDialog extends ConsumerWidget {
   const _SaleDetailDialog({required this.docId, this.isReturn = false});

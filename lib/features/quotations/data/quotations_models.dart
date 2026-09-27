@@ -1,3 +1,6 @@
+import '../../sales/domain/sale_checkout_service.dart'
+    show fromCents, taxCents, toCents;
+
 class QuoteListItem {
   QuoteListItem({
     required this.id,
@@ -180,6 +183,7 @@ class QuoteCatalogProduct {
     this.sku,
     this.barcode,
     this.description,
+    this.priceIncludesTax = false,
   });
 
   final String id;
@@ -188,9 +192,17 @@ class QuoteCatalogProduct {
   final String? barcode;
   final String? description;
   final double price;
+
+  /// Tasa que se cobra: 0 si el producto está exento (`is_tax_exempt`), igual
+  /// que `effectiveTaxRate` en el POS.
   final double taxRate;
   final double stock;
   final bool isActive;
+
+  /// `products.price_includes_tax`: el precio YA trae el ITBIS adentro. Igual
+  /// que en facturación, el total de la línea es el precio y el impuesto se
+  /// extrae; si es false, el ITBIS va encima.
+  final bool priceIncludesTax;
 
   factory QuoteCatalogProduct.fromMap(Map<String, dynamic> map) {
     return QuoteCatalogProduct(
@@ -200,9 +212,10 @@ class QuoteCatalogProduct {
       barcode: map['barcode']?.toString(),
       description: map['description']?.toString(),
       price: _toDouble(map['price']),
-      taxRate: _toDouble(map['tax_rate']),
+      taxRate: map['is_tax_exempt'] == true ? 0 : _toDouble(map['tax_rate']),
       stock: _toDouble(map['stock']),
       isActive: map['is_active'] == true,
+      priceIncludesTax: map['price_includes_tax'] == true,
     );
   }
 }
@@ -258,14 +271,24 @@ class QuoteDraftLine {
 
   double get netUnitPrice =>
       QuotationsMath.round2(unitPrice * (1 - discountPct / 100));
-  double get lineSubtotal => QuotationsMath.round2(quantity * netUnitPrice);
-  double get lineTax =>
-      QuotationsMath.round2(lineSubtotal * (product.taxRate / 100));
-  double get lineTotal => QuotationsMath.round2(lineSubtotal + lineTax);
+
+  /// Neto después de descuento: base imponible si el ITBIS va encima, total
+  /// de la línea si el precio lo incluye.
+  double get _lineNet => QuotationsMath.round2(quantity * netUnitPrice);
+
+  QuoteLineAmounts get _amounts => QuotationsMath.line(
+    net: _lineNet,
+    taxRate: product.taxRate,
+    priceIncludesTax: product.priceIncludesTax,
+  );
+
+  double get lineSubtotal => _amounts.subtotal;
+  double get lineTax => _amounts.tax;
+  double get lineTotal => _amounts.total;
 
   /// Monto absoluto del descuento (para persistir en `discount_amount`).
   double get discountAmount =>
-      QuotationsMath.round2(quantity * unitPrice - lineSubtotal);
+      QuotationsMath.round2(quantity * unitPrice - _lineNet);
 
   QuoteDraftLine copyWith({
     QuoteCatalogProduct? product,
@@ -312,6 +335,7 @@ class QuoteCreateItem {
     this.discountAmount = 0,
     this.productSku,
     this.productDescription,
+    this.priceIncludesTax = false,
   });
 
   final String productId;
@@ -323,7 +347,19 @@ class QuoteCreateItem {
   final double taxRate;
   final double discountAmount;
 
+  /// El precio ya trae el ITBIS (ver [QuoteCatalogProduct.priceIncludesTax]).
+  final bool priceIncludesTax;
+
   factory QuoteCreateItem.fromMap(Map<String, dynamic> map) {
+    // `quotation_items` no guarda la bandera: se deduce de los montos
+    // guardados. Con ITBIS incluido el total es el neto (precio × cantidad −
+    // descuento) y el impuesto sale de adentro.
+    final quantity = _toDouble(map['quantity']);
+    final unitPrice = _toDouble(map['unit_price']);
+    final discount = _toDouble(map['discount_amount']);
+    final net = QuotationsMath.round2(quantity * unitPrice - discount);
+    final inclusive = _toDouble(map['line_tax']) > 0 &&
+        (_toDouble(map['line_total']) - net).abs() < 0.005;
     return QuoteCreateItem(
       productId: (map['product_id'] ?? '').toString(),
       productName: (map['product_name'] ?? map['description'] ?? '').toString(),
@@ -333,13 +369,20 @@ class QuoteCreateItem {
       unitPrice: _toDouble(map['unit_price']),
       taxRate: _toDouble(map['tax_rate']),
       discountAmount: _toDouble(map['discount_amount']),
+      priceIncludesTax: inclusive,
     );
   }
 
-  double get lineSubtotal =>
-      QuotationsMath.round2(quantity * unitPrice - discountAmount);
-  double get lineTax => QuotationsMath.round2(lineSubtotal * (taxRate / 100));
-  double get lineTotal => QuotationsMath.round2(lineSubtotal + lineTax);
+  QuoteLineAmounts get _amounts => QuotationsMath.line(
+    net: QuotationsMath.round2(quantity * unitPrice - discountAmount),
+    taxRate: taxRate,
+    priceIncludesTax: priceIncludesTax,
+  );
+
+  /// Base imponible SIN ITBIS.
+  double get lineSubtotal => _amounts.subtotal;
+  double get lineTax => _amounts.tax;
+  double get lineTotal => _amounts.total;
 
   Map<String, dynamic> toRpcMap() {
     return {
@@ -515,6 +558,37 @@ class QuotationsMath {
       round2(subtotal(items) + tax(items));
 
   static double round2(double value) => (value * 100).roundToDouble() / 100;
+
+  /// Montos de una línea a partir del neto (bruto − descuento), con la misma
+  /// fórmula que la facturación (`SaleCartItem`): si el precio incluye el
+  /// ITBIS, el total es el neto y el impuesto se EXTRAE (neto × t/(100+t));
+  /// si no, se agrega encima (neto × t/100). En centavos enteros, como el POS.
+  static QuoteLineAmounts line({
+    required double net,
+    required double taxRate,
+    required bool priceIncludesTax,
+  }) {
+    final netC = toCents(net);
+    final inclusive = priceIncludesTax && taxRate > 0;
+    final taxC = taxCents(netC, taxRate, inclusive: inclusive);
+    return QuoteLineAmounts(
+      subtotal: fromCents(inclusive ? netC - taxC : netC),
+      tax: fromCents(taxC),
+      total: fromCents(inclusive ? netC : netC + taxC),
+    );
+  }
+}
+
+class QuoteLineAmounts {
+  const QuoteLineAmounts({
+    required this.subtotal,
+    required this.tax,
+    required this.total,
+  });
+
+  final double subtotal;
+  final double tax;
+  final double total;
 }
 
 String? _nullIfEmpty(String? value) {

@@ -351,11 +351,13 @@ class CashClosurePdfBuilder {
             _kv('Fecha Cierre:', formatDateTime(closedAt ?? DateTime.now()),
                 baseFont: baseFont),
             _divider(),
-            _kv('Denom.', 'Cant.        Monto', baseFont: baseFont, bold: true),
+            _denomRow('Denom.', 'Cant.', 'Monto',
+                baseFont: baseFont, bold: true),
             for (final row in rows)
-              _kv(
+              _denomRow(
                 '${row.key} x',
-                '${row.value}        ${money(row.key * row.value.toDouble())}',
+                '${row.value}',
+                money(row.key * row.value.toDouble()),
                 baseFont: baseFont,
               ),
             _divider(),
@@ -421,6 +423,38 @@ class CashClosurePdfBuilder {
               fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
               color: rightColor,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Fila de tres columnas (Denom. · Cant. · Monto) con anchos fijos: separar
+  /// con espacios no alinea porque la fuente es proporcional.
+  pw.Widget _denomRow(
+    String denom,
+    String qty,
+    String amount, {
+    required double baseFont,
+    bool bold = false,
+  }) {
+    final style = pw.TextStyle(
+      fontSize: baseFont,
+      fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+    );
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 0.5),
+      child: pw.Row(
+        children: [
+          pw.Expanded(flex: 3, child: pw.Text(denom, style: style)),
+          pw.Expanded(
+            flex: 2,
+            child: pw.Text(qty, style: style, textAlign: pw.TextAlign.right),
+          ),
+          pw.Expanded(
+            flex: 5,
+            child:
+                pw.Text(amount, style: style, textAlign: pw.TextAlign.right),
           ),
         ],
       ),

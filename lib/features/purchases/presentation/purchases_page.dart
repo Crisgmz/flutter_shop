@@ -70,7 +70,7 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
                 ref.read(purchasesSearchProvider.notifier).state = value,
             decoration: const InputDecoration(
               prefixIcon: Icon(Icons.search, size: 18),
-              hintText: 'Buscar por número, proveedor o factura',
+              hintText: 'Buscar por número, proveedor, factura o IMEI',
             ),
           ),
           const SizedBox(height: AppTokens.s24),
@@ -1838,6 +1838,31 @@ class _ProductThumb extends StatelessWidget {
 }
 
 /// Diálogo de solo lectura para ver el detalle de una compra (el "ojito").
+/// Abre el detalle de una compra desde otra pantalla — por ejemplo el
+/// historial del producto en Inventario.
+Future<void> showPurchaseDetailDialog(
+  BuildContext context,
+  WidgetRef ref,
+  String purchaseId,
+) async {
+  final PurchaseDetail? detail;
+  try {
+    detail =
+        await ref.read(purchasesRepositoryProvider).fetchPurchaseDetail(purchaseId);
+  } catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No se pudo cargar la compra: $error')),
+    );
+    return;
+  }
+  if (detail == null || !context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _PurchaseDetailDialog(detail: detail!),
+  );
+}
+
 class _PurchaseDetailDialog extends StatelessWidget {
   const _PurchaseDetailDialog({required this.detail});
 

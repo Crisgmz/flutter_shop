@@ -122,6 +122,7 @@ Map<String, dynamic> _quoteProductToJson(QuoteCatalogProduct p) => {
       'tax_rate': p.taxRate,
       'stock': p.stock,
       'is_active': p.isActive,
+      'price_includes_tax': p.priceIncludesTax,
     };
 
 final quotationProductsProvider = FutureProvider<List<QuoteCatalogProduct>>((

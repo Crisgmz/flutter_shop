@@ -330,6 +330,45 @@ class PurchasesRepository {
         .toList(growable: false);
   }
 
+  /// Compras que trajeron un IMEI dado (`purchase_items.imeis`, índice GIN
+  /// `purchase_items_imeis_gin`). Coincidencia exacta, igual que en el
+  /// historial de ventas. No usa el límite de 100 de [fetchPurchases]: el
+  /// equipo puede haber entrado en una compra vieja.
+  Future<List<PurchaseSummary>> searchPurchasesByImei(String imei) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final itemRows = await _client
+        .from('purchase_items')
+        .select('purchase_id')
+        .eq('branch_id', branchId)
+        .contains('imeis', [imei]);
+    final ids = <String>{
+      for (final raw in itemRows)
+        if (((raw as Map)['purchase_id'] ?? '').toString().isNotEmpty)
+          raw['purchase_id'].toString(),
+    };
+    if (ids.isEmpty) return const [];
+
+    final rows = await _client
+        .from('purchase_operational_view')
+        .select(
+          'id, purchase_number, invoice_number, supplier_name, status, '
+          'payment_status, purchase_category, purchase_date, expected_at, '
+          'received_at, total_amount, lines_count, items_quantity, received_quantity',
+        )
+        .eq('branch_id', branchId)
+        .inFilter('id', ids.toList())
+        .order('purchase_date', ascending: false);
+
+    return rows
+        .map(
+          (item) =>
+              PurchaseSummary.fromMap(Map<String, dynamic>.from(item as Map)),
+        )
+        .toList(growable: false);
+  }
+
   Future<void> createPurchase(PurchaseCreateInput input) async {
     if (input.items.isEmpty) {
       throw Exception('Agrega al menos un artículo.');

@@ -12,7 +12,7 @@ import '../../../shared/widgets/ncf_stock_banner.dart'
     show missingNcfCountProvider;
 import '../../../shared/widgets/ui_custom.dart';
 import '../data/settings_repository.dart';
-import 'ecf_settings_card.dart';
+import 'ecf_request_card.dart';
 import 'settings_providers.dart';
 
 const _receiptTypeLabels = <String, String>{
@@ -97,7 +97,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               const SizedBox(height: AppTokens.s24),
               _fiscalSettingsCard(data),
               const SizedBox(height: AppTokens.s24),
-              const EcfSettingsCard(),
+              const EcfRequestCard(),
               const SizedBox(height: AppTokens.s24),
               _businessProfileCard(),
               const SizedBox(height: AppTokens.s24),

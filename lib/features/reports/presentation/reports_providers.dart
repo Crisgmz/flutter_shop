@@ -335,3 +335,8 @@ final hourlySalesReportProvider =
 /// pantalla, encontrar un artículo puntual tomaba demasiado; esto filtra la
 /// tabla por nombre.
 final articlesReportSearchProvider = StateProvider<String>((ref) => '');
+
+/// Caja elegida en "Ventas detalladas" (null = Todas). Se filtra sobre las
+/// filas ya cargadas del rango: no hace otra consulta.
+final detailedSalesRegisterFilterProvider =
+    StateProvider<String?>((ref) => null);

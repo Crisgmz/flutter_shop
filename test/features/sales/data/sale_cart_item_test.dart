@@ -223,4 +223,32 @@ void main() {
       expect(normalized.total, 250);
     });
   });
+
+  group('SalesProduct.minimumPrice', () {
+    SalesProduct build({double price = 600, double? t1, double? t2}) =>
+        SalesProduct(
+          id: 'p1',
+          name: 'Producto',
+          price: price,
+          cost: 0,
+          taxRate: 18,
+          stock: 10,
+          isActive: true,
+          priceTier1: t1,
+          priceTier2: t2,
+        );
+
+    test('es el más bajo entre el precio base y los niveles', () {
+      expect(build(t1: 550, t2: 500).minimumPrice, 500);
+    });
+
+    test('ignora niveles vacíos o en 0', () {
+      expect(build(t1: 0).minimumPrice, 600);
+      expect(build().minimumPrice, 600);
+    });
+
+    test('un nivel más caro no sube el mínimo', () {
+      expect(build(t1: 700).minimumPrice, 600);
+    });
+  });
 }

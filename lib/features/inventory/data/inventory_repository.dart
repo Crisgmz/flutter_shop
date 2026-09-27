@@ -914,6 +914,10 @@ class InventoryRepository {
   ///   - Compras (purchase_items) → entrada
   ///   - Movimientos manuales (inventory_movements) → según tipo
   ///   - Devoluciones (return_items) → entrada
+  ///   - Anulaciones (venta `voided`) → la venta sale y el stock vuelve
+  ///
+  /// Cada venta, anulación y devolución lleva el cliente ("Genérico" si no
+  /// tenía), y cada compra su proveedor.
   Future<List<ProductMovementEntry>> fetchProductHistory(
     String productId, {
     int limit = 200,
@@ -928,33 +932,27 @@ class InventoryRepository {
         .from('sale_items')
         .select(
           'quantity, line_total, created_at, sale_id, '
-          'sales(sale_number, sale_date, status)',
+          'sales(sale_number, sale_date, status, client_id, updated_at)',
         )
         .eq('branch_id', branchId)
         .eq('product_id', productId)
         .order('created_at', ascending: false)
         .limit(limit);
 
+    // Los nombres se buscan aparte y en bloque: los FK de clientes y
+    // proveedores son compuestos (id, branch_id) y no conviene embeberlos.
+    final saleClientIds = <String>{};
+    for (final raw in saleItems) {
+      final sale = (raw as Map)['sales'];
+      final clientId = sale is Map ? sale['client_id']?.toString() : null;
+      if (clientId != null && clientId.isNotEmpty) saleClientIds.add(clientId);
+    }
+
+    final pendingSales = <({Map<String, dynamic> row, Map? sale})>[];
     for (final raw in saleItems) {
       final row = Map<String, dynamic>.from(raw as Map);
       final sale = row['sales'];
-      final saleStatus =
-          sale is Map ? (sale['status'] ?? '').toString() : '';
-      // Excluir voided del flujo de venta normal.
-      if (saleStatus == 'voided') continue;
-      entries.add(ProductMovementEntry(
-        when: DateTime.tryParse(
-              sale is Map
-                  ? (sale['sale_date'] ?? row['created_at']).toString()
-                  : row['created_at']?.toString() ?? '',
-            ) ??
-            DateTime.now(),
-        kind: ProductMovementKind.sale,
-        quantity: -_toDouble(row['quantity']),
-        amount: _toDouble(row['line_total']),
-        reference:
-            sale is Map ? sale['sale_number']?.toString() : null,
-      ));
+      pendingSales.add((row: row, sale: sale is Map ? sale : null));
     }
 
     // Compras
@@ -962,12 +960,106 @@ class InventoryRepository {
         .from('purchase_items')
         .select(
           'quantity, line_total, created_at, purchase_id, '
-          'purchases(purchase_number, purchase_date, status)',
+          'purchases(purchase_number, purchase_date, status, supplier_id)',
         )
         .eq('branch_id', branchId)
         .eq('product_id', productId)
         .order('created_at', ascending: false)
         .limit(limit);
+
+    // Devoluciones
+    final returnItems = await _client
+        .from('return_items')
+        .select(
+          'quantity, line_total, created_at, return_id, '
+          'returns(return_number, return_date, client_id)',
+        )
+        .eq('branch_id', branchId)
+        .eq('product_id', productId)
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    final supplierIds = <String>{};
+    for (final raw in purchaseItems) {
+      final purchase = (raw as Map)['purchases'];
+      final id = purchase is Map ? purchase['supplier_id']?.toString() : null;
+      if (id != null && id.isNotEmpty) supplierIds.add(id);
+    }
+    final clientIds = {...saleClientIds};
+    for (final raw in returnItems) {
+      final ret = (raw as Map)['returns'];
+      final id = ret is Map ? ret['client_id']?.toString() : null;
+      if (id != null && id.isNotEmpty) clientIds.add(id);
+    }
+
+    final clientNames = <String, String>{};
+    if (clientIds.isNotEmpty) {
+      final rows = await _client
+          .from('clients')
+          .select('id, full_name')
+          .inFilter('id', clientIds.toList());
+      for (final raw in rows) {
+        final m = raw as Map;
+        clientNames[m['id'].toString()] = (m['full_name'] ?? '').toString();
+      }
+    }
+    final supplierNames = <String, String>{};
+    if (supplierIds.isNotEmpty) {
+      final rows = await _client
+          .from('suppliers')
+          .select('id, legal_name')
+          .inFilter('id', supplierIds.toList());
+      for (final raw in rows) {
+        final m = raw as Map;
+        supplierNames[m['id'].toString()] = (m['legal_name'] ?? '').toString();
+      }
+    }
+
+    String clientOf(dynamic id) {
+      final name = clientNames[id?.toString()]?.trim();
+      return name == null || name.isEmpty ? 'Genérico' : name;
+    }
+
+    for (final item in pendingSales) {
+      final row = item.row;
+      final sale = item.sale;
+      final saleStatus = (sale?['status'] ?? '').toString();
+      final saleId = row['sale_id']?.toString();
+      final reference = sale?['sale_number']?.toString();
+      final party = clientOf(sale?['client_id']);
+      final quantity = _toDouble(row['quantity']);
+      final amount = _toDouble(row['line_total']);
+      entries.add(ProductMovementEntry(
+        when: DateTime.tryParse(
+              (sale?['sale_date'] ?? row['created_at'] ?? '').toString(),
+            ) ??
+            DateTime.now(),
+        kind: ProductMovementKind.sale,
+        quantity: -quantity,
+        amount: amount,
+        reference: reference,
+        party: party,
+        documentId: saleId,
+        document: ProductMovementDocument.sale,
+      ));
+      // Anulada: la venta descontó y la anulación devolvió el stock (migración
+      // 88 conserva las líneas). Se muestran los dos movimientos para que la
+      // columna Stock siga cuadrando. `sales` no guarda la fecha de anulación;
+      // la más cercana es `updated_at`, que el RPC toca al anular.
+      if (saleStatus == 'voided') {
+        entries.add(ProductMovementEntry(
+          when: DateTime.tryParse((sale?['updated_at'] ?? '').toString()) ??
+              DateTime.now(),
+          kind: ProductMovementKind.voidIn,
+          quantity: quantity,
+          amount: amount,
+          reference: reference,
+          party: party,
+          documentId: saleId,
+          document: ProductMovementDocument.sale,
+        ));
+      }
+    }
 
     for (final raw in purchaseItems) {
       final row = Map<String, dynamic>.from(raw as Map);
@@ -990,6 +1082,13 @@ class InventoryRepository {
         reference: purchase is Map
             ? purchase['purchase_number']?.toString()
             : null,
+        party: purchase is Map
+            ? _nullIfEmpty(
+                supplierNames[purchase['supplier_id']?.toString()],
+              )
+            : null,
+        documentId: row['purchase_id']?.toString(),
+        document: ProductMovementDocument.purchase,
       ));
     }
 
@@ -1026,18 +1125,6 @@ class InventoryRepository {
       ));
     }
 
-    // Devoluciones
-    final returnItems = await _client
-        .from('return_items')
-        .select(
-          'quantity, line_total, created_at, return_id, '
-          'returns(return_number, return_date)',
-        )
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .order('created_at', ascending: false)
-        .limit(limit);
-
     for (final raw in returnItems) {
       final row = Map<String, dynamic>.from(raw as Map);
       final ret = row['returns'];
@@ -1053,6 +1140,9 @@ class InventoryRepository {
         amount: _toDouble(row['line_total']),
         reference:
             ret is Map ? ret['return_number']?.toString() : null,
+        party: clientOf(ret is Map ? ret['client_id'] : null),
+        documentId: row['return_id']?.toString(),
+        document: ProductMovementDocument.saleReturn,
       ));
     }
 
@@ -1072,6 +1162,7 @@ enum ProductMovementKind {
   sale,
   purchase,
   returnIn,
+  voidIn,
   waste,
   adjustmentIn,
   adjustmentOut,
@@ -1087,6 +1178,8 @@ enum ProductMovementKind {
         return 'Compra';
       case ProductMovementKind.returnIn:
         return 'Devolución';
+      case ProductMovementKind.voidIn:
+        return 'Anulación';
       case ProductMovementKind.waste:
         return 'Merma';
       case ProductMovementKind.adjustmentIn:
@@ -1125,6 +1218,9 @@ ProductMovementKind _movementKindFromType(String type) {
   }
 }
 
+/// Documento que se abre con el ojito del historial.
+enum ProductMovementDocument { sale, saleReturn, purchase }
+
 class ProductMovementEntry {
   ProductMovementEntry({
     required this.when,
@@ -1133,6 +1229,9 @@ class ProductMovementEntry {
     required this.amount,
     this.reference,
     this.notes,
+    this.party,
+    this.documentId,
+    this.document,
   });
 
   final DateTime when;
@@ -1143,6 +1242,14 @@ class ProductMovementEntry {
   final double amount;
   final String? reference;
   final String? notes;
+
+  /// Cliente (venta, anulación, devolución) o proveedor (compra).
+  final String? party;
+
+  /// Id del documento de origen y su tipo, para abrir la factura. Null en
+  /// movimientos manuales (ajustes, mermas, traslados).
+  final String? documentId;
+  final ProductMovementDocument? document;
 
   bool get isIncoming => quantity > 0;
 }

@@ -468,12 +468,15 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                         fontSize: 16,
                       ),
                     ),
-                    _PriceTierSelector(
-                      tiers: _namedPriceTiers(),
-                      selected: _priceTierOverride,
-                      clientTierLabel: _clientTierLabel(),
-                      onChanged: _onPriceTierChanged,
-                    ),
+                    // Elegir el nivel a mano es un permiso: sin él, el cajero
+                    // vende al precio base o al nivel asignado al cliente.
+                    if (ref.watch(canChooseSalePriceTierProvider))
+                      _PriceTierSelector(
+                        tiers: _namedPriceTiers(),
+                        selected: _priceTierOverride,
+                        clientTierLabel: _clientTierLabel(),
+                        onChanged: _onPriceTierChanged,
+                      ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       height: 32,
@@ -857,6 +860,29 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   bool get _belowCostEnforced =>
       ref.read(appSettingsProvider).valueOrNull?.invDisallowBelowCost ?? false;
 
+  /// Sin el permiso `sales.below_min_price`, ninguna línea puede quedar (ya
+  /// descontada) por debajo del precio mínimo del producto.
+  bool get _minPriceEnforced => !ref.read(canSellBelowMinPriceProvider);
+
+  /// Precio neto unitario (con descuento) por debajo del mínimo del producto.
+  bool _isBelowMinimum(SalesProduct product, double unitPrice, double pct) {
+    final net = unitPrice * (1 - pct / 100);
+    return net < product.minimumPrice - 0.005;
+  }
+
+  void _showBelowMinimum(SalesProduct product) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Colors.red,
+        content: Text(
+          'No puedes vender ${product.name} por debajo de '
+          '${money(product.minimumPrice)} (su precio más bajo). '
+          'Pide el permiso a un supervisor.',
+        ),
+      ),
+    );
+  }
+
   bool get _imeiModeEnabled =>
       ref.read(appSettingsProvider).valueOrNull?.invImeiMode ?? false;
 
@@ -1158,6 +1184,11 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   void _setUnitPrice(int index, double value) {
     if (value < 0) return;
     final item = _cart[index];
+    if (_minPriceEnforced &&
+        _isBelowMinimum(item.product, value, item.discountPct)) {
+      _showBelowMinimum(item.product);
+      return;
+    }
     if (_belowCostEnforced && value < item.product.cost) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1183,6 +1214,11 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   void _setDiscountPct(int index, double value) {
     final clamped = value.clamp(0, 100).toDouble();
     final item = _cart[index];
+    if (_minPriceEnforced &&
+        _isBelowMinimum(item.product, item.unitPrice, clamped)) {
+      _showBelowMinimum(item.product);
+      return;
+    }
     setState(
       () => _cart[index] = SaleCartItem(
         product: item.product,
@@ -1624,6 +1660,17 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         ),
       );
       return null;
+    }
+
+    // Precio mínimo (el nivel más bajo del producto): solo con permiso se
+    // vende por debajo. Cubre cualquier camino que haya dejado una línea abajo.
+    if (_minPriceEnforced) {
+      for (final item in _cart) {
+        if (_isBelowMinimum(item.product, item.unitPrice, item.discountPct)) {
+          _showBelowMinimum(item.product);
+          return null;
+        }
+      }
     }
 
     // app_settings.inv_disallow_below_cost — bloquea registrar la venta si
@@ -2992,6 +3039,18 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
     });
   }
 
+  /// Igual que [_resyncQty] para precio y descuento: si el POS rechazó el
+  /// cambio (p. ej. debajo del precio mínimo), el campo vuelve al real.
+  void _resyncPriceAndDiscount() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final price = _fmtNum(widget.item.unitPrice);
+      if (_priceCtrl.text != price) _priceCtrl.text = price;
+      final discount = _fmtNum(widget.item.discountPct);
+      if (_discountCtrl.text != discount) _discountCtrl.text = discount;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
@@ -3121,6 +3180,7 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                   onSubmit: (raw) {
                     final v = double.tryParse(raw) ?? item.unitPrice;
                     widget.onPriceChanged(v);
+                    _resyncPriceAndDiscount();
                   },
                 ),
               ),
@@ -3156,6 +3216,7 @@ class _CartLineTileState extends ConsumerState<_CartLineTile> {
                   onSubmit: (raw) {
                     final v = double.tryParse(raw) ?? item.discountPct;
                     widget.onDiscountChanged(v);
+                    _resyncPriceAndDiscount();
                   },
                 ),
               ),

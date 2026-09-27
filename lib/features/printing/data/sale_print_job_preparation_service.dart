@@ -47,6 +47,7 @@ class SalePrintJobPreparationService {
     // NCF y sin pagos, y se imprimen como documento no fiscal. El resto de los
     // estados (p. ej. anuladas) no tiene recibo válido.
     final isPrintable =
+        sale.isCreditNote ||
         normalizedStatus == 'completed' ||
         normalizedStatus == 'credit' ||
         (allowPending && normalizedStatus == 'pending');

@@ -153,6 +153,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
                     taxRate: item.taxRate,
                     stock: 0,
                     isActive: true,
+                    priceIncludesTax: item.priceIncludesTax,
                   );
               final gross = item.quantity * item.unitPrice;
               final discountPct = gross > 0
@@ -280,6 +281,7 @@ class _QuotationCreatePageState extends ConsumerState<QuotationCreatePage> {
                 unitPrice: item.unitPrice,
                 taxRate: item.product.taxRate,
                 discountAmount: item.discountAmount,
+                priceIncludesTax: item.product.priceIncludesTax,
               ),
             )
             .toList(growable: false),
@@ -1106,34 +1108,39 @@ class _QuoteLineTileState extends State<_QuoteLineTile> {
               ),
               const SizedBox(width: 6),
               Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const _MiniLabel('Cantidad'),
                   const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _QtySmallBtn(
-                        icon: Icons.remove,
-                        onTap: widget.readOnly ? () {} : widget.onDecrease,
-                      ),
-                      SizedBox(
-                        width: 30,
-                        child: Center(
-                          child: Text(
-                            qty(item.quantity),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
+                  // Misma altura que _MiniField (36) para que las etiquetas
+                  // Precio · Cantidad · Desc. % · Total queden en una línea.
+                  SizedBox(
+                    height: 36,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _QtySmallBtn(
+                          icon: Icons.remove,
+                          onTap: widget.readOnly ? () {} : widget.onDecrease,
+                        ),
+                        SizedBox(
+                          width: 30,
+                          child: Center(
+                            child: Text(
+                              qty(item.quantity),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      _QtySmallBtn(
-                        icon: Icons.add,
-                        onTap: widget.readOnly ? () {} : widget.onIncrease,
-                      ),
-                    ],
+                        _QtySmallBtn(
+                          icon: Icons.add,
+                          onTap: widget.readOnly ? () {} : widget.onIncrease,
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),

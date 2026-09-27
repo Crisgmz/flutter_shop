@@ -97,6 +97,20 @@ class SalesProduct {
   /// Devuelve el precio efectivo según el tier del cliente.
   /// `tier`: 'retail' | 'tier_1'..'tier_10' | null.
   /// Si el tier no tiene precio configurado, cae al precio base.
+  /// Precio más bajo al que se puede vender sin permiso especial: el menor
+  /// entre el precio base y los niveles cargados (ignora los vacíos o en 0).
+  /// Ej.: base 600, nivel 1 550, nivel 2 500 → 500.
+  double get minimumPrice {
+    var min = price;
+    for (final tier in [
+      priceTier1, priceTier2, priceTier3, priceTier4, priceTier5,
+      priceTier6, priceTier7, priceTier8, priceTier9, priceTier10,
+    ]) {
+      if (tier != null && tier > 0 && tier < min) min = tier;
+    }
+    return min;
+  }
+
   double priceFor(String? tier) {
     switch ((tier ?? 'retail').toLowerCase()) {
       case 'tier_1':
@@ -1063,6 +1077,209 @@ class SalesRepository {
       sale: saleSource,
       paperSize: paperSize,
       allowPending: allowPending,
+    );
+  }
+
+  /// Prepara la impresión de una devolución (`returns`) como NOTA DE CRÉDITO,
+  /// con el mismo encabezado, logo y cliente que la factura. `returns` no
+  /// lleva NCF propio: se imprime la factura original como referencia.
+  Future<PreparedPrintJobData?> prepareReturnPrintJob({
+    required String returnId,
+    PrintPaperSize paperSize = PrintPaperSize.thermal80mm,
+  }) async {
+    final returnRows = await _client
+        .from('returns')
+        .select(
+          'id, branch_id, return_number, return_date, client_id, cashier_id, '
+          'original_sale_id, cash_session_id, notes, subtotal, tax_amount, '
+          'total_amount, refund_method',
+        )
+        .eq('id', returnId)
+        .limit(1);
+    if (returnRows.isEmpty) return null;
+    final ret = Map<String, dynamic>.from(returnRows.first as Map);
+
+    final branchId = (ret['branch_id'] ?? '').toString();
+    if (branchId.isEmpty) {
+      throw Exception('La devolución no tiene sucursal asociada.');
+    }
+
+    final branchRows = await _client
+        .from('branches')
+        .select('name, address, phone, invoice_footer')
+        .eq('id', branchId)
+        .limit(1);
+    final branch = branchRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(branchRows.first as Map);
+
+    final settingsRows = await _client.from('app_settings').select().limit(1);
+    final settings = settingsRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(settingsRows.first as Map);
+    final logoBytes =
+        await _downloadBytes(settings['company_logo_url']?.toString());
+    final qrBytes = await _downloadBytes(settings['company_qr_url']?.toString());
+
+    final clientId = ret['client_id']?.toString();
+    Map<String, dynamic> client = const <String, dynamic>{};
+    if (clientId != null && clientId.isNotEmpty) {
+      final clientRows = await _client
+          .from('clients')
+          .select(
+            'full_name, document_type, document_number, address, phone, email',
+          )
+          .eq('id', clientId)
+          .eq('branch_id', branchId)
+          .limit(1);
+      if (clientRows.isNotEmpty) {
+        client = Map<String, dynamic>.from(clientRows.first as Map);
+      }
+    }
+
+    final cashierId = ret['cashier_id']?.toString();
+    String? cashierName;
+    if (cashierId != null && cashierId.isNotEmpty) {
+      final cashierRows = await _client
+          .from('profiles')
+          .select('full_name')
+          .eq('id', cashierId)
+          .limit(1);
+      if (cashierRows.isNotEmpty) {
+        cashierName = (cashierRows.first as Map)['full_name']?.toString();
+      }
+    }
+
+    // Caja: el nombre real del registro de la sesión en que se devolvió.
+    String? cashRegisterName;
+    final cashSessionId = ret['cash_session_id']?.toString();
+    if (cashSessionId != null && cashSessionId.isNotEmpty) {
+      final csRows = await _client
+          .from('cash_sessions')
+          .select('cash_registers(name)')
+          .eq('id', cashSessionId)
+          .limit(1);
+      if (csRows.isNotEmpty) {
+        final reg = (csRows.first as Map)['cash_registers'];
+        cashRegisterName = reg is Map ? reg['name']?.toString() : null;
+      }
+    }
+
+    // Factura original: número y NCF, para que la nota diga a qué afecta.
+    String? originalRef;
+    final originalSaleId = ret['original_sale_id']?.toString();
+    if (originalSaleId != null && originalSaleId.isNotEmpty) {
+      final saleRows = await _client
+          .from('sales')
+          .select('sale_number, ncf')
+          .eq('id', originalSaleId)
+          .limit(1);
+      if (saleRows.isNotEmpty) {
+        final s = Map<String, dynamic>.from(saleRows.first as Map);
+        final number = _nullIfEmpty(s['sale_number']?.toString());
+        final ncf = _nullIfEmpty(s['ncf']?.toString());
+        originalRef = [
+          ?number,
+          if (ncf != null) 'NCF $ncf',
+        ].join(' · ');
+        if (originalRef.isEmpty) originalRef = null;
+      }
+    }
+
+    final itemRows = await _client
+        .from('return_items')
+        .select(
+          'description, quantity, unit_price, line_subtotal, line_tax, '
+          'line_total, imeis',
+        )
+        .eq('return_id', returnId)
+        .order('created_at');
+
+    final total = _toDouble(ret['total_amount']);
+    final notes = [
+      if (originalRef != null) 'Factura original: $originalRef',
+      if (_nullIfEmpty(ret['notes']?.toString()) != null)
+        ret['notes'].toString().trim(),
+    ].join('\n');
+
+    final source = SalePrintSource(
+      saleId: (ret['id'] ?? returnId).toString(),
+      branchId: branchId,
+      saleNumber: (ret['return_number'] ?? '').toString(),
+      status: 'returned',
+      isCreditNote: true,
+      saleDate:
+          DateTime.tryParse((ret['return_date'] ?? '').toString()) ??
+          DateTime.now(),
+      receiptType: '',
+      branchName: (branch['name'] ?? 'Sucursal').toString(),
+      branchAddress: _firstNonEmpty([
+        settings['company_address'],
+        branch['address'],
+      ]),
+      branchPhone: _firstNonEmpty([
+        settings['company_phone'],
+        branch['phone'],
+      ]),
+      branchEmail: _firstNonEmpty([settings['company_email']]),
+      branchTaxId: settings['company_tax_id']?.toString(),
+      branchLogoBytes: logoBytes,
+      qrBytes: qrBytes,
+      signatoryName: _firstNonEmpty([settings['company_signatory_name']]),
+      signatoryTitle: _firstNonEmpty([settings['company_signatory_title']]),
+      cashRegisterName: cashRegisterName,
+      showBarcode: settings['receipt_hide_barcode'] != true,
+      showItbis: settings['invoice_show_itbis'] != false,
+      logoOnLeft:
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
+      clientName: client['full_name']?.toString(),
+      clientDocument: _buildClientDocumentLabel(
+        documentType: client['document_type']?.toString(),
+        documentNumber: client['document_number']?.toString(),
+      ),
+      clientAddress: client['address']?.toString(),
+      clientPhone: client['phone']?.toString(),
+      clientEmail: client['email']?.toString(),
+      cashierName: cashierName,
+      notes: notes.isEmpty ? null : notes,
+      invoiceFooterNote: _firstNonEmpty([branch['invoice_footer']]),
+      items: itemRows
+          .map((row) => Map<String, dynamic>.from(row as Map))
+          .map(
+            (item) => SalePrintItemSource(
+              description: (item['description'] ?? '').toString(),
+              imeis: item['imeis'] is List
+                  ? (item['imeis'] as List)
+                      .map((e) => e.toString().trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList(growable: false)
+                  : const <String>[],
+              quantity: _toDouble(item['quantity']),
+              unitPrice: _toDouble(item['unit_price']),
+              lineSubtotal: _toDouble(item['line_subtotal']),
+              lineTax: _toDouble(item['line_tax']),
+              lineTotal: _toDouble(item['line_total']),
+            ),
+          )
+          .toList(growable: false),
+      // El "pago" de una nota de crédito es el reembolso: cómo se le devolvió.
+      payments: total > 0
+          ? [
+              SalePrintPaymentSource(
+                method: (ret['refund_method'] ?? 'cash').toString(),
+                amount: total,
+              ),
+            ]
+          : const <SalePrintPaymentSource>[],
+      subtotal: _toDouble(ret['subtotal']),
+      taxAmount: _toDouble(ret['tax_amount']),
+      totalAmount: total,
+      paidAmount: total,
+    );
+
+    return _salePrintPreparationService.prepareCompletedSaleReceipt(
+      sale: source,
+      paperSize: paperSize,
     );
   }
 

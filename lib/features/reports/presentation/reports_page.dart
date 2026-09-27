@@ -23,6 +23,7 @@ import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
+import '../../cash_register/presentation/cash_register_filter_chip.dart';
 import '../../inventory/data/file_io_helper.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../shell/presentation/shell_providers.dart';
@@ -675,9 +676,12 @@ class _CategoryContent extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────
 
 class _ReportCard extends StatelessWidget {
-  const _ReportCard({required this.title, required this.child});
+  const _ReportCard({required this.title, required this.child, this.action});
   final String title;
   final Widget child;
+
+  /// Control opcional a la derecha del título (p. ej. un filtro).
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -688,11 +692,18 @@ class _ReportCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
+                ),
+                ?action,
+              ],
             ),
             const SizedBox(height: AppTokens.s12),
             child,
@@ -2018,7 +2029,15 @@ class _DetailedSalesReport extends ConsumerWidget {
             ? voidedSalesReportProvider
             : detailedSalesReportProvider),
       ),
-      data: (rows) {
+      data: (allRows) {
+        // Filtro por caja: se aplica a la tabla, los totales y la exportación.
+        final registerId = ref.watch(detailedSalesRegisterFilterProvider);
+        final rows = registerId == null
+            ? allRows
+            : allRows
+                .where((r) => r.cashRegisterId == registerId)
+                .toList(growable: false);
+
         // Gate de ganancia: si el usuario no tiene `reports.profit`, la
         // columna y su total no se muestran NI se exportan — el PDF/CSV debe
         // reflejar exactamente lo que se ve en pantalla.
@@ -2095,6 +2114,12 @@ class _DetailedSalesReport extends ConsumerWidget {
           title: voidedOnly
               ? 'Ventas eliminadas / anuladas'
               : 'Ventas detalladas',
+          action: CashRegisterFilterChip(
+            selectedId: registerId,
+            onChanged: (id) => ref
+                .read(detailedSalesRegisterFilterProvider.notifier)
+                .state = id,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

@@ -17,19 +17,44 @@ final purchasesListProvider = FutureProvider<List<PurchaseSummary>>((
   return repository.fetchPurchases();
 });
 
+/// Compras que trajeron el IMEI escrito en el buscador — para saber a qué
+/// proveedor se le compró un equipo. Solo consulta con 6+ caracteres (mismo
+/// umbral que el historial de ventas) y espera a que se deje de teclear.
+final purchasesImeiMatchesProvider =
+    FutureProvider.autoDispose<List<PurchaseSummary>>((ref) async {
+  final imei = ref.watch(purchasesSearchProvider).trim();
+  if (imei.length < 6) return const [];
+
+  var disposed = false;
+  ref.onDispose(() => disposed = true);
+  await Future<void>.delayed(const Duration(milliseconds: 350));
+  if (disposed) return const [];
+
+  final repository = ref.watch(purchasesRepositoryProvider);
+  return repository.searchPurchasesByImei(imei);
+});
+
 /// Compras filtradas por búsqueda, memoizado. El filter ya no corre en
-/// cada `build()` ni en cada keystroke.
+/// cada `build()` ni en cada keystroke. Suma las que coinciden por IMEI.
 final purchasesFilteredProvider = Provider<List<PurchaseSummary>>((ref) {
   final purchases = ref.watch(purchasesListProvider).valueOrNull ?? const [];
   final query = ref.watch(purchasesSearchProvider).trim().toLowerCase();
   if (query.isEmpty) return purchases;
-  return purchases.where((p) {
+  final byText = purchases.where((p) {
     if ((p.purchaseNumber ?? '').toLowerCase().contains(query)) return true;
     if ((p.invoiceNumber ?? '').toLowerCase().contains(query)) return true;
     if (p.supplierName.toLowerCase().contains(query)) return true;
     if (p.status.toLowerCase().contains(query)) return true;
     return false;
-  }).toList(growable: false);
+  }).toList();
+
+  final byImei =
+      ref.watch(purchasesImeiMatchesProvider).valueOrNull ?? const [];
+  final seen = {for (final p in byText) p.id};
+  for (final p in byImei) {
+    if (seen.add(p.id)) byText.add(p);
+  }
+  return List.unmodifiable(byText);
 });
 
 /// Total de las compras filtradas, memoizado.

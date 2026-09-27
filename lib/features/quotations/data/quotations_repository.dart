@@ -68,7 +68,8 @@ class QuotationsRepository implements QuotationsRepositoryContract {
     final rows = await _client
         .from('products')
         .select(
-          'id, name, sku, barcode, description, price, tax_rate, stock, is_active',
+          'id, name, sku, barcode, description, price, tax_rate, stock, '
+          'is_active, price_includes_tax, is_tax_exempt',
         )
         .eq('branch_id', branchId)
         .eq('is_active', true)

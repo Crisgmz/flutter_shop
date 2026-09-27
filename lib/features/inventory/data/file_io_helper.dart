@@ -112,6 +112,25 @@ class FileIoHelper {
     return (bytes: bytes, name: file.name);
   }
 
+  /// Abre el picker filtrado al certificado de firma digital de la DGII.
+  /// Se usa al solicitar la facturación electrónica: el archivo viaja al
+  /// proveedor y no se guarda en ningún lado.
+  static Future<({Uint8List bytes, String name})?> pickCertificateFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['p12', 'pfx'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+    var bytes = file.bytes;
+    if (bytes == null && file.path != null) {
+      bytes = await File(file.path!).readAsBytes();
+    }
+    if (bytes == null) return null;
+    return (bytes: bytes, name: file.name);
+  }
+
   /// MIME type aproximado a partir de la extensión sin punto. Usado por la
   /// descarga web; el resto de plataformas no lo necesitan.
   static String _mimeFor(String extension) {

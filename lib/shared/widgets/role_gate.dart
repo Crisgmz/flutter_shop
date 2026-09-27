@@ -30,6 +30,15 @@ const kSalesVoidPermission = 'sales.void';
 /// migración 89). Sin él, el precio de la línea del carrito es de solo lectura.
 const kSalesEditPricePermission = 'sales.edit_price';
 
+/// Código del permiso "Elegir nivel de precio en la venta" (migración 91).
+/// Sin él, el cajero no ve el selector de nivel (mayorista, etc.) del carrito:
+/// vende al precio base o al nivel que tenga asignado el cliente.
+const kSalesPriceTierPermission = 'sales.price_tier';
+
+/// Código del permiso "Vender por debajo del precio mínimo" (migración 91).
+/// El mínimo es el más bajo entre el precio base y los niveles del producto.
+const kSalesBelowMinPricePermission = 'sales.below_min_price';
+
 /// Códigos del módulo Gastos (`permissions.code`, migración 86).
 const kExpensesViewPermission = 'expenses.view';
 const kExpensesCreatePermission = 'expenses.create';
@@ -183,6 +192,29 @@ final canEditSalePriceProvider = Provider<bool>((ref) {
   final access = ref.watch(roleAccessProvider);
   return access.hasPermission(
     kSalesEditPricePermission,
+    roleDefault: access.canEditPrices,
+  );
+});
+
+/// ¿Puede el usuario elegir a mano el nivel de precio del carrito?
+///
+/// Por rol: admin y supervisor. Un override sobre `sales.price_tier` manda en
+/// ambos sentidos: el dueño se lo da a un cajero de confianza.
+final canChooseSalePriceTierProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kSalesPriceTierPermission,
+    roleDefault: access.canEditPrices,
+  );
+});
+
+/// ¿Puede el usuario vender por debajo del precio mínimo del producto (el más
+/// bajo entre el precio base y sus niveles), sea cambiando el precio o con
+/// descuento? Por rol: admin y supervisor; override en `sales.below_min_price`.
+final canSellBelowMinPriceProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kSalesBelowMinPricePermission,
     roleDefault: access.canEditPrices,
   );
 });

@@ -11,6 +11,10 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../purchases/presentation/purchases_page.dart'
+    show showPurchaseDetailDialog;
+import '../../sales/presentation/sales_history_page.dart'
+    show showSaleDetailDialog;
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/file_io_helper.dart';
 import '../data/inventory_excel_service.dart';
@@ -2184,6 +2188,21 @@ class _ProductHistoryDialogState
 
   void _refresh() => setState(() => _future = _load());
 
+  /// Abre la factura de origen del movimiento (venta, devolución o compra).
+  VoidCallback? _viewerFor(ProductMovementEntry entry) {
+    final id = entry.documentId;
+    final document = entry.document;
+    if (id == null || id.isEmpty || document == null) return null;
+    switch (document) {
+      case ProductMovementDocument.sale:
+        return () => showSaleDetailDialog(context, docId: id);
+      case ProductMovementDocument.saleReturn:
+        return () => showSaleDetailDialog(context, docId: id, isReturn: true);
+      case ProductMovementDocument.purchase:
+        return () => showPurchaseDetailDialog(context, ref, id);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -2361,6 +2380,8 @@ class _ProductHistoryDialogState
                                   ),
                                 ),
                               ),
+                              // Columna del ojito (ver factura).
+                              const SizedBox(width: 44),
                             ],
                           ),
                         ),
@@ -2375,6 +2396,7 @@ class _ProductHistoryDialogState
                             itemBuilder: (context, i) => _MovementTile(
                               entry: entries[i],
                               runningStock: runningStocks[i],
+                              onView: _viewerFor(entries[i]),
                             ),
                           ),
                         ),
@@ -2395,10 +2417,14 @@ class _MovementTile extends StatelessWidget {
   const _MovementTile({
     required this.entry,
     required this.runningStock,
+    this.onView,
   });
 
   final ProductMovementEntry entry;
   final double runningStock;
+
+  /// Abre la factura de origen. Null en ajustes, mermas y traslados.
+  final VoidCallback? onView;
 
   @override
   Widget build(BuildContext context) {
@@ -2429,12 +2455,27 @@ class _MovementTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  entry.kind.label,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
+                Text.rich(
+                  TextSpan(
+                    text: entry.kind.label,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                    children: [
+                      // Cliente (venta, anulación, devolución) o proveedor.
+                      if (entry.party != null)
+                        TextSpan(
+                          text: '  ·  ${entry.party}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w500,
+                            color: AppTokens.foreground,
+                          ),
+                        ),
+                    ],
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -2551,6 +2592,18 @@ class _MovementTile extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+          SizedBox(
+            width: 44,
+            child: onView == null
+                ? null
+                : IconButton(
+                    onPressed: onView,
+                    tooltip: 'Ver factura',
+                    icon: const Icon(Icons.visibility_outlined, size: 18),
+                    color: AppTokens.mutedForeground,
+                    visualDensity: VisualDensity.compact,
+                  ),
           ),
         ],
       ),

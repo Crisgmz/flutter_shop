@@ -45,6 +45,7 @@ class SalePrintSource {
     this.logoOnLeft = true,
     this.qrBytes,
     this.ecf,
+    this.isCreditNote = false,
   });
 
   final String saleId;
@@ -114,6 +115,10 @@ class SalePrintSource {
   /// Datos e-CF (QR DGII, código de seguridad, firma digital). Solo cuando la
   /// venta lleva NCF electrónico (serie E).
   final PrintEcfData? ecf;
+
+  /// Es una devolución (`returns`): se imprime como NOTA DE CRÉDITO. Los
+  /// montos van en positivo; el título deja claro que es dinero que sale.
+  final bool isCreditNote;
 }
 
 class SalePrintItemSource {
@@ -277,6 +282,7 @@ class SalePrintDocumentAdapter {
 }
 
 PrintDocumentType _documentTypeForSale(SalePrintSource source) {
+  if (source.isCreditNote) return PrintDocumentType.creditNote;
   if (_hasText(source.ncf)) {
     return PrintDocumentType.fiscalInvoice;
   }
