@@ -1508,7 +1508,9 @@ String printReceiptHeadline(PrintDocumentData data) {
 /// cobrarse. Devuelve null cuando no aplica (o cuando ya trae NCF real).
 String? printPendingNcfNotice(PrintDocumentData data) {
   if (_hasText(data.ncf)) return null;
-  if (data.isPendingAccount) return 'NCF: se asigna al cobrar';
+  if (data.isPendingAccount || data.isDraftPreview) {
+    return 'NCF: se asigna al cobrar';
+  }
   if (data.documentType != PrintDocumentType.quote) return null;
   return 'NCF: se asigna al facturar';
 }

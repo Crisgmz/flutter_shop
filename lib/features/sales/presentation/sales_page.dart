@@ -1539,17 +1539,38 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     // El cobro de contado se resuelve entero dentro del cuadro: cobra y ahí
     // mismo muestra la factura para imprimir. Solo el crédito sale de vuelta,
     // porque antes de registrarlo hay que preguntar el plazo.
+    // Una sola vez: el builder del diálogo se puede re-ejecutar.
+    final draft = _draftPrintJob();
     final result = await showDialog<_PaymentResult>(
       context: context,
       barrierDismissible: false,
       builder: (_) => _PaymentDialog(
         total: _cartTotal,
+        draft: draft,
         onCheckout: (payments) =>
             _checkout(asCredit: false, payments: payments),
       ),
     );
     if (result == null || !mounted) return;
     if (result.asCredit) await _confirmCreditCheckout();
+  }
+
+  /// Factura en borrador del carrito actual para verla mientras se cobra.
+  /// Null si el negocio no imprime al vender. Un error aquí no frena la
+  /// venta: el cuadro muestra el aviso y se cobra igual.
+  Future<PreparedPrintJobData?>? _draftPrintJob() {
+    final settings = ref.read(appSettingsProvider).valueOrNull;
+    if (!(settings?.receiptPrintAfterSale ?? true)) return null;
+    return ref
+        .read(salesRepositoryProvider)
+        .prepareDraftSalePrintJob(
+          items: List.of(_cart),
+          receiptType: _receiptType,
+          clientId: _clientId,
+          notes: _notesController.text.trim(),
+          cashSessionId: ref.read(activeCashSessionIdProvider),
+        )
+        .catchError((Object _) => null);
   }
 
   /// Abre un diálogo que pide los días de plazo (default desde settings) y
@@ -2278,9 +2299,18 @@ class _PaymentResult {
 /// La venta a crédito no pasa por acá: se resuelve con [_PaymentResult] hacia
 /// afuera, porque antes hay que preguntar el plazo.
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({required this.total, required this.onCheckout});
+  const _PaymentDialog({
+    required this.total,
+    required this.onCheckout,
+    this.draft,
+  });
 
   final double total;
+
+  /// Vista previa de la factura armada con el carrito (sin número ni NCF),
+  /// que se muestra al lado de los pagos. Null si el negocio no imprime al
+  /// vender: entonces el cuadro es solo el cobro.
+  final Future<PreparedPrintJobData?>? draft;
 
   /// Ejecuta el cobro contra la base. Devuelve el trabajo de impresión ya con
   /// NCF y número de factura, o null si la venta falló (el error se le muestra
@@ -2299,6 +2329,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   /// Fase 2: cobro hecho y factura lista. Null mientras se está cobrando.
   PreparedPrintJobData? _printJob;
   bool _submitting = false;
+
+  /// Ticket o A4: se elige en la vista previa y con ese se imprime al cobrar.
+  PrintPaperSize _paperSize = PrintPaperSize.thermal80mm;
 
   static const List<MapEntry<String, String>> _methods = [
     MapEntry('cash', 'Efectivo'),
@@ -2375,16 +2408,28 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     _sync();
   });
 
-  /// Cobra sin cerrar el diálogo y, si la venta salió, cambia a la fase de
-  /// impresión. Si el negocio no imprime comprobante no hay segunda fase: el
-  /// cuadro se cierra solo, que es lo mismo que hacía el flujo viejo.
+  /// Cobra y manda a imprimir la factura real (ya con NCF y número) en un
+  /// solo clic. Si la ventana de impresión no se abre (p. ej. el navegador la
+  /// bloqueó por venir después del cobro), el cuadro pasa a la vista previa
+  /// con su botón Imprimir. Si el negocio no imprime comprobante, se cierra.
   Future<void> _onConfirm() async {
     setState(() => _submitting = true);
     final job = await widget.onCheckout(_payments());
     if (!mounted) return;
     if (job == null) {
       // Venta fallida (error ya mostrado) o sin comprobante que imprimir. En
-      // ambos casos el POS ya reaccionó por fuera; acá solo se cierra.
+      // ambos casos el POS ya reaccionó por fuera; aquí solo se cierra.
+      Navigator.of(context).pop();
+      return;
+    }
+    final printed = await printReceiptDocument(
+      context,
+      job.document,
+      _paperSize,
+      quiet: true,
+    );
+    if (!mounted) return;
+    if (printed) {
       Navigator.of(context).pop();
       return;
     }
@@ -2394,11 +2439,43 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     });
   }
 
+  /// Panel de la factura (borrador) al lado de los pagos.
+  Widget _draftPreview(Future<PreparedPrintJobData?> draft) {
+    return FutureBuilder<PreparedPrintJobData?>(
+      future: draft,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final data = snap.data;
+        if (data == null) {
+          return const Center(
+            child: Text(
+              'No se pudo armar la vista previa.\nLa venta se puede cobrar igual.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTokens.mutedForeground),
+            ),
+          );
+        }
+        return ReceiptDocumentPreview(
+          document: data.document,
+          paperSize: _paperSize,
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Fase 2: la factura ya existe, solo queda imprimirla. Mismo cuadro.
     final job = _printJob;
-    if (job != null) return ReceiptPreviewDialogBody(printData: job);
+    if (job != null) {
+      return ReceiptPreviewDialogBody(
+        printData: job,
+        initialPaperSize: _paperSize,
+      );
+    }
+    final draft = widget.draft;
 
     const contentPad = EdgeInsets.symmetric(horizontal: 10, vertical: 8);
     OutlineInputBorder border() => OutlineInputBorder(
@@ -2406,9 +2483,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
     );
 
-    return AlertDialog(
-      title: const Text('Completar venta'),
-      content: SizedBox(
+    final payment = SizedBox(
         width: 420,
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2573,7 +2648,71 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             ],
           ],
         ),
+      );
+
+    // Factura y cobro juntos: al lado en pantalla ancha, uno encima del otro
+    // en pantalla angosta.
+    final wide = MediaQuery.sizeOf(context).width >= 900;
+    final isThermal = _paperSize == PrintPaperSize.thermal80mm;
+    final Widget content;
+    if (draft == null) {
+      content = payment;
+    } else if (wide) {
+      content = Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: isThermal ? 340 : 560,
+            height: 480,
+            child: _draftPreview(draft),
+          ),
+          const SizedBox(width: 20),
+          payment,
+        ],
+      );
+    } else {
+      content = SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(width: 420, height: 300, child: _draftPreview(draft)),
+            const SizedBox(height: 16),
+            payment,
+          ],
+        ),
+      );
+    }
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Expanded(child: Text('Completar venta')),
+          if (draft != null)
+            SegmentedButton<PrintPaperSize>(
+              style: SegmentedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              segments: const [
+                ButtonSegment(
+                  value: PrintPaperSize.thermal80mm,
+                  label: Text('Ticket'),
+                  icon: Icon(Icons.receipt_outlined, size: 14),
+                ),
+                ButtonSegment(
+                  value: PrintPaperSize.a4,
+                  label: Text('A4'),
+                  icon: Icon(Icons.article_outlined, size: 14),
+                ),
+              ],
+              selected: {_paperSize},
+              onSelectionChanged: (set) =>
+                  setState(() => _paperSize = set.first),
+            ),
+        ],
       ),
+      content: content,
       actions: [
         TextButton(
           onPressed: _submitting ? null : () => Navigator.of(context).pop(),
@@ -2606,9 +2745,18 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     color: Colors.white,
                   ),
                 )
-              : const Icon(Icons.check_circle_outline, size: 18),
+              : Icon(
+                  draft != null && !_anyCredit
+                      ? Icons.print_rounded
+                      : Icons.check_circle_outline,
+                  size: 18,
+                ),
           label: Text(
-            _submitting ? 'Cobrando...' : 'Confirmar venta',
+            _submitting
+                ? 'Cobrando...'
+                : (draft != null && !_anyCredit
+                      ? 'Cobrar e imprimir'
+                      : 'Confirmar venta'),
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),

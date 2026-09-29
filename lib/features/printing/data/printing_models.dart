@@ -313,6 +313,7 @@ class PrintDocumentData {
     this.ncfValidUntil,
     this.legalFooterText,
     this.isPendingAccount = false,
+    this.isDraftPreview = false,
     this.logoOnLeft = true,
   });
 
@@ -376,6 +377,11 @@ class PrintDocumentData {
   /// consumió NCF. El documento impreso debe rotularse como NO fiscal para
   /// que nadie lo entregue como factura.
   final bool isPendingAccount;
+
+  /// Vista previa de la venta ANTES de cobrarla (Completar venta): todavía no
+  /// tiene número ni NCF. Solo se muestra en pantalla; lo que se imprime sale
+  /// del documento real que devuelve el cobro.
+  final bool isDraftPreview;
 
   /// Si true, en el A4 el logo va a la IZQUIERDA del encabezado; si false, a la
   /// derecha. Los datos de la empresa quedan centrados en ambos casos. Default

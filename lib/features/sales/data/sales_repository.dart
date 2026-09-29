@@ -865,28 +865,8 @@ class SalesRepository {
     debugPrint('Logo bytes descargados: ${logoBytes?.length ?? 0}');
 
     // Cash session → nombre legible para "Caja registradora".
-    final cashSessionId = sale['cash_session_id']?.toString();
-    String? cashRegisterName;
-    if (cashSessionId != null && cashSessionId.isNotEmpty) {
-      final csRows = await _client
-          .from('cash_sessions')
-          .select('opened_at')
-          .eq('id', cashSessionId)
-          .limit(1);
-      if (csRows.isNotEmpty) {
-        final csMap = Map<String, dynamic>.from(csRows.first as Map);
-        final openedAt =
-            DateTime.tryParse((csMap['opened_at'] ?? '').toString());
-        if (openedAt != null) {
-          final local = openedAt.isUtc ? openedAt.toLocal() : openedAt;
-          final mm = local.month.toString().padLeft(2, '0');
-          final dd = local.day.toString().padLeft(2, '0');
-          cashRegisterName = 'CAJA $mm$dd';
-        } else {
-          cashRegisterName = 'CAJA';
-        }
-      }
-    }
+    final cashRegisterName =
+        await _cashRegisterLabel(sale['cash_session_id']?.toString());
 
     final clientId = sale['client_id']?.toString();
     Map<String, dynamic> client = const <String, dynamic>{};
@@ -1080,6 +1060,183 @@ class SalesRepository {
     );
   }
 
+  /// Encabezado común de los documentos impresos: sucursal, ajustes de la
+  /// empresa (RNC, logo, QR…) y los bytes del logo y del QR.
+  Future<
+    ({
+      Map<String, dynamic> branch,
+      Map<String, dynamic> settings,
+      List<int>? logoBytes,
+      List<int>? qrBytes,
+    })
+  >
+  _loadPrintHeader(String branchId) async {
+    final branchRows = await _client
+        .from('branches')
+        .select('name, address, phone, invoice_footer')
+        .eq('id', branchId)
+        .limit(1);
+    final branch = branchRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(branchRows.first as Map);
+    // Todas las columnas: si falta una migración de campos del emisor, las
+    // ausentes vienen nulas en vez de romper.
+    final settingsRows = await _client.from('app_settings').select().limit(1);
+    final settings = settingsRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(settingsRows.first as Map);
+    return (
+      branch: branch,
+      settings: settings,
+      logoBytes: await _downloadBytes(settings['company_logo_url']?.toString()),
+      qrBytes: await _downloadBytes(settings['company_qr_url']?.toString()),
+    );
+  }
+
+  /// Datos del cliente para el bloque "Factura a:". Vacío si no hay cliente.
+  Future<Map<String, dynamic>> _loadPrintClient(
+    String? clientId,
+    String branchId,
+  ) async {
+    if (clientId == null || clientId.isEmpty) return const <String, dynamic>{};
+    final rows = await _client
+        .from('clients')
+        .select(
+          'full_name, document_type, document_number, address, phone, email',
+        )
+        .eq('id', clientId)
+        .eq('branch_id', branchId)
+        .limit(1);
+    return rows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(rows.first as Map);
+  }
+
+  /// "CAJA mmdd" según la apertura de la sesión de caja, como sale en la
+  /// factura. Null si no hay sesión.
+  Future<String?> _cashRegisterLabel(String? cashSessionId) async {
+    if (cashSessionId == null || cashSessionId.isEmpty) return null;
+    final rows = await _client
+        .from('cash_sessions')
+        .select('opened_at')
+        .eq('id', cashSessionId)
+        .limit(1);
+    if (rows.isEmpty) return null;
+    final openedAt = DateTime.tryParse(
+      ((rows.first as Map)['opened_at'] ?? '').toString(),
+    );
+    if (openedAt == null) return 'CAJA';
+    final local = openedAt.isUtc ? openedAt.toLocal() : openedAt;
+    final mm = local.month.toString().padLeft(2, '0');
+    final dd = local.day.toString().padLeft(2, '0');
+    return 'CAJA $mm$dd';
+  }
+
+  /// Vista previa de la factura ANTES de cobrar, armada con el carrito: se
+  /// muestra al lado del cobro en "Completar venta". No tiene número ni NCF
+  /// (los asigna el backend al cobrar); lo que se imprime es el documento
+  /// real que devuelve [checkoutSale].
+  Future<PreparedPrintJobData?> prepareDraftSalePrintJob({
+    required List<SaleCartItem> items,
+    required String receiptType,
+    String? clientId,
+    String? notes,
+    String? cashSessionId,
+    PrintPaperSize paperSize = PrintPaperSize.thermal80mm,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null || items.isEmpty) return null;
+
+    final (:branch, :settings, :logoBytes, :qrBytes) =
+        await _loadPrintHeader(branchId);
+    final client = await _loadPrintClient(clientId, branchId);
+    final cashRegisterName = await _cashRegisterLabel(cashSessionId);
+
+    String? cashierName;
+    final userId = _client.auth.currentUser?.id;
+    if (userId != null) {
+      final rows = await _client
+          .from('profiles')
+          .select('full_name')
+          .eq('id', userId)
+          .limit(1);
+      if (rows.isNotEmpty) {
+        cashierName = (rows.first as Map)['full_name']?.toString();
+      }
+    }
+
+    double sum(double Function(SaleCartItem item) pick) =>
+        items.fold<double>(0, (s, item) => s + pick(item));
+
+    final source = SalePrintSource(
+      saleId: 'draft',
+      branchId: branchId,
+      saleNumber: 'Se asigna al cobrar',
+      status: 'completed',
+      isDraftPreview: true,
+      saleDate: DateTime.now(),
+      receiptType: receiptType,
+      branchName: (branch['name'] ?? 'Sucursal').toString(),
+      branchAddress: _firstNonEmpty([
+        settings['company_address'],
+        branch['address'],
+      ]),
+      branchPhone: _firstNonEmpty([
+        settings['company_phone'],
+        branch['phone'],
+      ]),
+      branchEmail: _firstNonEmpty([settings['company_email']]),
+      branchTaxId: settings['company_tax_id']?.toString(),
+      branchLogoBytes: logoBytes,
+      qrBytes: qrBytes,
+      bankInfo: _firstNonEmpty([settings['company_bank_info']]),
+      signatoryName: _firstNonEmpty([settings['company_signatory_name']]),
+      signatoryTitle: _firstNonEmpty([settings['company_signatory_title']]),
+      observation: _firstNonEmpty([settings['invoice_observation']]),
+      cashRegisterName: cashRegisterName,
+      showBarcode: settings['receipt_hide_barcode'] != true,
+      showItbis: settings['invoice_show_itbis'] != false,
+      logoOnLeft:
+          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
+      clientName: client['full_name']?.toString(),
+      clientDocument: _buildClientDocumentLabel(
+        documentType: client['document_type']?.toString(),
+        documentNumber: client['document_number']?.toString(),
+      ),
+      clientAddress: client['address']?.toString(),
+      clientPhone: client['phone']?.toString(),
+      clientEmail: client['email']?.toString(),
+      cashierName: cashierName,
+      notes: _nullIfEmpty(notes),
+      invoiceFooterNote: _firstNonEmpty([branch['invoice_footer']]),
+      items: items
+          .map(
+            (item) => SalePrintItemSource(
+              description: item.product.name,
+              imeis: item.imeis,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+              lineSubtotal: item.lineSubtotal,
+              lineTax: item.lineTax,
+              lineTotal: item.lineTotal,
+              lineDiscount: item.lineDiscount,
+              sku: item.product.sku,
+              isService: item.product.isService,
+            ),
+          )
+          .toList(growable: false),
+      subtotal: sum((i) => i.lineSubtotal),
+      discountAmount: sum((i) => i.lineDiscount),
+      taxAmount: sum((i) => i.lineTax),
+      totalAmount: sum((i) => i.lineTotal),
+    );
+
+    return _salePrintPreparationService.prepareCompletedSaleReceipt(
+      sale: source,
+      paperSize: paperSize,
+    );
+  }
+
   /// Prepara la impresión de una devolución (`returns`) como NOTA DE CRÉDITO,
   /// con el mismo encabezado, logo y cliente que la factura. `returns` no
   /// lleva NCF propio: se imprime la factura original como referencia.
@@ -1104,38 +1261,9 @@ class SalesRepository {
       throw Exception('La devolución no tiene sucursal asociada.');
     }
 
-    final branchRows = await _client
-        .from('branches')
-        .select('name, address, phone, invoice_footer')
-        .eq('id', branchId)
-        .limit(1);
-    final branch = branchRows.isEmpty
-        ? const <String, dynamic>{}
-        : Map<String, dynamic>.from(branchRows.first as Map);
-
-    final settingsRows = await _client.from('app_settings').select().limit(1);
-    final settings = settingsRows.isEmpty
-        ? const <String, dynamic>{}
-        : Map<String, dynamic>.from(settingsRows.first as Map);
-    final logoBytes =
-        await _downloadBytes(settings['company_logo_url']?.toString());
-    final qrBytes = await _downloadBytes(settings['company_qr_url']?.toString());
-
-    final clientId = ret['client_id']?.toString();
-    Map<String, dynamic> client = const <String, dynamic>{};
-    if (clientId != null && clientId.isNotEmpty) {
-      final clientRows = await _client
-          .from('clients')
-          .select(
-            'full_name, document_type, document_number, address, phone, email',
-          )
-          .eq('id', clientId)
-          .eq('branch_id', branchId)
-          .limit(1);
-      if (clientRows.isNotEmpty) {
-        client = Map<String, dynamic>.from(clientRows.first as Map);
-      }
-    }
+    final (:branch, :settings, :logoBytes, :qrBytes) =
+        await _loadPrintHeader(branchId);
+    final client = await _loadPrintClient(ret['client_id']?.toString(), branchId);
 
     final cashierId = ret['cashier_id']?.toString();
     String? cashierName;

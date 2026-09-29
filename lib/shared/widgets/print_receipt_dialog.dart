@@ -30,10 +30,74 @@ class PrintReceiptDialog extends StatelessWidget {
 /// Vive aparte de [PrintReceiptDialog] porque el POS lo monta como segunda
 /// fase del mismo cuadro de cobro (cobrar e imprimir sin abrir y cerrar dos
 /// diálogos), en vez de abrir un diálogo nuevo encima.
+/// Manda [document] a imprimir (ventana de impresión del navegador o del
+/// sistema) en el tamaño [paperSize]. Devuelve true si se abrió y completó.
+///
+/// Con [quiet] no avisa cuando la ventana no se abrió: lo usa el cobro, que
+/// en ese caso muestra la vista previa con su botón Imprimir.
+Future<bool> printReceiptDocument(
+  BuildContext context,
+  PrintDocumentData document,
+  PrintPaperSize paperSize, {
+  bool quiet = false,
+}) async {
+  final useThermal = paperSize == PrintPaperSize.thermal80mm;
+  try {
+    final ok = await Printing.layoutPdf(
+      name: document.documentNumber,
+      onLayout: (format) => useThermal
+          ? const PdfReceiptBuilder().buildThermalBytes(document)
+          : const PdfReceiptBuilder().buildBytes(document, pageFormat: format),
+    );
+    if (!ok && !quiet && context.mounted) {
+      AppSnackBar.info(
+        context,
+        'No se abrió la ventana de impresión. Si tu navegador la bloqueó, '
+        'permite las ventanas emergentes para este sitio.',
+      );
+    }
+    return ok;
+  } catch (error) {
+    if (context.mounted) {
+      AppSnackBar.error(context, 'No se pudo imprimir', error);
+    }
+    return false;
+  }
+}
+
+/// Vista previa (ticket o A4) de un documento, sin el marco del diálogo. La
+/// usa el cobro para mostrar la factura al lado de los pagos.
+class ReceiptDocumentPreview extends StatelessWidget {
+  const ReceiptDocumentPreview({
+    super.key,
+    required this.document,
+    required this.paperSize,
+  });
+
+  final PrintDocumentData document;
+  final PrintPaperSize paperSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: paperSize == PrintPaperSize.thermal80mm
+          ? _ThermalPreview(document: document)
+          : _A4Preview(document: document),
+    );
+  }
+}
+
 class ReceiptPreviewDialogBody extends StatefulWidget {
-  const ReceiptPreviewDialogBody({super.key, required this.printData});
+  const ReceiptPreviewDialogBody({
+    super.key,
+    required this.printData,
+    this.initialPaperSize,
+  });
 
   final PreparedPrintJobData printData;
+
+  /// Tamaño con el que abre (default: el del trabajo de impresión).
+  final PrintPaperSize? initialPaperSize;
 
   @override
   State<ReceiptPreviewDialogBody> createState() =>
@@ -46,7 +110,7 @@ class _ReceiptPreviewDialogBodyState extends State<ReceiptPreviewDialogBody> {
   @override
   void initState() {
     super.initState();
-    _selectedSize = widget.printData.paperSize;
+    _selectedSize = widget.initialPaperSize ?? widget.printData.paperSize;
   }
 
   String get _docTitle => switch (widget.printData.document.documentType) {
@@ -74,35 +138,13 @@ class _ReceiptPreviewDialogBodyState extends State<ReceiptPreviewDialogBody> {
   ///      ventana), mostramos un hint sobre el bloqueador de pop-ups.
   ///   4. Solo cerramos el diálogo si la operación se completó OK.
   Future<void> _onPrintPressed(BuildContext context) async {
-    final doc = widget.printData.document;
-    final name = doc.documentNumber;
-    final useThermal = _selectedSize == PrintPaperSize.thermal80mm;
     final navigator = Navigator.of(context);
-    final messengerContext = context;
-
-    try {
-      final ok = await Printing.layoutPdf(
-        name: name,
-        onLayout: (format) => useThermal
-            ? const PdfReceiptBuilder().buildThermalBytes(doc)
-            : const PdfReceiptBuilder().buildBytes(doc, pageFormat: format),
-      );
-      if (!ok) {
-        if (messengerContext.mounted) {
-          AppSnackBar.info(
-            messengerContext,
-            'No se abrió la ventana de impresión. Si tu navegador la bloqueó, '
-            'permite las ventanas emergentes para este sitio.',
-          );
-        }
-        return;
-      }
-      if (navigator.mounted) navigator.pop();
-    } catch (error) {
-      if (messengerContext.mounted) {
-        AppSnackBar.error(messengerContext, 'No se pudo imprimir', error);
-      }
-    }
+    final ok = await printReceiptDocument(
+      context,
+      widget.printData.document,
+      _selectedSize,
+    );
+    if (ok && navigator.mounted) navigator.pop();
   }
 
   @override

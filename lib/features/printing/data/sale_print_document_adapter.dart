@@ -46,6 +46,7 @@ class SalePrintSource {
     this.qrBytes,
     this.ecf,
     this.isCreditNote = false,
+    this.isDraftPreview = false,
   });
 
   final String saleId;
@@ -119,6 +120,10 @@ class SalePrintSource {
   /// Es una devolución (`returns`): se imprime como NOTA DE CRÉDITO. Los
   /// montos van en positivo; el título deja claro que es dinero que sale.
   final bool isCreditNote;
+
+  /// Borrador del carrito antes de cobrar (ver
+  /// [PrintDocumentData.isDraftPreview]).
+  final bool isDraftPreview;
 }
 
 class SalePrintItemSource {
@@ -209,6 +214,7 @@ class SalePrintDocumentAdapter {
       ),
       customer: _customerForSale(source),
       isPendingAccount: isPending,
+      isDraftPreview: source.isDraftPreview,
       cashierName: _nullIfBlank(source.cashierName),
       cashRegisterName: _nullIfBlank(source.cashRegisterName),
       priceTierLabel: _nullIfBlank(source.priceTierLabel),
