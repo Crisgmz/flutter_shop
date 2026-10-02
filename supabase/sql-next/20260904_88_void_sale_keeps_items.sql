@@ -65,6 +65,10 @@
 -- Idempotente.
 -- ============================================================================
 
+-- ⚠️ NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 97 de shop-plus (misma base, mismas firmas). Correrla de nuevo pisaría los arreglos de anular y devolver de la 97.
+-- Este bloque aborta el script antes de tocar nada.
+do $$ begin raise exception 'NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 97 de shop-plus (misma base, mismas firmas). Correrla de nuevo pisaría los arreglos de anular y devolver de la 97.'; end $$;
+
 begin;
 
 -- ── 1) El default por rol de `sales.void`, visible en la pantalla ───────────

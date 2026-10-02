@@ -53,6 +53,10 @@
 -- Idempotente.
 -- ============================================================================
 
+-- ⚠️ NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 97 de shop-plus (misma base). Su firma de 6 parámetros choca con la viva de 7 y rompe Editar venta. Ver 20261002_95.
+-- Este bloque aborta el script antes de tocar nada.
+do $$ begin raise exception 'NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 97 de shop-plus (misma base). Su firma de 6 parámetros choca con la viva de 7 y rompe Editar venta. Ver 20261002_95.'; end $$;
+
 begin;
 
 create or replace function public.edit_sale_transactional(

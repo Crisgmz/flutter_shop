@@ -65,6 +65,11 @@ class AppSettings {
   bool get invDisallowBelowCost => _bool('inv_disallow_below_cost', false);
   bool get invImeiMode => _bool('inv_imei_mode', false);
   bool get invDisallowNoStock => _bool('inv_disallow_no_stock', false);
+
+  /// Editar una venta ya facturada sin exigir existencias, aunque el POS sí
+  /// las exija (migración 96: lo lee `edit_sale_transactional`).
+  bool get invEditSaleIgnoresStock =>
+      _bool('inv_edit_sale_ignores_stock', false);
   bool get invHighlightMinStock => _bool('inv_highlight_min_stock', true);
   bool get invDisableMarginCalculator =>
       _bool('inv_disable_margin_calculator', true);

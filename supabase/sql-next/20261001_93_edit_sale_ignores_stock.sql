@@ -33,6 +33,10 @@
 -- Idempotente.
 -- ============================================================================
 
+-- ⚠️ NO CORRER (2 oct 2026). Creó una segunda edit_sale_transactional de 6 parámetros que chocó con la viva de 7 (shop-plus). La 20261002_95 la borra.
+-- Este bloque aborta el script antes de tocar nada.
+do $$ begin raise exception 'NO CORRER (2 oct 2026). Creó una segunda edit_sale_transactional de 6 parámetros que chocó con la viva de 7 (shop-plus). La 20261002_95 la borra.'; end $$;
+
 begin;
 
 create or replace function public.edit_sale_transactional(

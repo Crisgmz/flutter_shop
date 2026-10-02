@@ -1270,6 +1270,16 @@ class _InventorySection extends StatelessWidget {
           helper: 'Bloquea agregar a la venta cuando stock <= 0.',
         ),
         _BoolRow(
+          label: 'Permitir editar ventas aunque no haya stock',
+          column: 'inv_edit_sale_ignores_stock',
+          value: settings.invEditSaleIgnoresStock,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+          helper: 'Al corregir una venta ya facturada no se exigen '
+              'existencias; si no alcanzan, el producto queda en negativo. '
+              'El POS sigue con la regla de arriba.',
+        ),
+        _BoolRow(
           label: 'Resaltar artículos en stock mínimo',
           column: 'inv_highlight_min_stock',
           value: settings.invHighlightMinStock,
