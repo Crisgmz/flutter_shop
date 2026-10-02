@@ -23,6 +23,7 @@ import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
 import '../data/sales_repository.dart';
 import '../domain/sale_checkout_service.dart' show fromCents;
+import 'pos_scan_listener.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
@@ -165,6 +166,15 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
   @override
   Widget build(BuildContext context) {
+    // La pistola agrega al carrito aunque el foco no esté en el buscador.
+    return PosScanListener(
+      onScan: _onBackgroundScan,
+      onTyped: _moveToSearch,
+      child: _buildPos(context),
+    );
+  }
+
+  Widget _buildPos(BuildContext context) {
     // Re-hidratar cuando otra pantalla escribió el draft con el POS ya
     // montado (p. ej. "Reabrir" una cuenta guardada desde el historial: el
     // POS vive debajo en el stack del shell y su initState no vuelve a
@@ -952,11 +962,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// La pistola escaneó un código (o el cajero presionó Enter). Si coincide con
   /// un IMEI → agrega ese equipo directo. Si coincide con código de barras/SKU
   /// → agrega el producto. Si no, deja el texto como filtro de búsqueda.
-  void _onScanSubmitted(String raw) {
+  /// Devuelve true si el código encontró producto.
+  bool _onScanSubmitted(String raw) {
     final code = raw.trim();
-    if (code.isEmpty) return;
+    if (code.isEmpty) return false;
     final normalized = _normalizeCode(code);
-    if (normalized.isEmpty) return;
+    if (normalized.isEmpty) return false;
     final products = ref.read(salesProductsProvider).valueOrNull ?? const [];
 
     // 1) ¿Es un IMEI? → agrega ese equipo directo (sin diálogo).
@@ -971,7 +982,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           _addImeiToCart(p, [imei]);
         }
         _clearSearch();
-        return;
+        return true;
       }
     }
 
@@ -983,10 +994,30 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           (sku != null && _normalizeCode(sku) == normalized)) {
         _addProductToCart(p);
         _clearSearch();
-        return;
+        return true;
       }
     }
     // 3) Sin coincidencia exacta: se queda como filtro de búsqueda normal.
+    _refocusScanner();
+    return false;
+  }
+
+  /// Código que llegó de la pistola con el foco fuera del buscador (ver
+  /// [PosScanListener]). Mismo trato que escanear en el buscador; sin
+  /// coincidencia, el código queda ahí como filtro.
+  void _onBackgroundScan(String code) {
+    if (!_onScanSubmitted(code)) _moveToSearch(code);
+  }
+
+  /// Deja [text] en el buscador como filtro (y le da el foco en escritorio).
+  void _moveToSearch(String text) {
+    if (!mounted) return;
+    final value = text.trim();
+    _searchController.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+    ref.read(salesSearchProvider.notifier).state = value;
     _refocusScanner();
   }
 

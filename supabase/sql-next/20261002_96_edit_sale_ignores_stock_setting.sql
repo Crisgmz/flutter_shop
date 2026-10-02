@@ -47,6 +47,10 @@
 -- interruptor, no hace nada.
 -- ============================================================================
 
+-- ⚠️ NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 20261002_97: el editor ahora obedece a "No permitir venta sin stock" y este interruptor aparte ya no se usa. Si shop-plus vuelve a crear la función, correr la 97.
+-- Este bloque aborta el script antes de tocar nada.
+do $$ begin raise exception 'NO CORRER (2 oct 2026). Ya se corrió y la reemplazó la 20261002_97: el editor ahora obedece a "No permitir venta sin stock" y este interruptor aparte ya no se usa. Si shop-plus vuelve a crear la función, correr la 97.'; end $$;
+
 begin;
 
 alter table public.app_settings
