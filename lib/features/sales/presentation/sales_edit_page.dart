@@ -109,6 +109,10 @@ class _PayLine {
   String method;
   final TextEditingController amount;
 
+  /// La línea de crédito no es un cobro: su monto es lo que quede pendiente y
+  /// lo calcula la pantalla, no el usuario.
+  bool get isCredit => method == 'credit';
+
   double get value =>
       double.tryParse(amount.text.trim().replaceAll(',', '')) ?? 0;
 
@@ -120,15 +124,17 @@ class _PayLine {
   }
 }
 
-/// Métodos que se pueden cobrar. `credit` no está: lo que no cubran estas
-/// líneas queda automáticamente como saldo pendiente, que es lo mismo pero
-/// sin pedirle al usuario que cuadre dos veces el mismo número.
+/// Métodos de la forma de cobro, igual que en el POS. `credit` no genera
+/// pago: su línea muestra lo que quede pendiente (total − cobrado), que es lo
+/// que pasa a Cuentas por cobrar, sin pedirle al usuario que cuadre dos veces
+/// el mismo número.
 const List<MapEntry<String, String>> _payMethods = [
   MapEntry('cash', 'Efectivo'),
   MapEntry('transfer', 'Transferencia'),
   MapEntry('card', 'Tarjeta'),
   MapEntry('mobile', 'Pago móvil'),
   MapEntry('other', 'Otro'),
+  MapEntry('credit', 'Crédito'),
 ];
 
 class SalesEditPage extends ConsumerStatefulWidget {
@@ -170,9 +176,11 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
     super.dispose();
   }
 
-  /// Total ya cobrado según las líneas de pago.
-  double get _paid =>
-      _payLines.fold<double>(0, (s, l) => s + (l.value > 0 ? l.value : 0));
+  /// Total ya cobrado según las líneas de pago (la de crédito no cuenta).
+  double get _paid => _payLines.fold<double>(
+        0,
+        (s, l) => s + (!l.isCredit && l.value > 0 ? l.value : 0),
+      );
 
   /// Lo que queda debiendo: pasa a Cuentas por cobrar al guardar.
   double get _pending {
@@ -185,8 +193,15 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
   void _addPayLine() => setState(() {
         _paymentsTouched = true;
         // La línea nueva arranca con lo que falta por cobrar: es el reparto
-        // que el cajero quiere el 90% de las veces.
-        _payLines.add(_PayLine(method: 'cash', amount: _pending));
+        // que el cajero quiere el 90% de las veces. Va antes de la de crédito
+        // para que esa siga de última, como el "resto" del POS.
+        final line = _PayLine(method: 'cash', amount: _pending);
+        final creditAt = _payLines.indexWhere((l) => l.isCredit);
+        if (creditAt >= 0) {
+          _payLines.insert(creditAt, line);
+        } else {
+          _payLines.add(line);
+        }
       });
 
   void _removePayLine(int i) => setState(() {
@@ -194,21 +209,27 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
         _payLines.removeAt(i).dispose();
       });
 
-  /// Deja la venta entera a crédito: sin líneas de cobro, todo el total queda
-  /// pendiente. Es el caso que reportó el usuario (se facturó en efectivo por
-  /// error y en realidad se fio).
+  /// Deja la venta entera a crédito: una sola línea "Crédito" con todo el
+  /// total pendiente. Es el caso que reportó el usuario (se facturó en
+  /// efectivo por error y en realidad se fio).
   void _allOnCredit() => setState(() {
         _paymentsTouched = true;
         for (final line in _payLines) {
           line.dispose();
         }
-        _payLines.clear();
+        _payLines
+          ..clear()
+          ..add(_PayLine(method: 'credit'));
       });
 
   /// Marca la venta como cobrada por completo en un solo método.
   void _markFullyPaid() => setState(() {
         _paymentsTouched = true;
-        final method = _payLines.isEmpty ? 'cash' : _payLines.first.method;
+        final method = _payLines
+                .where((l) => !l.isCredit)
+                .map((l) => l.method)
+                .firstOrNull ??
+            'cash';
         for (final line in _payLines) {
           line.dispose();
         }
@@ -250,18 +271,22 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
     _clientId = detail.sale.clientId;
     _notesCtrl.text = detail.sale.notes ?? '';
 
-    // Forma de cobro: una línea por cada fila real de `payments`. Una venta a
-    // crédito no tiene ninguna, y así arranca con todo pendiente.
+    // Forma de cobro: una línea por cada fila real de `payments`. Una fila
+    // vieja con método 'credit' se leía como 'other' (cobrado) y se sigue
+    // leyendo así, para que abrir y guardar no le cambie el saldo a la venta.
     for (final payment in detail.payments) {
       _payLines.add(
         _PayLine(
-          method: _payMethods.any((m) => m.key == payment.method)
+          method: payment.method != 'credit' &&
+                  _payMethods.any((m) => m.key == payment.method)
               ? payment.method
               : 'other',
           amount: payment.amount,
         ),
       );
     }
+    // Lo que falta por cobrar se ve como su propia línea "Crédito".
+    if (_pending > 0) _payLines.add(_PayLine(method: 'credit'));
   }
 
   Future<void> _addProduct() async {
@@ -378,7 +403,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
           saleId: widget.saleId,
           payments: [
             for (final line in _payLines)
-              if (line.value > 0)
+              if (!line.isCredit && line.value > 0)
                 SalePaymentLine(method: line.method, amount: line.value),
           ],
         );
@@ -1364,28 +1389,43 @@ class _PaymentLinesCard extends StatelessWidget {
           else
             for (var i = 0; i < lines.length; i++)
               Padding(
+                // La key ata cada fila a SU línea: sin ella, al quitar una
+                // línea o pasar todo a crédito el selector se quedaba
+                // mostrando el método de la fila que antes ocupaba ese lugar.
+                key: ObjectKey(lines[i]),
                 padding: const EdgeInsets.only(bottom: AppTokens.s8),
                 child: Row(
                   children: [
                     Expanded(
                       flex: 5,
-                      child: TextField(
-                        controller: lines[i].amount,
-                        keyboardType:
-                            const TextInputType.numberWithOptions(decimal: true),
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(
-                            RegExp(r'[0-9.]'),
+                      child: lines[i].isCredit
+                          ? InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Monto (lo pendiente)',
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                              ),
+                              child: Text(money(pending)),
+                            )
+                          : TextField(
+                            controller: lines[i].amount,
+                            keyboardType:
+                                const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[0-9.]'),
+                              ),
+                            ],
+                            decoration: const InputDecoration(
+                              labelText: 'Monto',
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                              prefixText: 'RD\$ ',
+                            ),
+                            onChanged: (_) => onChanged(),
                           ),
-                        ],
-                        decoration: const InputDecoration(
-                          labelText: 'Monto',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                          prefixText: 'RD\$ ',
-                        ),
-                        onChanged: (_) => onChanged(),
-                      ),
                     ),
                     const SizedBox(width: AppTokens.s8),
                     Expanded(
@@ -1399,13 +1439,22 @@ class _PaymentLinesCard extends StatelessWidget {
                         ),
                         items: [
                           for (final m in _payMethods)
-                            DropdownMenuItem(
-                              value: m.key,
-                              child: Text(m.value),
-                            ),
+                            // Una sola línea de crédito: el pendiente es uno.
+                            if (m.key != 'credit' ||
+                                lines[i].isCredit ||
+                                !lines.any((l) => l.isCredit))
+                              DropdownMenuItem(
+                                value: m.key,
+                                child: Text(m.value),
+                              ),
                         ],
                         onChanged: (v) {
                           if (v == null) return;
+                          // Al dejar de ser crédito, la línea arranca con lo
+                          // que estaba pendiente, que es lo que ahora se cobra.
+                          if (lines[i].isCredit && v != 'credit') {
+                            lines[i].amount.text = _PayLine._fmtAmount(pending);
+                          }
                           lines[i].method = v;
                           onChanged();
                         },

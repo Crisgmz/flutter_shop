@@ -117,6 +117,11 @@ class AppSettings {
   bool get receiptRedirectAfterPrint =>
       _bool('receipt_redirect_after_print', false);
 
+  /// Manda facturas y recibos directo a la impresora, sin el cuadro de vista
+  /// previa (migración 94). La ventana del navegador se salta aparte, con
+  /// Chrome en modo `--kiosk-printing` en cada caja.
+  bool get receiptDirectPrint => _bool('receipt_direct_print', false);
+
   // ─── Sección 5.3: Interfaz de venta ──────────────────────────────────────
   String get saleUiColumn => _str('sale_ui_column', 'barcode');
   bool get saleFocusItemField => _bool('sale_focus_item_field', false);

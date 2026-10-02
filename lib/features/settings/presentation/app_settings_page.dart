@@ -497,6 +497,58 @@ class _SubHeader extends StatelessWidget {
   }
 }
 
+/// Pasos para que Chrome tampoco muestre SU ventana de impresión. Eso no lo
+/// puede decidir la página: se configura una vez en cada caja.
+class _DirectPrintChromeHelp extends StatelessWidget {
+  const _DirectPrintChromeHelp();
+
+  static const _steps = [
+    'Imprime una factura normal y en la ventana de Chrome elige la impresora '
+        'de la caja (y márgenes "Ninguno" para el ticket). Chrome recuerda esa '
+        'elección. Pon también esa impresora como predeterminada en Windows.',
+    'Cierra Chrome por completo.',
+    'Clic derecho en el acceso directo de Chrome → Propiedades. En "Destino", '
+        'al final y después de un espacio, agrega:  --kiosk-printing',
+    'Abre el sistema desde ese acceso directo. Desde ahí todo imprime directo '
+        'en la impresora elegida, sin ventana.',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final small = Theme.of(context).textTheme.bodySmall;
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppTokens.s8),
+      padding: const EdgeInsets.all(AppTokens.s12),
+      decoration: BoxDecoration(
+        color: AppTokens.muted,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTokens.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Para que Chrome tampoco muestre su ventana (una vez por caja):',
+            style: small?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: AppTokens.s6),
+          for (var i = 0; i < _steps.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppTokens.s4),
+              child: Text('${i + 1}. ${_steps[i]}', style: small),
+            ),
+          Text(
+            'Con --kiosk-printing todo sale por esa misma impresora: si la '
+            'caja imprime ticket y A4 en impresoras distintas, la ventana de '
+            'Chrome sigue siendo necesaria para cambiar de una a otra.',
+            style: small?.copyWith(color: AppTokens.mutedForeground),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _BoolRow extends StatelessWidget {
   const _BoolRow({
     required this.label,
@@ -1498,6 +1550,16 @@ class _SalesReceiptSection extends StatelessWidget {
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
+        _BoolRow(
+          label: 'Impresión directa (sin vista previa)',
+          helper: 'Facturas, recibos y reimpresiones van directo a la '
+              'impresora, sin el cuadro de vista previa.',
+          column: 'receipt_direct_print',
+          value: settings.receiptDirectPrint,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        if (settings.receiptDirectPrint) const _DirectPrintChromeHelp(),
         _BoolRow(
           label: 'Imprimir recibo después de compra/recepción',
           column: 'receipt_print_after_purchase',

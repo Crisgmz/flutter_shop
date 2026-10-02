@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:printing/printing.dart';
 
 import '../../features/printing/data/printing.dart';
+import '../../features/settings/presentation/app_settings_providers.dart';
 import '../formatters/formatters.dart';
 import 'app_snackbar.dart';
 
@@ -12,7 +14,28 @@ class PrintReceiptDialog extends StatelessWidget {
 
   final PreparedPrintJobData printData;
 
-  static Future<void> show(BuildContext context, PreparedPrintJobData data) {
+  /// Con "Impresión directa" (Configuración → Ventas y recibo) el documento
+  /// se manda a imprimir sin pasar por la vista previa. Si la ventana de
+  /// impresión no llega a abrir, se muestra el cuadro de siempre para que
+  /// quede su botón Imprimir.
+  static Future<void> show(
+    BuildContext context,
+    PreparedPrintJobData data,
+  ) async {
+    final directPrint = ProviderScope.containerOf(context, listen: false)
+            .read(appSettingsProvider)
+            .valueOrNull
+            ?.receiptDirectPrint ??
+        false;
+    if (directPrint) {
+      final printed = await printReceiptDocument(
+        context,
+        data.document,
+        data.paperSize,
+        quiet: true,
+      );
+      if (printed || !context.mounted) return;
+    }
     return showDialog(
       context: context,
       builder: (_) => PrintReceiptDialog(printData: data),

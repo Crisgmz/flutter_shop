@@ -1113,28 +1113,29 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                       ),
                     ],
                   )
-                else
+                else ...[
+                  // El buscador va solo en su fila: compartiendo fila con los
+                  // seis campos numéricos le quedaban ~200 px y la lista de
+                  // productos salía igual de estrecha.
+                  _ProductAutocomplete(
+                    products: widget.products,
+                    selectedId: _lineProductId,
+                    onSelected: (product) {
+                      setState(() {
+                        _lineProductId = product.id;
+                        _costController.text = product.cost.toStringAsFixed(
+                          2,
+                        );
+                        _priceController.text =
+                            product.price.toStringAsFixed(2);
+                        _syncMarginFromPrice();
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        flex: 3,
-                        child: _ProductAutocomplete(
-                          products: widget.products,
-                          selectedId: _lineProductId,
-                          onSelected: (product) {
-                            setState(() {
-                              _lineProductId = product.id;
-                              _costController.text = product.cost
-                                  .toStringAsFixed(2);
-                              _priceController.text = product.price
-                                  .toStringAsFixed(2);
-                              _syncMarginFromPrice();
-                            });
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 10),
                       Expanded(
                         child: TextFormField(
                           controller: _qtyController,
@@ -1205,6 +1206,7 @@ class _NewPurchaseDialogState extends State<_NewPurchaseDialog> {
                       ),
                     ],
                   ),
+                ],
                 const SizedBox(height: 10),
                 if (_lines.isEmpty)
                   const Align(
@@ -2351,11 +2353,16 @@ class _ProductAutocompleteState extends State<_ProductAutocomplete> {
                   .name,
             ),
       displayStringForOption: (product) => product.name,
+      // Sin texto se listan TODOS los productos (la lista es perezosa, así
+      // que miles de filas no pesan). Antes solo salían los primeros 20.
       optionsBuilder: (textEditingValue) {
         final query = textEditingValue.text.trim().toLowerCase();
-        if (query.isEmpty) return widget.products.take(20);
+        if (query.isEmpty) return widget.products;
         return widget.products.where(
-          (product) => product.name.toLowerCase().contains(query),
+          (product) =>
+              product.name.toLowerCase().contains(query) ||
+              (product.sku ?? '').toLowerCase().contains(query) ||
+              (product.barcode ?? '').toLowerCase().contains(query),
         );
       },
       onSelected: widget.onSelected,
@@ -2370,7 +2377,7 @@ class _ProductAutocompleteState extends State<_ProductAutocomplete> {
           focusNode: focusNode,
           decoration: InputDecoration(
             labelText: 'Producto',
-            hintText: 'Escribí para buscar…',
+            hintText: 'Busca por nombre, SKU o código de barras',
             suffixIcon: controller.text.isEmpty
                 ? const Icon(Icons.search, size: 18)
                 : IconButton(
@@ -2390,43 +2397,83 @@ class _ProductAutocompleteState extends State<_ProductAutocomplete> {
           child: Material(
             elevation: 4,
             borderRadius: BorderRadius.circular(8),
+            clipBehavior: Clip.antiAlias,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260, maxWidth: 420),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: options.length,
-                itemBuilder: (context, index) {
-                  final product = options.elementAt(index);
-                  return InkWell(
-                    onTap: () => onSelected(product),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 10,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              product.name,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                          Text(
-                            money(product.cost),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppTokens.mutedForeground,
-                            ),
-                          ),
-                        ],
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                    child: Text(
+                      '${qty(options.length)} producto'
+                      '${options.length == 1 ? '' : 's'}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTokens.mutedForeground,
                       ),
                     ),
-                  );
-                },
+                  ),
+                  const Divider(height: 1),
+                  Flexible(
+                    child: ListView.builder(
+                      padding: EdgeInsets.zero,
+                      shrinkWrap: true,
+                      itemCount: options.length,
+                      itemBuilder: (context, index) {
+                        final product = options.elementAt(index);
+                        final code = product.sku ?? product.barcode;
+                        return InkWell(
+                          onTap: () => onSelected(product),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        product.name,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      Text(
+                                        [
+                                          if (code != null && code.isNotEmpty)
+                                            code,
+                                          'Stock: ${qty(product.stock)}',
+                                        ].join(' · '),
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppTokens.mutedForeground,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  money(product.cost),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppTokens.mutedForeground,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

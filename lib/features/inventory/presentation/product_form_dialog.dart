@@ -54,7 +54,11 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
   bool _isActive = true;
   bool _isService = false;
   bool _isTaxExempt = false;
-  bool _priceIncludesTax = false;
+  bool _priceIncludesTax = true;
+
+  /// Si el usuario ya eligió a mano "ITBIS incluido/aparte", el default
+  /// global que llegue tarde no se lo pisa.
+  bool _priceIncludesTaxTouched = false;
   bool _trackInventory = true;
   bool _uploadingImage = false;
 
@@ -116,12 +120,21 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
     _isTaxExempt = product?.isTaxExempt ?? false;
     // Igual que "es servicio": producto nuevo arranca con el default global
     // (app_settings.tax_default_price_includes_tax). Al editar manda el producto.
+    // Si la configuración todavía no cargó se arranca en "incluido" y se
+    // corrige cuando llegue: antes se quedaba en "aparte" por leerla antes de
+    // tiempo, aunque el negocio la tuviera prendida.
+    final settings = ref.read(appSettingsProvider).valueOrNull;
     _priceIncludesTax = product?.priceIncludesTax ??
-        (ref
-                .read(appSettingsProvider)
-                .valueOrNull
-                ?.taxDefaultPriceIncludesTax ??
-            false);
+        settings?.taxDefaultPriceIncludesTax ??
+        true;
+    if (product == null && settings == null) {
+      ref.read(appSettingsProvider.future).then((loaded) {
+        if (!mounted || _priceIncludesTaxTouched) return;
+        setState(
+          () => _priceIncludesTax = loaded.taxDefaultPriceIncludesTax,
+        );
+      }).catchError((_) {});
+    }
     // Un servicio no lleva control de inventario.
     _trackInventory = product?.trackInventory ?? !_isService;
     _imeis.addAll(product?.imeis ?? const <String>[]);
@@ -393,6 +406,35 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                   ),
                 ]),
                 const SizedBox(height: 10),
+                // Va pegado al precio porque decide cuánto se cobra por él.
+                // La key lo reconstruye si el default global llega después de
+                // abrir el formulario (initialValue solo se lee una vez).
+                DropdownButtonFormField<bool>(
+                  key: ValueKey(_priceIncludesTax),
+                  initialValue: _priceIncludesTax,
+                  decoration: const InputDecoration(
+                    labelText: 'ITBIS en el precio de venta',
+                    helperText:
+                        'Incluido: se cobra 100 exacto y la factura desglosa '
+                        'base + ITBIS. Aparte: 100 → se cobra 118.',
+                    helperMaxLines: 2,
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: true,
+                      child: Text('ITBIS incluido en el precio'),
+                    ),
+                    DropdownMenuItem(
+                      value: false,
+                      child: Text('ITBIS aparte (se suma encima del precio)'),
+                    ),
+                  ],
+                  onChanged: (value) => setState(() {
+                    _priceIncludesTaxTouched = true;
+                    _priceIncludesTax = value ?? true;
+                  }),
+                ),
+                const SizedBox(height: 10),
                 _PriceTierFields(
                   isMobile: isMobile,
                   controllers: _priceTierControllers,
@@ -469,30 +511,6 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                     },
                   ),
                 ]),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<bool>(
-                  initialValue: _priceIncludesTax,
-                  decoration: const InputDecoration(
-                    labelText: 'ITBIS en el precio de venta',
-                    helperText:
-                        'Aparte: 100 → se cobra 118. Incluido: se cobra 100 '
-                        'exacto y la factura desglosa base + ITBIS.',
-                    helperMaxLines: 2,
-                  ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: false,
-                      child: Text('ITBIS aparte (se suma encima del precio)'),
-                    ),
-                    DropdownMenuItem(
-                      value: true,
-                      child: Text('ITBIS incluido en el precio'),
-                    ),
-                  ],
-                  onChanged: (value) => setState(
-                    () => _priceIncludesTax = value ?? false,
-                  ),
-                ),
                 const SizedBox(height: 10),
                 _ProductImagePicker(
                   controller: _imageUrlController,

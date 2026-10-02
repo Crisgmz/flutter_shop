@@ -289,22 +289,32 @@ class PurchasesRepository {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
-    final rows = await _client
-        .from('products')
-        .select(
-          'id, name, cost, price, stock, sku, barcode, sale_unit, unit, '
-          'image_url, imei_on_purchase',
-        )
-        .eq('branch_id', branchId)
-        .eq('is_active', true)
-        .order('name');
+    // Paginado igual que el POS: Supabase corta cada consulta en 1000 filas,
+    // así que con un catálogo más grande los productos del final del
+    // alfabeto no aparecían en el buscador de la compra. El `id` desempata
+    // los nombres repetidos para que ninguna fila se pierda entre páginas.
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    var from = 0;
+    while (true) {
+      final page = await _client
+          .from('products')
+          .select(
+            'id, name, cost, price, stock, sku, barcode, sale_unit, unit, '
+            'image_url, imei_on_purchase',
+          )
+          .eq('branch_id', branchId)
+          .eq('is_active', true)
+          .order('name')
+          .order('id')
+          .range(from, from + pageSize - 1);
+      if (page.isEmpty) break;
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      from += page.length;
+      if (page.length < pageSize) break;
+    }
 
-    return rows
-        .map(
-          (item) =>
-              PurchaseProduct.fromMap(Map<String, dynamic>.from(item as Map)),
-        )
-        .toList(growable: false);
+    return rows.map(PurchaseProduct.fromMap).toList(growable: false);
   }
 
   Future<List<PurchaseSummary>> fetchPurchases() async {
