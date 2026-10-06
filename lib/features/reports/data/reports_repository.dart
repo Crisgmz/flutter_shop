@@ -464,19 +464,54 @@ class ReportsRepository {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
-    final rows = await _client
-        .from('sales_daily_view')
-        .select()
-        .eq('branch_id', branchId)
-        .gte('sale_day', _isoDate(from))
-        .lte('sale_day', _isoDate(to))
-        .order('sale_day', ascending: true);
+    // Mismo resultado que `sales_daily_view` (ventas `completed` por día,
+    // cajero y comprobante), pero leyendo `sales` por rango de `sale_date`.
+    // La vista filtra por un día CALCULADO que, con la regla de acceso de
+    // `sales` activa, no puede usar el índice: recorría todo el historial de
+    // la sucursal revisando permisos venta por venta, y con un mes se pasaba
+    // del límite de tiempo de la base (57014). Por fecha, en cambio, se usa
+    // `sales_date_idx` y solo se leen las ventas del rango.
+    final fromIso = _localStartOfDayUtcIso(from);
+    final untilIso = _localNextDayStartUtcIso(to);
 
-    return rows
-        .map((item) => SalesDailyRow.fromMap(
-              Map<String, dynamic>.from(item as Map),
-            ))
-        .toList(growable: false);
+    const pageSize = 1000;
+    final buckets = <String, _SalesDayAccumulator>{};
+    var offset = 0;
+    while (true) {
+      final page = await _client
+          .from('sales')
+          .select(
+            'id, sale_date, seller_id, cashier_id, receipt_type, subtotal, '
+            'tax_amount, service_charge_amount, discount_amount, total_amount',
+          )
+          .eq('branch_id', branchId)
+          .eq('status', 'completed')
+          .gte('sale_date', fromIso)
+          .lt('sale_date', untilIso)
+          .order('sale_date')
+          .order('id')
+          .range(offset, offset + pageSize - 1);
+      for (final raw in page) {
+        final m = Map<String, dynamic>.from(raw as Map);
+        final at = DateTime.tryParse(m['sale_date']?.toString() ?? '');
+        if (at == null) continue;
+        final local = at.toLocal();
+        final day = DateTime(local.year, local.month, local.day);
+        final seller = (m['seller_id'] ?? m['cashier_id'])?.toString();
+        final receipt = (m['receipt_type'] ?? '').toString();
+        buckets
+            .putIfAbsent(
+              '${_isoDate(day)}|$seller|$receipt',
+              () => _SalesDayAccumulator(day, seller, receipt),
+            )
+            .add(m);
+      }
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+
+    return buckets.values.map((b) => b.toRow()).toList(growable: false)
+      ..sort((a, b) => a.saleDay.compareTo(b.saleDay));
   }
 
   /// Sesiones de caja en el rango. Lee `cash_session_summary_view`.
@@ -1113,44 +1148,55 @@ class ReportsRepository {
     final fromIso = _localStartOfDayUtcIso(from);
     final toIso = _localEndOfDayUtcIso(to);
 
-    var query = _client
-        .from('sales')
-        .select(
-          'id, sale_number, sale_date, receipt_type, ncf, status, '
-          'subtotal, tax_amount, total_amount, discount_amount, '
-          'paid_amount, balance_due, cashier_id, cash_session_id, '
-          'clients(full_name)',
-        )
-        .eq('branch_id', branchId)
-        .gte('sale_date', fromIso)
-        .lte('sale_date', toIso);
+    // Todas las ventas del rango, de 1000 en 1000. Antes había un tope de
+    // 500: en un mes con más ventas el reporte (y sus totales) salía
+    // incompleto sin avisar.
+    const pageSize = 1000;
+    final salesRows = <Map<String, dynamic>>[];
+    var offset = 0;
+    while (true) {
+      var query = _client
+          .from('sales')
+          .select(
+            'id, sale_number, sale_date, receipt_type, ncf, status, '
+            'subtotal, tax_amount, total_amount, discount_amount, '
+            'paid_amount, balance_due, cashier_id, cash_session_id, '
+            'clients(full_name)',
+          )
+          .eq('branch_id', branchId)
+          .gte('sale_date', fromIso)
+          .lte('sale_date', toIso);
 
-    if (voidedOnly) {
-      query = query.eq('status', 'voided');
-    } else {
-      // Para "Detallados" normales excluimos eliminadas (tienen su propio
-      // sub-reporte) y las cuentas GUARDADAS ('pending'): no son ventas reales
-      // todavía, no deben sumar al reporte hasta completarse.
-      query = query.neq('status', 'voided').neq('status', 'pending');
+      if (voidedOnly) {
+        query = query.eq('status', 'voided');
+      } else {
+        // Para "Detallados" normales excluimos eliminadas (tienen su propio
+        // sub-reporte) y las cuentas GUARDADAS ('pending'): no son ventas
+        // reales todavía, no deben sumar al reporte hasta completarse.
+        query = query.neq('status', 'voided').neq('status', 'pending');
+      }
+
+      final page = await query
+          .order('sale_date', ascending: false)
+          .order('id', ascending: false)
+          .range(offset, offset + pageSize - 1);
+      salesRows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      if (page.length < pageSize) break;
+      offset += page.length;
     }
-
-    final salesRows =
-        await query.order('sale_date', ascending: false).limit(500);
 
     // Recolectar cashier_ids únicos y traer los nombres de profiles en una
     // sola query.
     final cashierIds = <String>{};
     for (final raw in salesRows) {
-      final id = (raw as Map)['cashier_id']?.toString();
+      final id = raw['cashier_id']?.toString();
       if (id != null && id.isNotEmpty) cashierIds.add(id);
     }
 
     final cashierNames = <String, String>{};
     if (cashierIds.isNotEmpty) {
-      final profiles = await _client
-          .from('profiles')
-          .select('id, full_name')
-          .inFilter('id', cashierIds.toList(growable: false));
+      final profiles =
+          await _selectIn('profiles', 'id, full_name', 'id', cashierIds);
       for (final raw in profiles) {
         final row = Map<String, dynamic>.from(raw as Map);
         final id = row['id']?.toString();
@@ -1165,8 +1211,7 @@ class ReportsRepository {
     // cash_sessions.cash_session_id; la sesión apunta a cash_registers.
     final sessionIds = <String>{};
     final saleIds = <String>{};
-    for (final raw in salesRows) {
-      final m = raw as Map;
+    for (final m in salesRows) {
       final sid = m['cash_session_id']?.toString();
       if (sid != null && sid.isNotEmpty) sessionIds.add(sid);
       final id = m['id']?.toString();
@@ -1176,10 +1221,12 @@ class ReportsRepository {
     final registerNames = <String, String>{};
     final registerIds = <String, String>{};
     if (sessionIds.isNotEmpty) {
-      final sessions = await _client
-          .from('cash_sessions')
-          .select('id, cash_register_id, cash_registers(name)')
-          .inFilter('id', sessionIds.toList(growable: false));
+      final sessions = await _selectIn(
+        'cash_sessions',
+        'id, cash_register_id, cash_registers(name)',
+        'id',
+        sessionIds,
+      );
       for (final raw in sessions) {
         final row = Map<String, dynamic>.from(raw as Map);
         final id = row['id']?.toString();
@@ -1200,10 +1247,12 @@ class ReportsRepository {
     // márgenes del sistema). sale_items no guarda snapshot de costo.
     final cogsBySale = <String, double>{};
     if (saleIds.isNotEmpty) {
-      final items = await _client
-          .from('sale_items')
-          .select('sale_id, product_id, quantity')
-          .inFilter('sale_id', saleIds.toList(growable: false));
+      final items = await _selectIn(
+        'sale_items',
+        'sale_id, product_id, quantity',
+        'sale_id',
+        saleIds,
+      );
       final productIds = <String>{};
       for (final raw in items) {
         final pid = (raw as Map)['product_id']?.toString();
@@ -1211,10 +1260,8 @@ class ReportsRepository {
       }
       final productCosts = <String, double>{};
       if (productIds.isNotEmpty) {
-        final products = await _client
-            .from('products')
-            .select('id, cost')
-            .inFilter('id', productIds.toList(growable: false));
+        final products =
+            await _selectIn('products', 'id, cost', 'id', productIds);
         for (final raw in products) {
           final row = Map<String, dynamic>.from(raw as Map);
           final id = row['id']?.toString();
@@ -1232,8 +1279,7 @@ class ReportsRepository {
       }
     }
 
-    return salesRows.map((item) {
-      final m = Map<String, dynamic>.from(item as Map);
+    return salesRows.map((m) {
       final cashierId = m['cashier_id']?.toString();
       // Inyectamos un pseudo-map `profiles` para que el factory de
       // SaleDetailRow lo lea sin ramas especiales.
@@ -1347,6 +1393,104 @@ class ReportsRepository {
   static String _localEndOfDayUtcIso(DateTime d) {
     return DateTime(d.year, d.month, d.day, 23, 59, 59).toUtc().toIso8601String();
   }
+
+  /// Inicio del día local SIGUIENTE en UTC ISO, para filtrar con `lt` sin
+  /// perder lo que cae en el último segundo del día.
+  static String _localNextDayStartUtcIso(DateTime d) {
+    return DateTime(d.year, d.month, d.day + 1).toUtc().toIso8601String();
+  }
+
+  /// Ids por petición en los filtros `in.(...)`. Cada UUID ocupa unos 45
+  /// caracteres en la URL: con cientos de ids (un mes de ventas) la petición
+  /// pasaba el límite del servidor y el navegador respondía "Failed to fetch".
+  static const _inChunkSize = 80;
+
+  /// Filas de [table] cuyo [column] está en [values]. Parte la lista en grupos
+  /// de [_inChunkSize] y pagina cada grupo, porque Supabase corta cada
+  /// respuesta en 1000 filas (los renglones de un grupo de ventas pueden
+  /// pasar de eso). Los grupos se piden de 4 en 4.
+  Future<List<Map<String, dynamic>>> _selectIn(
+    String table,
+    String columns,
+    String column,
+    Iterable<String> values,
+  ) async {
+    final ids = values.toSet().toList(growable: false);
+    if (ids.isEmpty) return const [];
+
+    Future<List<Map<String, dynamic>>> fetchChunk(List<String> chunk) async {
+      const pageSize = 1000;
+      final rows = <Map<String, dynamic>>[];
+      var offset = 0;
+      while (true) {
+        final page = await _client
+            .from(table)
+            .select(columns)
+            .inFilter(column, chunk)
+            .order('id')
+            .range(offset, offset + pageSize - 1);
+        rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+        if (page.length < pageSize) break;
+        offset += page.length;
+      }
+      return rows;
+    }
+
+    final chunks = [
+      for (var i = 0; i < ids.length; i += _inChunkSize)
+        ids.sublist(
+          i,
+          i + _inChunkSize > ids.length ? ids.length : i + _inChunkSize,
+        ),
+    ];
+    final result = <Map<String, dynamic>>[];
+    for (var i = 0; i < chunks.length; i += 4) {
+      final batch = await Future.wait(chunks.skip(i).take(4).map(fetchChunk));
+      for (final rows in batch) {
+        result.addAll(rows);
+      }
+    }
+    return result;
+  }
+}
+
+/// Suma de las ventas de un día / cajero / comprobante (ver
+/// [ReportsRepository.fetchSalesDaily]).
+class _SalesDayAccumulator {
+  _SalesDayAccumulator(this.day, this.sellerUserId, this.receiptType);
+
+  final DateTime day;
+  final String? sellerUserId;
+  final String receiptType;
+  int count = 0;
+  double gross = 0;
+  double tax = 0;
+  double serviceCharge = 0;
+  double discount = 0;
+  double net = 0;
+
+  void add(Map<String, dynamic> sale) {
+    count++;
+    gross += _toDouble(sale['subtotal']);
+    tax += _toDouble(sale['tax_amount']);
+    serviceCharge += _toDouble(sale['service_charge_amount']);
+    discount += _toDouble(sale['discount_amount']);
+    net += _toDouble(sale['total_amount']);
+  }
+
+  static double _cents(double v) => (v * 100).roundToDouble() / 100;
+
+  SalesDailyRow toRow() => SalesDailyRow(
+        saleDay: day,
+        sellerUserId: sellerUserId,
+        receiptType: receiptType,
+        salesCount: count,
+        grossTotal: _cents(gross),
+        itbisTotal: _cents(tax),
+        serviceChargeTotal: _cents(serviceCharge),
+        discountTotal: _cents(discount),
+        netTotal: _cents(net),
+      );
 }
 
 // ───────────────────────────────────────────────────────────────────────
