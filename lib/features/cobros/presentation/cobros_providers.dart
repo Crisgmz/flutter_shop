@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart' show DateTimeRange;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/cobros_repository.dart';
@@ -14,6 +16,9 @@ enum ReceivablesFilter { all, nearDue, overdue }
 
 final cobrosFilterProvider =
     StateProvider<ReceivablesFilter>((ref) => ReceivablesFilter.all);
+
+/// Rango "Desde – hasta" sobre la fecha de la venta. Null = todas.
+final cobrosDateRangeProvider = StateProvider<DateTimeRange?>((ref) => null);
 
 final cobrosRepositoryProvider = Provider<CobrosRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
@@ -64,15 +69,17 @@ final cobrosCategorySummaryProvider =
   );
 });
 
-/// Cuentas por cobrar filtradas por búsqueda + modo, memoizado.
+/// Cuentas por cobrar filtradas por búsqueda + modo + fechas, memoizado.
 final cobrosFilteredProvider = Provider<List<ReceivableSale>>((ref) {
   final all = ref.watch(cobrosReceivablesProvider).valueOrNull ?? const [];
   final query = ref.watch(cobrosSearchProvider).trim().toLowerCase();
   final mode = ref.watch(cobrosFilterProvider);
+  final range = ref.watch(cobrosDateRangeProvider);
   final warnDays =
       ref.watch(appSettingsProvider).valueOrNull?.creditWarnDays ?? 7;
 
   return all.where((item) {
+    if (!isWithinDateRange(item.saleDate, range)) return false;
     if (query.isNotEmpty) {
       if (!item.saleNumber.toLowerCase().contains(query) &&
           !item.clientName.toLowerCase().contains(query) &&

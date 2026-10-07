@@ -78,6 +78,7 @@ class CashSessionMetrics {
     this.cardPayments = 0,
     this.transferPayments = 0,
     this.otherPayments = 0,
+    this.creditNotePayments = 0,
     this.salesTotal = 0,
     this.changeGiven = 0,
     this.cashWithdrawnForChange = 0,
@@ -93,8 +94,13 @@ class CashSessionMetrics {
   final double cardPayments;
   final double transferPayments;
 
-  /// "Otro" = todo lo que no es efectivo / tarjeta / transferencia / crédito.
+  /// "Otro" = todo lo que no es efectivo / tarjeta / transferencia / crédito
+  /// ni nota de crédito.
   final double otherPayments;
+
+  /// Parte de las ventas pagada con saldo a favor (método `credit_note`). No
+  /// es dinero que entra: el cliente ya lo tenía por una devolución.
+  final double creditNotePayments;
   final double totalExpenses;
   final double cashExpenses;
 
@@ -805,8 +811,14 @@ class CashRegisterRepository {
     final transferPayments = sumByMethod((m) => m == 'transfer');
     // "Otro" = todo lo que no es efectivo/tarjeta/transferencia/crédito.
     // El crédito NO se suma aquí: se reporta aparte como `creditGenerated`.
-    final otherPayments = sumByMethod(
-        (m) => m != 'cash' && m != 'card' && m != 'transfer' && m != 'credit');
+    // La nota de crédito tampoco: no es dinero cobrado en el turno.
+    final creditNotePayments = sumByMethod((m) => m == 'credit_note');
+    final otherPayments = sumByMethod((m) =>
+        m != 'cash' &&
+        m != 'card' &&
+        m != 'transfer' &&
+        m != 'credit' &&
+        m != 'credit_note');
 
     // Total vendido, cambio entregado (sobrepagos) y crédito generado por las
     // ventas de la sesión.
@@ -946,6 +958,7 @@ class CashRegisterRepository {
       cardPayments: cardPayments,
       transferPayments: transferPayments,
       otherPayments: otherPayments,
+      creditNotePayments: creditNotePayments,
       salesTotal: salesTotal,
       changeGiven: changeGiven,
       cashWithdrawnForChange: cashWithdrawnForChange,
@@ -966,19 +979,33 @@ class CashRegisterRepository {
     String cashSessionId,
     String branchId,
   ) async {
+    // Solo sale de la gaveta `cash_refund_amount`: si la venta original tenía
+    // deuda, lo devuelto primero la rebaja y el resto es lo que se entrega.
+    // Antes se restaba el total y el esperado quedaba corto.
+    double sumCash(List<dynamic> rows) => _round2(rows.fold<double>(0, (sum, item) {
+          final row = item as Map;
+          if ((row['refund_method'] ?? '').toString() != 'cash') return sum;
+          return sum + _toDouble(row['cash_refund_amount'] ?? row['total_amount']);
+        }));
     try {
       final rows = await _client
           .from('returns')
-          .select('total_amount, refund_method')
+          .select('total_amount, cash_refund_amount, refund_method')
           .eq('branch_id', branchId)
           .eq('cash_session_id', cashSessionId);
-      return _round2(rows.fold<double>(0, (sum, item) {
-        final row = item as Map;
-        if ((row['refund_method'] ?? '').toString() != 'cash') return sum;
-        return sum + _toDouble(row['total_amount']);
-      }));
+      return sumCash(rows);
     } catch (_) {
-      return 0;
+      // Base sin la columna `cash_refund_amount`: el criterio de antes.
+      try {
+        final rows = await _client
+            .from('returns')
+            .select('total_amount, refund_method')
+            .eq('branch_id', branchId)
+            .eq('cash_session_id', cashSessionId);
+        return sumCash(rows);
+      } catch (_) {
+        return 0;
+      }
     }
   }
 

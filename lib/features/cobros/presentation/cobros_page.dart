@@ -1,17 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/account_statement_dialog.dart';
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../clients/presentation/clients_providers.dart';
+import '../../printing/data/account_statement.dart';
+import '../../printing/data/account_statement_pdf_builder.dart';
 import '../../sales/presentation/sales_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
+import '../../shell/presentation/shell_providers.dart'
+    show shellCurrentBranchNameProvider;
 import '../data/cobros_repository.dart';
 import 'cobros_providers.dart';
 
@@ -36,6 +43,11 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
     final receivablesAsync = ref.watch(cobrosReceivablesProvider);
     final paymentsAsync = ref.watch(cobrosPaymentsProvider);
     final filterMode = ref.watch(cobrosFilterProvider);
+    final dateRange = ref.watch(cobrosDateRangeProvider);
+    final filtered = ref.watch(cobrosFilteredProvider);
+    // Si todo lo que se ve es de un solo cliente (por ejemplo, al buscarlo),
+    // el PDF es su estado de cuenta; si no, la lista.
+    final singleClient = _singleClientRow(filtered);
     final warnDays =
         ref.watch(appSettingsProvider).valueOrNull?.creditWarnDays ?? 7;
 
@@ -43,6 +55,31 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
       title: 'Cobros',
       description: 'Gestiona cuentas por cobrar y pagos recibidos.',
       actions: [
+        DateRangeFilterButton(
+          range: dateRange,
+          helpText: 'Ventas desde – hasta',
+          onChanged: (range) =>
+              ref.read(cobrosDateRangeProvider.notifier).state = range,
+        ),
+        Tooltip(
+          message: singleClient != null
+              ? 'Estado de cuenta de ${singleClient.clientName}'
+              : 'Lista de cuentas por cobrar en PDF',
+          child: OutlinedButton.icon(
+            onPressed: filtered.isEmpty
+                ? null
+                : singleClient != null
+                    ? () => showClientStatement(
+                          context,
+                          ref,
+                          clientId: singleClient.clientId!,
+                          clientName: singleClient.clientName,
+                        )
+                    : _printReport,
+            icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+            label: Text(singleClient != null ? 'Estado de cuenta' : 'PDF'),
+          ),
+        ),
         OutlinedButton.icon(
           onPressed: _refreshCobrosData,
           icon: const Icon(Icons.refresh, size: 18),
@@ -127,6 +164,14 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
                                   onExtend: () => _onExtendDueDate(item),
                                   onReprint: () => _onReprintInvoice(item),
                                   onPay: () => _onRegisterPayment(item),
+                                  onStatement: item.clientId == null
+                                      ? null
+                                      : () => showClientStatement(
+                                            context,
+                                            ref,
+                                            clientId: item.clientId!,
+                                            clientName: item.clientName,
+                                          ),
                                 );
                               },
                             ),
@@ -175,7 +220,9 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
                                   Text(formatDate(payment.paidAt)),
                                   Text(payment.saleNumber),
                                   Text(payment.clientName),
-                                  Text(_pretty(payment.paymentMethod)),
+                                  Text(statementPaymentMethodLabel(
+                                    payment.paymentMethod,
+                                  )),
                                   Text(
                                     money(payment.amount),
                                     style: const TextStyle(fontWeight: FontWeight.w700),
@@ -200,6 +247,44 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
         ],
       ),
     );
+  }
+
+  /// PDF de la lista tal como está filtrada (pestaña, búsqueda y fechas).
+  /// Se arma dentro de `onLayout` para que en web la ventana de impresión
+  /// salga con el mismo clic.
+  Future<void> _printReport() async {
+    final documents = [
+      for (final r in ref.read(cobrosFilteredProvider)) r.toStatementDocument(),
+    ];
+    final range = ref.read(cobrosDateRangeProvider);
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    final query = ref.read(cobrosSearchProvider).trim();
+    final filterLabel = [
+      switch (ref.read(cobrosFilterProvider)) {
+        ReceivablesFilter.all => null,
+        ReceivablesFilter.nearDue => 'Próximos a vencer',
+        ReceivablesFilter.overdue => 'Vencidos',
+      },
+      if (query.isNotEmpty) 'Búsqueda: "$query"',
+    ].nonNulls.join('  ·  ');
+    try {
+      await Printing.layoutPdf(
+        name: 'cuentas-por-cobrar',
+        onLayout: (_) => const AccountStatementPdfBuilder().buildPendingReport(
+          kind: AccountStatementKind.receivable,
+          documents: documents,
+          branchName: branchName,
+          from: range?.start,
+          to: range?.end,
+          filterLabel: filterLabel.isEmpty ? null : filterLabel,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar el PDF: $error')),
+      );
+    }
   }
 
   Future<void> _refreshCobrosData() async {
@@ -400,6 +485,37 @@ class _CobrosPageState extends ConsumerState<CobrosPage> {
   }
 }
 
+/// La primera fila de [rows] si todas son del mismo cliente registrado.
+ReceivableSale? _singleClientRow(List<ReceivableSale> rows) {
+  if (rows.isEmpty) return null;
+  final id = rows.first.clientId;
+  if (id == null) return null;
+  return rows.every((r) => r.clientId == id) ? rows.first : null;
+}
+
+/// Abre el estado de cuenta del cliente con el rango de fechas de la
+/// pantalla (se puede cambiar dentro del diálogo).
+Future<void> showClientStatement(
+  BuildContext context,
+  WidgetRef ref, {
+  required String clientId,
+  required String clientName,
+}) {
+  final repository = ref.read(cobrosRepositoryProvider);
+  return showDialog<void>(
+    context: context,
+    builder: (_) => AccountStatementDialog(
+      partyName: clientName,
+      initialRange: ref.read(cobrosDateRangeProvider),
+      load: (range) => repository.fetchClientStatement(
+        clientId,
+        from: range?.start,
+        to: range?.end,
+      ),
+    ),
+  );
+}
+
 class _ReceivablesFilterBar extends StatelessWidget {
   const _ReceivablesFilterBar({
     required this.active,
@@ -468,7 +584,7 @@ class _ReceivableRowHeader extends StatelessWidget {
           Expanded(
               flex: 2,
               child: _ColumnLabel('Balance', align: TextAlign.right)),
-          SizedBox(width: 200, child: _ColumnLabel('Acciones')),
+          SizedBox(width: 236, child: _ColumnLabel('Acciones')),
         ],
       ),
     );
@@ -507,6 +623,7 @@ class _ReceivableRow extends StatelessWidget {
     required this.onExtend,
     required this.onReprint,
     required this.onPay,
+    this.onStatement,
   });
 
   final ReceivableSale sale;
@@ -515,6 +632,9 @@ class _ReceivableRow extends StatelessWidget {
   final VoidCallback onExtend;
   final VoidCallback onReprint;
   final VoidCallback onPay;
+
+  /// Estado de cuenta del cliente. Null en ventas sin cliente.
+  final VoidCallback? onStatement;
 
   @override
   Widget build(BuildContext context) {
@@ -580,7 +700,7 @@ class _ReceivableRow extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: 200,
+            width: 236,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -602,6 +722,14 @@ class _ReceivableRow extends StatelessWidget {
                   tooltip: 'Reimprimir',
                   onPressed: onReprint,
                   icon: const Icon(Icons.print_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip: onStatement == null
+                      ? 'Venta sin cliente: no tiene estado de cuenta'
+                      : 'Estado de cuenta del cliente',
+                  onPressed: onStatement,
+                  icon: const Icon(Icons.request_page_outlined, size: 18),
                   visualDensity: VisualDensity.compact,
                 ),
                 FilledButton.icon(
@@ -1155,6 +1283,7 @@ class _CustomerBalancesPanel extends ConsumerWidget {
                   FlexTableColumn(label: 'Límite crédito', numeric: true),
                   FlexTableColumn(label: 'Saldo', numeric: true),
                   FlexTableColumn(label: 'Última venta'),
+                  FlexTableColumn(label: 'Estado de cuenta'),
                 ],
                 rows: items
                     .map((item) => [
@@ -1195,6 +1324,22 @@ class _CustomerBalancesPanel extends ConsumerWidget {
                           ),
                           Text(
                             item.lastSaleAt == null ? '—' : formatDate(item.lastSaleAt!),
+                          ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: () => showClientStatement(
+                                context,
+                                ref,
+                                clientId: item.id,
+                                clientName: item.displayName,
+                              ),
+                              icon: const Icon(
+                                Icons.request_page_outlined,
+                                size: 16,
+                              ),
+                              label: const Text('Ver'),
+                            ),
                           ),
                         ])
                     .toList(growable: false),

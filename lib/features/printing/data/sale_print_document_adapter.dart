@@ -342,6 +342,10 @@ String _paymentMethodLabel(String value) {
       return 'Mixto';
     case 'credit':
       return 'Crédito';
+    case 'credit_note':
+      return 'Nota de crédito';
+    case 'other':
+      return 'Otro';
     default:
       return value.trim().isEmpty ? 'Pago' : value;
   }

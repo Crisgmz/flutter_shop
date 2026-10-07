@@ -21,10 +21,25 @@ const _receiptTypeLabels = <String, String>{
 /// Formulario completo de cliente. Se usa tanto desde la pantalla Clientes
 /// como desde el Punto de Venta. Devuelve un [ClientInput] por `Navigator.pop`
 /// (o `null` si se cancela); guardar en la base es responsabilidad del caller.
+///
+/// Abrirlo con [ClientFormDialog.show]: un clic afuera (ni Esc) no lo cierra
+/// —se perdía todo lo escrito—; se cierra con Guardar, Cancelar o la X, y si
+/// hay cambios pregunta antes de descartarlos.
 class ClientFormDialog extends ConsumerStatefulWidget {
   const ClientFormDialog({super.key, this.initial});
 
   final ClientEntity? initial;
+
+  static Future<ClientInput?> show(
+    BuildContext context, {
+    ClientEntity? initial,
+  }) {
+    return showDialog<ClientInput>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => ClientFormDialog(initial: initial),
+    );
+  }
 
   @override
   ConsumerState<ClientFormDialog> createState() => _ClientFormDialogState();
@@ -128,6 +143,77 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     _isActive = c?.isActive ?? true;
     _taxExempt = c?.taxExempt ?? false;
     _chargeItbis = c?.chargeItbis ?? true;
+    _initialSnapshot = _snapshot();
+  }
+
+  /// Foto de lo escrito al abrir, para saber si hay algo que perder.
+  late final String _initialSnapshot;
+
+  String _snapshot() => [
+        for (final c in [
+          _fullNameController,
+          _firstNameController,
+          _lastNameController,
+          _companyNameController,
+          _legalNameController,
+          _documentTypeController,
+          _documentNumberController,
+          _emailController,
+          _phoneController,
+          _secondaryPhoneController,
+          _addressLine1Controller,
+          _addressLine2Controller,
+          _cityController,
+          _provinceController,
+          _postalCodeController,
+          _countryCodeController,
+          _googleMapsUrlController,
+          _creditLimitController,
+          _creditInvoiceLimitController,
+          _birthdayController,
+          _commentsController,
+        ])
+          c.text,
+        _entityType,
+        _priceTier,
+        _defaultReceiptType,
+        _isActive,
+        _taxExempt,
+        _chargeItbis,
+      ].join('\u0001');
+
+  /// X, Cancelar o atrás: cierra de una vez si no se cambió nada; si no,
+  /// pregunta antes de perder lo escrito.
+  Future<void> _onClose() async {
+    if (_snapshot() != _initialSnapshot) {
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(
+            widget.initial == null
+                ? '¿Descartar el cliente nuevo?'
+                : '¿Descartar los cambios?',
+          ),
+          content: const Text('Lo que escribiste se va a perder.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Seguir editando'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTokens.destructive,
+                foregroundColor: AppTokens.destructiveForeground,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Descartar'),
+            ),
+          ],
+        ),
+      );
+      if (discard != true || !mounted) return;
+    }
+    Navigator.of(context).pop();
   }
 
   @override
@@ -212,12 +298,34 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     }
   }
 
+  /// El botón atrás (Android) pasa por aquí: no cierra sin preguntar.
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _onClose();
+        },
+        child: _buildDialog(context),
+      );
+
+  Widget _buildDialog(BuildContext context) {
     final isMobile = ResponsiveLayout.isMobile(context);
 
     return AlertDialog(
-      title: Text(widget.initial == null ? 'Nuevo cliente' : 'Editar cliente'),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              widget.initial == null ? 'Nuevo cliente' : 'Editar cliente',
+            ),
+          ),
+          IconButton(
+            onPressed: _onClose,
+            icon: const Icon(Icons.close),
+            tooltip: 'Cerrar',
+          ),
+        ],
+      ),
       content: SizedBox(
         width: isMobile ? double.maxFinite : 580,
         child: Form(
@@ -506,7 +614,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _onClose,
           child: const Text('Cancelar'),
         ),
         FilledButton(onPressed: _submit, child: const Text('Guardar')),

@@ -238,6 +238,8 @@ class _DialogBody extends StatelessWidget {
                   _kv('Tarjeta', money(metrics.cardPayments)),
                   _kv('Crédito', money(metrics.creditGenerated)),
                   _kv('Otro', money(metrics.otherPayments)),
+                  if (metrics.creditNotePayments > 0)
+                    _kv('Nota de crédito', money(metrics.creditNotePayments)),
                   _kv('Gastos', money(metrics.totalExpenses)),
                   _kv('  En efectivo', money(metrics.cashExpenses)),
                   const SizedBox(height: 12),

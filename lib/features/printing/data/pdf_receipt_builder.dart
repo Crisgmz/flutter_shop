@@ -12,7 +12,7 @@ import 'printing_models.dart';
 /// píxeles de forma SÍNCRONA al generar — en web eso congela la UI varios
 /// segundos. Con ~400px el costo baja ~25x. Si la imagen ya es chica o el
 /// decode falla, devuelve los bytes originales.
-Future<Uint8List?> _shrinkImageForPdf(List<int>? bytes, {int maxDim = 420}) async {
+Future<Uint8List?> shrinkImageForPdf(List<int>? bytes, {int maxDim = 420}) async {
   if (bytes == null) return null;
   final input = Uint8List.fromList(bytes);
   try {
@@ -122,8 +122,8 @@ class PdfReceiptBuilder {
     // había un QR por defecto bundleado (assets/QR.png) que salía siempre; se
     // quitó a pedido — el QR aparece únicamente si el usuario decide agregarlo.
     // Reducir imágenes antes de embeberlas: evita el freeze de la UI al generar.
-    final qrBytes = await _shrinkImageForPdf(data.qrBytes, maxDim: 420);
-    final logoBytes = await _shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
+    final qrBytes = await shrinkImageForPdf(data.qrBytes, maxDim: 420);
+    final logoBytes = await shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
 
     doc.addPage(
       pw.Page(
@@ -159,7 +159,7 @@ class PdfReceiptBuilder {
   /// típico 80 × 297 mm fijo.
   Future<Uint8List> buildThermalBytes(PrintDocumentData data) async {
     final logoBytes =
-        await _shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
+        await shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
 
     // 80mm = 226.77pt. Primer intento: altura infinita, que el paquete resuelve
     // midiendo el contenido — es lo que da el ticket ajustado.
@@ -424,6 +424,14 @@ class PdfReceiptBuilder {
         if (_hasText(data.notes)) ...[
           _thermalDashedDivider(),
           pw.Text('Notas: ${data.notes}', style: muted),
+        ],
+        // Observación de Configuración (garantía, devoluciones). Antes solo
+        // la llevaba la factura A4. En negro: el gris sale tenue en térmica.
+        if (_hasText(data.observation)) ...[
+          _thermalDashedDivider(),
+          pw.Text('OBSERVACIÓN:', style: bold),
+          pw.SizedBox(height: 2),
+          pw.Text(data.observation!, style: base),
         ],
         if (_hasText(data.footerMessage)) ...[
           pw.SizedBox(height: 6),

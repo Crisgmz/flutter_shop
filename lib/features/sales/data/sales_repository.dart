@@ -522,6 +522,35 @@ class SalesRepository {
         .toList(growable: false);
   }
 
+  /// Saldo a favor del cliente por notas de crédito (`clients.credit_balance`,
+  /// migración 98). Se lee aparte y fresco, no con [fetchClients]: otra caja
+  /// pudo haberlo usado, y sin la migración la columna no existe y la lista
+  /// de clientes se caería. En ese caso devuelve 0.
+  Future<double> fetchClientCreditBalance(String clientId) async {
+    try {
+      final rows = await _client
+          .from('clients')
+          .select('credit_balance')
+          .eq('id', clientId)
+          .limit(1);
+      if (rows.isEmpty) return 0;
+      return _toDouble((rows.first as Map)['credit_balance']);
+    } on PostgrestException {
+      return 0;
+    }
+  }
+
+  /// Si la base ya tiene el saldo a favor (migración 98). Sin ella, una
+  /// devolución con nota de crédito no le dejaría saldo al cliente.
+  Future<bool> creditNotesReady() async {
+    try {
+      await _client.from('client_credit_movements').select('id').limit(1);
+      return true;
+    } on PostgrestException {
+      return false;
+    }
+  }
+
   Future<SaleCheckoutResult> checkoutSale(SaleCheckoutInput input) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
@@ -1868,15 +1897,24 @@ class ReturnProcessedResult {
     required this.totalAmount,
     required this.itemsCount,
     required this.creditBalanceAdjusted,
+    required this.cashRefundAmount,
   });
 
   factory ReturnProcessedResult.fromMap(Map<String, dynamic> map) {
+    final total = _toDoubleResult(map['total_amount']);
+    final adjusted = map['credit_balance_adjusted'] == true;
     return ReturnProcessedResult(
       returnId: (map['return_id'] ?? '').toString(),
       returnNumber: (map['return_number'] ?? '').toString(),
-      totalAmount: _toDoubleResult(map['total_amount']),
+      totalAmount: total,
       itemsCount: _toIntResult(map['items_count']),
-      creditBalanceAdjusted: map['credit_balance_adjusted'] == true,
+      creditBalanceAdjusted: adjusted,
+      // La versión vieja del RPC (88) no lo devuelve: si la venta original
+      // era a crédito, todo el total rebajó la deuda; si no, todo se
+      // reembolsa. Es la misma regla del disparador de la migración 98.
+      cashRefundAmount: map['cash_refund_amount'] == null
+          ? (adjusted ? 0 : total)
+          : _toDoubleResult(map['cash_refund_amount']),
     );
   }
 
@@ -1885,6 +1923,11 @@ class ReturnProcessedResult {
   final double totalAmount;
   final int itemsCount;
   final bool creditBalanceAdjusted;
+
+  /// Lo que se le reembolsa al cliente después de rebajar la deuda de la
+  /// venta original: el efectivo que sale, o el saldo a favor que queda con
+  /// una nota de crédito.
+  final double cashRefundAmount;
 }
 
 double _toDoubleResult(dynamic value) {

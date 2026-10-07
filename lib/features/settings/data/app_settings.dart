@@ -65,6 +65,17 @@ class AppSettings {
   bool get invDisallowBelowCost => _bool('inv_disallow_below_cost', false);
   bool get invImeiMode => _bool('inv_imei_mode', false);
   bool get invDisallowNoStock => _bool('inv_disallow_no_stock', false);
+
+  /// Escribir el stock en el formulario del producto. Apagado de fábrica:
+  /// cualquiera con acceso a Inventario podía cambiarlo sin dejar rastro; el
+  /// stock se mueve con Compras o "Ajustar stock" (migración 99).
+  bool get invAllowProductStockEdit =>
+      _bool('inv_allow_product_stock_edit', false);
+
+  /// Escribir IMEIs en el formulario del producto. Apagado de fábrica: los
+  /// IMEIs entran por Compras (migración 99).
+  bool get invAllowProductImeiEdit =>
+      _bool('inv_allow_product_imei_edit', false);
   bool get invHighlightMinStock => _bool('inv_highlight_min_stock', true);
   bool get invDisableMarginCalculator =>
       _bool('inv_disable_margin_calculator', true);

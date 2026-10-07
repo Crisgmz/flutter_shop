@@ -381,6 +381,13 @@ class _ThermalPreview extends StatelessWidget {
                     ),
                   ),
                 ],
+                // Observación de Configuración, igual que el ticket impreso.
+                if (_hasText(d.observation)) ...[
+                  const Divider(height: 16, color: _kInkMuted),
+                  const Text('OBSERVACIÓN:', style: _monoBold),
+                  const SizedBox(height: 2),
+                  Text(d.observation!, style: _mono),
+                ],
                 if (_hasText(d.footerMessage)) ...[
                   const SizedBox(height: 12),
                   Text(

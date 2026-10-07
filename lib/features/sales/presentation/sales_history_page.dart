@@ -109,14 +109,18 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                             const FlexTableColumn(label: 'Estado'),
                             const FlexTableColumn(label: 'Caja', flex: 2),
                             const FlexTableColumn(label: 'Cobro', flex: 2),
+                            // Ancho mínimo: en pantallas de laptop el monto
+                            // se partía en renglones ("1,335.0" y "0").
                             const FlexTableColumn(
                               label: 'Total',
                               numeric: true,
+                              minWidth: _amountColumnWidth,
                             ),
                             if (canViewProfit)
                               const FlexTableColumn(
                                 label: 'Ganancia',
                                 numeric: true,
+                                minWidth: _amountColumnWidth,
                               ),
                             const FlexTableColumn(label: 'Acción', flex: 2),
                           ],
@@ -153,8 +157,8 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                     Text(row.cashRegisterName ?? '—'),
                                     _paymentMethodsCell(
                                         row.paymentMethod, row.status),
-                                    Text(
-                                      money(row.totalAmount),
+                                    _AmountCell(
+                                      row.totalAmount,
                                       style: TextStyle(
                                         fontWeight: FontWeight.w700,
                                         color: row.totalAmount < 0
@@ -163,8 +167,8 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                       ),
                                     ),
                                     if (canViewProfit)
-                                      Text(
-                                        money(row.profit),
+                                      _AmountCell(
+                                        row.profit,
                                         style: TextStyle(
                                           fontWeight: FontWeight.w600,
                                           color: row.profit < 0
@@ -209,6 +213,9 @@ String _singleMethodLabel(String method) {
       return 'Crédito';
     case 'credit_note':
       return 'Nota de crédito';
+    // Devolución que se fue completa a pagar la deuda de la venta original.
+    case 'credit_balance':
+      return 'A la deuda';
     case 'mixed':
       return 'Mixto';
     default:
@@ -757,54 +764,16 @@ class _RowActions extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     String returnId,
-  ) async {
-    try {
-      final job = await ref
-          .read(salesRepositoryProvider)
-          .prepareReturnPrintJob(returnId: returnId);
-      if (!context.mounted) return;
-      if (job == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se encontró la devolución.')),
-        );
-        return;
-      }
-      await PrintReceiptDialog.show(context, job);
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al preparar impresión: $e')),
-      );
-    }
-  }
+  ) =>
+      _printSaleDocument(context, ref, returnId, isReturn: true);
 
   Future<void> _reprint(
     BuildContext context,
     WidgetRef ref,
     String saleId, {
     bool allowPending = false,
-  }) async {
-    try {
-      final salesRepo = ref.read(salesRepositoryProvider);
-      final job = await salesRepo.prepareCompletedSalePrintJob(
-        saleId: saleId,
-        allowPending: allowPending,
-      );
-      if (!context.mounted) return;
-      if (job == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo preparar la factura.')),
-        );
-        return;
-      }
-      await PrintReceiptDialog.show(context, job);
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al preparar impresión: $e')),
-      );
-    }
-  }
+  }) =>
+      _printSaleDocument(context, ref, saleId, allowPending: allowPending);
 
   Future<void> _editMetadata(
     BuildContext context,
@@ -838,9 +807,75 @@ class _RowActions extends ConsumerWidget {
   }
 }
 
+/// Ancho mínimo de las columnas Total y Ganancia (16 px de padding por lado
+/// + espacio para "999,999.00").
+const double _amountColumnWidth = 116;
+
+/// Monto de la tabla sin "RD$" y en un solo renglón, como en la factura A4:
+/// si no cabe se achica en vez de partirse.
+class _AmountCell extends StatelessWidget {
+  const _AmountCell(this.amount, {required this.style});
+
+  final double amount;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerRight,
+      child: Text(
+        moneyPlain(amount),
+        maxLines: 1,
+        softWrap: false,
+        style: style,
+      ),
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Dialogo: detalle de venta
 // ─────────────────────────────────────────────────────────────────────────
+
+/// Reimprime una venta (o devolución, con [isReturn]) con la vista previa de
+/// siempre. [allowPending] deja imprimir una cuenta guardada.
+Future<void> _printSaleDocument(
+  BuildContext context,
+  WidgetRef ref,
+  String docId, {
+  bool isReturn = false,
+  bool allowPending = false,
+}) async {
+  try {
+    final salesRepo = ref.read(salesRepositoryProvider);
+    final job = isReturn
+        ? await salesRepo.prepareReturnPrintJob(returnId: docId)
+        : await salesRepo.prepareCompletedSalePrintJob(
+            saleId: docId,
+            allowPending: allowPending,
+          );
+    if (!context.mounted) return;
+    if (job == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isReturn
+                ? 'No se encontró la devolución.'
+                : 'No se pudo preparar la factura.',
+          ),
+        ),
+      );
+      return;
+    }
+    await PrintReceiptDialog.show(context, job);
+  } catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error al preparar impresión: $e')),
+    );
+  }
+}
 
 /// Abre el detalle de una venta (o devolución, con [isReturn]) desde otra
 /// pantalla — por ejemplo el historial del producto en Inventario.
@@ -973,6 +1008,20 @@ class _SaleDetailDialog extends ConsumerWidget {
         ),
       ),
       actions: [
+        // Reimprimir desde el detalle (por ejemplo, abierto con el ojito del
+        // historial del producto, donde no está el botón de la fila).
+        if (detailAsync.valueOrNull case final detail?)
+          TextButton.icon(
+            onPressed: () => _printSaleDocument(
+              context,
+              ref,
+              docId,
+              isReturn: isReturn,
+              allowPending: detail.sale.status == 'pending',
+            ),
+            icon: const Icon(Icons.print_outlined, size: 18),
+            label: const Text('Imprimir'),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cerrar'),

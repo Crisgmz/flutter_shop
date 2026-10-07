@@ -21,6 +21,12 @@ final clientsListProvider = FutureProvider<List<ClientEntity>>((ref) async {
   return repository.fetchClients();
 });
 
+/// Saldo a favor (notas de crédito) por cliente: id → monto.
+final clientCreditBalancesProvider =
+    FutureProvider<Map<String, double>>((ref) {
+  return ref.watch(clientsRepositoryProvider).fetchCreditBalances();
+});
+
 /// Clientes filtrados por búsqueda + showInactive, memoizado. Antes el
 /// filter corría en cada `build()` y por cada keystroke.
 final clientsFilteredProvider = Provider<List<ClientEntity>>((ref) {

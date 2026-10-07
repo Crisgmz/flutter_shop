@@ -22,7 +22,8 @@ import '../../settings/presentation/app_settings_providers.dart';
 import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
 import '../data/sales_repository.dart';
-import '../domain/sale_checkout_service.dart' show fromCents;
+import '../domain/sale_checkout_service.dart'
+    show CreditSplit, fromCents, toCents;
 import 'pos_scan_listener.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
@@ -37,12 +38,13 @@ class SalesPage extends ConsumerStatefulWidget {
 /// Qué hacer cuando el cliente que se está creando ya parece existir.
 enum _DuplicateClientChoice { useExisting, createAnyway }
 
-/// Métodos de reembolso de una devolución. Solo `cash` saca dinero de la
-/// gaveta; los demás no afectan el efectivo esperado en caja.
+/// Formas de reembolso de una devolución (solo dos, pedido del 6 oct 2026):
+///   · `cash`: sale de la gaveta y baja el esperado en caja; se le entrega al
+///     cliente o se usa para facturarle otro artículo.
+///   · `credit_note`: no sale dinero; queda como saldo a favor del cliente
+///     (migración 98) y el POS se lo descuenta en sus próximas compras.
 const _refundMethods = <MapEntry<String, String>>[
-  MapEntry('cash', 'Efectivo'),
-  MapEntry('card', 'Tarjeta'),
-  MapEntry('transfer', 'Transferencia'),
+  MapEntry('cash', 'Efectivo o consumir'),
   MapEntry('credit_note', 'Nota de crédito'),
 ];
 
@@ -66,6 +68,10 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   // arma en la página 2 (_PaymentDialog) al completar la venta.
   String _paymentMethod = 'cash';
   String? _clientId;
+
+  /// Descontar el saldo a favor del cliente en esta venta. Se puede apagar
+  /// para guardarlo o para venderle a crédito.
+  bool _useCredit = true;
 
   /// Nivel de precio elegido A MANO para esta venta ('tier_1'..'tier_10', o
   /// 'retail' para el precio base). Null = seguir el nivel del cliente.
@@ -106,6 +112,29 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   double get _cartTotal => fromCents(
         _cart.fold<double>(0, (sum, item) => sum + item.lineTotalCents),
       );
+
+  /// Saldo a favor (notas de crédito) del cliente elegido. 0 sin cliente, en
+  /// devolución o sin la migración 98. Lo suscribe [_buildCartPanel].
+  double get _creditAvailable {
+    final id = _clientId;
+    if (id == null || ref.read(posModeProvider) == PosMode.returnMode) {
+      return 0;
+    }
+    return ref.read(clientCreditBalanceProvider(id)).valueOrNull ?? 0;
+  }
+
+  /// Reparto de la venta con el saldo a favor (ver [CreditSplit]).
+  CreditSplit get _creditSplit => CreditSplit.of(
+        total: _cartTotal,
+        available: _useCredit ? _creditAvailable : 0,
+      );
+
+  /// Lo que se descuenta del saldo a favor: hasta cubrir el total. Nota de
+  /// 1,000 y compra de 800 → se usan 800 y le quedan 200.
+  double get _creditApplied => _creditSplit.applied;
+
+  /// Lo que el cliente paga con otros métodos después del saldo a favor.
+  double get _amountDue => _creditSplit.due;
 
   @override
   void initState() {
@@ -455,6 +484,12 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   }
 
   Widget _buildCartPanel(AsyncValue<List<SalesClient>> clientsAsync) {
+    final isReturnMode = ref.watch(posModeProvider) == PosMode.returnMode;
+    // Suscribe el saldo a favor del cliente elegido; los getters lo leen.
+    final clientId = _clientId;
+    final creditAvailable = clientId == null || isReturnMode
+        ? 0.0
+        : ref.watch(clientCreditBalanceProvider(clientId)).valueOrNull ?? 0.0;
     return Card(
       elevation: 0,
       clipBehavior: Clip.antiAlias,
@@ -542,7 +577,15 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                   loading: () => const LinearProgressIndicator(),
                   error: (_, _) => const Text('Error al cargar clientes'),
                 ),
-                if (ref.watch(posModeProvider) == PosMode.returnMode) ...[
+                if (creditAvailable > 0) ...[
+                  const SizedBox(height: 8),
+                  _CreditBalanceBar(
+                    available: creditAvailable,
+                    useCredit: _useCredit,
+                    onChanged: (v) => setState(() => _useCredit = v),
+                  ),
+                ],
+                if (isReturnMode) ...[
                   const SizedBox(height: 12),
                   _SaleNumberSearch(
                     controller: _saleNumberController,
@@ -620,13 +663,18 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                   builder: (context) {
                     final isReturn =
                         ref.watch(posModeProvider) == PosMode.returnMode;
+                    final credit = isReturn ? 0.0 : _creditApplied;
+                    // Con saldo a favor el número que importa es "Total a
+                    // pagar": el total de la venta queda en negro.
                     final totalColor = isReturn
                         ? const Color(0xFFEF4444)
-                        : const Color(0xFF2563EB);
+                        : credit > 0
+                            ? const Color(0xFF1E293B)
+                            : const Color(0xFF2563EB);
                     final totalLabel = isReturn
                         ? '- ${money(_cartTotal)}'
                         : money(_cartTotal);
-                    return Row(
+                    final totalRow = Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
@@ -643,6 +691,52 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
                             color: totalColor,
+                          ),
+                        ),
+                      ],
+                    );
+                    if (credit <= 0) return totalRow;
+                    final remaining = _creditSplit.remaining;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        totalRow,
+                        const SizedBox(height: 4),
+                        _totalLine(
+                          'Saldo a favor aplicado',
+                          '- ${money(credit)}',
+                          valueColor: AppTokens.success,
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Total a pagar',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF1E293B),
+                              ),
+                            ),
+                            Text(
+                              money(_amountDue),
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF2563EB),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Le quedan ${money(remaining)} a favor',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppTokens.success,
                           ),
                         ),
                       ],
@@ -696,7 +790,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
                               label: Text(
                                 isReturn
                                     ? 'PROCESAR DEVOLUCIÓN'
-                                    : 'COMPLETAR VENTA · ${money(_cartTotal)}',
+                                    : 'COMPLETAR VENTA · ${money(_amountDue)}',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -777,7 +871,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     );
   }
 
-  Widget _totalLine(String label, String value) {
+  Widget _totalLine(String label, String value, {Color? valueColor}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -791,8 +885,8 @@ class _SalesPageState extends ConsumerState<SalesPage> {
         ),
         Text(
           value,
-          style: const TextStyle(
-            color: Color(0xFF1E293B),
+          style: TextStyle(
+            color: valueColor ?? const Color(0xFF1E293B),
             fontSize: 13,
             fontWeight: FontWeight.w700,
           ),
@@ -1294,10 +1388,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   /// formulario completo de la pantalla Clientes (incluye búsqueda DGII,
   /// dirección, tier de precio, límite de crédito, etc.).
   Future<void> _onCreateClientInline() async {
-    final input = await showDialog<ClientInput>(
-      context: context,
-      builder: (_) => const ClientFormDialog(),
-    );
+    final input = await ClientFormDialog.show(context);
     if (input == null || !mounted) return;
 
     // Aviso de posible duplicado (mismo documento o mismo nombre). No bloquea:
@@ -1444,6 +1535,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       _cart.clear();
       _notesController.clear();
       _clientId = null;
+      _useCredit = true;
       _paymentMethod = 'cash';
       _priceTierOverride = null;
       _reopenedHeldSaleId = null;
@@ -1577,6 +1669,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       barrierDismissible: false,
       builder: (_) => _PaymentDialog(
         total: _cartTotal,
+        creditApplied: _creditApplied,
         draft: draft,
         onCheckout: (payments) =>
             _checkout(asCredit: false, payments: payments),
@@ -1758,6 +1851,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       // lo mandamos para que el backend lo registre como cambio.
       final paySum = pays.fold<double>(0, (s, p) => s + p.amount);
       final change = paySum - _cartTotal;
+      final saleClientId = _clientId;
       final result = await repo.checkoutSale(
         SaleCheckoutInput(
           items: List.from(_cart),
@@ -1782,6 +1876,11 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
       _clearCart();
       ref.invalidate(salesProductsProvider);
+      // Si pagó con saldo a favor, la próxima vez debe salir lo que le queda.
+      if (saleClientId != null) {
+        ref.invalidate(clientCreditBalanceProvider(saleClientId));
+        ref.invalidate(clientCreditBalancesProvider);
+      }
 
       if (!mounted) return null;
 
@@ -1983,11 +2082,23 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       }
     }
 
+    // Con venta original enlazada, `_clientId` ya es el cliente de esa venta
+    // (el backend usa ese de todos modos).
+    final returnClientId = _clientId;
+    final clientName = returnClientId == null
+        ? null
+        : ref.read(salesClientsByIdProvider)[returnClientId]?.fullName;
+    final creditReady = await ref
+        .read(creditNotesReadyProvider.future)
+        .catchError((Object _) => false);
+    if (!mounted) return;
     final refundMethod = await showDialog<String>(
       context: context,
       builder: (_) => _RefundMethodDialog(
         total: _cartTotal,
         originalSaleNumber: _returnOriginalSaleNumber,
+        clientName: clientName,
+        creditNotesReady: creditReady,
       ),
     );
     if (refundMethod == null || !mounted) return;
@@ -2014,15 +2125,27 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       ref.invalidate(cashRegisterDataProvider);
       // La devolución vive ahora dentro del historial de ventas.
       ref.invalidate(salesHistoryPageProvider);
+      final isCreditNote = refundMethod == 'credit_note';
+      if (isCreditNote && returnClientId != null) {
+        ref.invalidate(clientCreditBalanceProvider(returnClientId));
+        ref.invalidate(clientCreditBalancesProvider);
+      }
 
       if (!mounted) return;
+      // Con nota de crédito se dice cuánto le quedó a favor: si la venta
+      // original tenía deuda, primero se rebajó de ahí.
+      final favor = isCreditNote && result.cashRefundAmount > 0.005
+          ? ' · ${money(result.cashRefundAmount)} a favor de '
+              '${clientName ?? 'el cliente'}'
+          : '';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: const Color(0xFFEF4444),
           content: Text(
             'Devolución #${result.returnNumber} registrada · '
             '${result.itemsCount} artículo(s)'
-            '${result.creditBalanceAdjusted ? " · saldo de cliente ajustado" : ""}.',
+            '${result.creditBalanceAdjusted ? " · deuda del cliente rebajada" : ""}'
+            '$favor.',
             style: const TextStyle(color: Colors.white),
           ),
         ),
@@ -2042,13 +2165,25 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   }
 }
 
-/// Confirmación de devolución: elige por dónde sale el reembolso. Devuelve el
-/// código del método (`cash` | `card` | `transfer` | `credit_note`) o null.
+/// Confirmación de devolución: elige cómo se le reembolsa al cliente.
+/// Devuelve el código del método (`cash` | `credit_note`) o null.
 class _RefundMethodDialog extends StatefulWidget {
-  const _RefundMethodDialog({required this.total, this.originalSaleNumber});
+  const _RefundMethodDialog({
+    required this.total,
+    this.originalSaleNumber,
+    this.clientName,
+    this.creditNotesReady = false,
+  });
 
   final double total;
   final String? originalSaleNumber;
+
+  /// Cliente de la devolución. Sin cliente no hay a quién dejarle el saldo,
+  /// así que la nota de crédito queda deshabilitada.
+  final String? clientName;
+
+  /// La base ya tiene el saldo a favor (migración 98).
+  final bool creditNotesReady;
 
   @override
   State<_RefundMethodDialog> createState() => _RefundMethodDialogState();
@@ -2057,8 +2192,21 @@ class _RefundMethodDialog extends StatefulWidget {
 class _RefundMethodDialogState extends State<_RefundMethodDialog> {
   String _method = 'cash';
 
+  /// Por qué no se puede dar nota de crédito, o null si se puede.
+  String? get _creditNoteBlockedReason {
+    if (widget.clientName == null) {
+      return 'Selecciona el cliente (o carga su venta) para darle nota de '
+          'crédito.';
+    }
+    if (!widget.creditNotesReady) {
+      return 'Falta correr la migración 98 (saldo a favor) en la base.';
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final blocked = _creditNoteBlockedReason;
     return AlertDialog(
       title: const Text('Procesar devolución'),
       content: SizedBox(
@@ -2118,22 +2266,37 @@ class _RefundMethodDialogState extends State<_RefundMethodDialog> {
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                       value: entry.key,
+                      enabled: entry.key != 'credit_note' || blocked == null,
                       title: Text(
                         entry.value,
                         style: const TextStyle(fontSize: 14),
                       ),
+                      subtitle: entry.key == 'credit_note' && blocked != null
+                          ? Text(
+                              blocked,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppTokens.warning,
+                              ),
+                            )
+                          : null,
                     ),
                 ],
               ),
             ),
-            if (_method == 'cash')
-              const Text(
-                'Sale efectivo de la gaveta: baja el esperado en caja.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppTokens.mutedForeground,
-                ),
+            Text(
+              _method == 'credit_note'
+                  ? 'No sale dinero de la caja. Queda como saldo a favor de '
+                      '${widget.clientName} y se le descuenta solo en sus '
+                      'próximas compras.'
+                  : 'Sale efectivo de la gaveta y baja el esperado en caja. '
+                      'Se le entrega al cliente o se usa para facturarle otro '
+                      'artículo.',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppTokens.mutedForeground,
               ),
+            ),
           ],
         ),
       ),
@@ -2295,6 +2458,56 @@ class _ImeiPickerDialogState extends State<_ImeiPickerDialog> {
   }
 }
 
+/// Saldo a favor del cliente bajo su nombre en el carrito, con el
+/// interruptor para usarlo o guardarlo.
+class _CreditBalanceBar extends StatelessWidget {
+  const _CreditBalanceBar({
+    required this.available,
+    required this.useCredit,
+    required this.onChanged,
+  });
+
+  final double available;
+  final bool useCredit;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.only(left: 10, right: 4),
+      decoration: BoxDecoration(
+        color: AppTokens.success.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTokens.success.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.savings_outlined, size: 18, color: AppTokens.success),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Saldo a favor: ${money(available)}',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTokens.success,
+              ),
+            ),
+          ),
+          const Text(
+            'Usar',
+            style: TextStyle(fontSize: 12, color: AppTokens.mutedForeground),
+          ),
+          Transform.scale(
+            scale: 0.8,
+            child: Switch(value: useCredit, onChanged: onChanged),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Una línea de pago en el carrito (pago dividido): método + monto editable.
 class _PayLine {
   _PayLine({required this.method}) : amount = TextEditingController();
@@ -2333,10 +2546,15 @@ class _PaymentDialog extends StatefulWidget {
   const _PaymentDialog({
     required this.total,
     required this.onCheckout,
+    this.creditApplied = 0,
     this.draft,
   });
 
   final double total;
+
+  /// Parte del total que se paga con el saldo a favor del cliente. Viaja como
+  /// una línea de pago `credit_note`; los demás métodos cubren el resto.
+  final double creditApplied;
 
   /// Vista previa de la factura armada con el carrito (sin número ni NCF),
   /// que se muestra al lado de los pagos. Null si el negocio no imprime al
@@ -2389,9 +2607,16 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     super.dispose();
   }
 
-  /// Cambio a devolver = lo que paga de más (suma de pagos − total).
+  /// Lo que cubren los métodos de pago: el total menos el saldo a favor.
+  double get _due =>
+      fromCents(toCents(widget.total) - toCents(widget.creditApplied));
+
+  /// El saldo a favor paga toda la venta: no hay métodos que llenar.
+  bool get _coveredByCredit => widget.creditApplied > 0 && _due <= 0;
+
+  /// Cambio a devolver = lo que paga de más (suma de pagos − lo que se debe).
   double get _change {
-    final diff = _sum - widget.total;
+    final diff = _sum - _due;
     return diff > 0 ? diff : 0;
   }
 
@@ -2401,7 +2626,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 
   void _sync() {
-    final total = widget.total;
+    final total = _due;
     if (!_touched) _lines.first.amount.text = _fmt(total);
     var sumEditable = 0.0;
     for (var i = 0; i < _lines.length - 1; i++) {
@@ -2413,13 +2638,19 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 
   double get _sum => _lines.fold<double>(0, (s, l) => s + l.value);
   // Válido cuando los pagos cubren el total (pueden pagar de más → cambio).
-  bool get _valid => widget.total > 0 && _sum + 0.01 >= widget.total;
+  bool get _valid =>
+      _coveredByCredit || (_due > 0 && _sum + 0.01 >= _due);
   bool get _anyCredit => _lines.any((l) => l.method == 'credit' && l.value > 0);
 
-  List<SalePaymentLine> _payments() => _lines
-      .where((l) => l.value > 0)
-      .map((l) => SalePaymentLine(method: l.method, amount: l.value))
-      .toList(growable: false);
+  /// Los métodos primero (el primero es el representativo de la venta) y el
+  /// saldo a favor al final.
+  List<SalePaymentLine> _payments() => [
+        if (!_coveredByCredit)
+          for (final l in _lines)
+            if (l.value > 0) SalePaymentLine(method: l.method, amount: l.value),
+        if (widget.creditApplied > 0)
+          SalePaymentLine(method: 'credit_note', amount: widget.creditApplied),
+      ];
 
   void _add() => setState(() {
     _lines.add(_PayLine(method: 'cash'));
@@ -2514,12 +2745,60 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
     );
 
+    // Con saldo a favor no se puede mandar la venta a crédito desde aquí:
+    // el crédito se lleva la venta completa y el saldo no se aplicaría.
+    final methods = widget.creditApplied > 0
+        ? _methods.where((m) => m.key != 'credit').toList(growable: false)
+        : _methods;
+    final credit = widget.creditApplied;
+
     final payment = SizedBox(
         width: 420,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (credit > 0) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Total de la venta',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    money(widget.total),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Saldo a favor (nota de crédito)',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppTokens.success,
+                    ),
+                  ),
+                  Text(
+                    '- ${money(credit)}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTokens.success,
+                    ),
+                  ),
+                ],
+              ),
+              const Divider(height: 16),
+            ],
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -2528,7 +2807,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                 ),
                 Text(
-                  money(widget.total),
+                  money(_due),
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w900,
@@ -2538,6 +2817,16 @@ class _PaymentDialogState extends State<_PaymentDialog> {
               ],
             ),
             const SizedBox(height: 14),
+            if (_coveredByCredit)
+              const Text(
+                'El saldo a favor cubre toda la venta: no hay que cobrar nada.',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppTokens.success,
+                ),
+              ),
+            if (!_coveredByCredit)
             for (var i = 0; i < _lines.length; i++)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -2588,7 +2877,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                             border: border(),
                             enabledBorder: border(),
                           ),
-                          items: _methods
+                          items: methods
                               .map(
                                 (m) => DropdownMenuItem(
                                   value: m.key,
@@ -2636,7 +2925,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   ],
                 ),
               ),
-            if (_anyCredit)
+            if (_coveredByCredit)
+              const SizedBox.shrink()
+            else if (_anyCredit)
               const Text(
                 'Esta venta irá a crédito (requiere cliente).',
                 style: TextStyle(
@@ -2645,9 +2936,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   fontWeight: FontWeight.w600,
                 ),
               )
-            else if (!_valid && widget.total > 0)
+            else if (!_valid && _due > 0)
               Text(
-                'Falta ${money(widget.total - _sum)} para cubrir el total',
+                'Falta ${money(_due - _sum)} para cubrir el total',
                 style: const TextStyle(
                   color: Color(0xFFEF4444),
                   fontSize: 12,
@@ -2655,7 +2946,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 ),
               ),
             // Valor a devolver = lo que pagó de más (cambio en efectivo).
-            if (!_anyCredit) ...[
+            if (!_anyCredit && !_coveredByCredit) ...[
               const Divider(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,

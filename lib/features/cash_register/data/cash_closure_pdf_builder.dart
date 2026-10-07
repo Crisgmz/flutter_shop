@@ -151,6 +151,9 @@ class CashClosurePdfBuilder {
           _kv('Tarjeta', money(metrics.cardPayments), baseFont: baseFont),
           _kv('Credito', money(metrics.creditGenerated), baseFont: baseFont),
           _kv('Otro', money(metrics.otherPayments), baseFont: baseFont),
+          if (metrics.creditNotePayments > 0)
+            _kv('Nota de credito', money(metrics.creditNotePayments),
+                baseFont: baseFont),
           _kv('Gastos', money(metrics.totalExpenses), baseFont: baseFont),
           _kv('  En efectivo', money(metrics.cashExpenses),
               baseFont: baseFont),

@@ -195,6 +195,22 @@ void main() {
       expect(find.text('351234567890'), findsOneWidget);
     });
 
+    testWidgets('el ticket también imprime la observación', (tester) async {
+      // Reportado: la observación de Configuración (garantía, devoluciones)
+      // solo salía en la factura grande.
+      await pumpPreview(
+        tester,
+        buildDocument(),
+        paperSize: PrintPaperSize.thermal80mm,
+      );
+
+      expect(find.text('OBSERVACIÓN:'), findsOneWidget);
+      expect(
+        find.text('Garantía de 1 año en bomba, filtro y calentador.'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('sin descuentos no imprime la columna %DESC', (tester) async {
       await pumpPreview(tester, buildDocument());
 

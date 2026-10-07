@@ -10,11 +10,16 @@ import 'package:printing/printing.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../inventory/data/file_io_helper.dart';
+import '../../printing/data/account_statement.dart';
+import '../../printing/data/account_statement_pdf_builder.dart';
+import '../../sales/presentation/sales_history_page.dart'
+    show showSaleDetailDialog;
 import '../data/clients_excel_service.dart';
 import '../data/clients_repository.dart';
 import 'client_form_dialog.dart';
@@ -171,7 +176,10 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
       description: 'Catálogo de clientes y cuentas por cobrar.',
       actions: [
         OutlinedButton.icon(
-          onPressed: () => ref.invalidate(clientsListProvider),
+          onPressed: () {
+            ref.invalidate(clientsListProvider);
+            ref.invalidate(clientCreditBalancesProvider);
+          },
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
@@ -194,6 +202,9 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
               // filtered y totalBalance viven en providers memoizados.
               final filtered = ref.watch(clientsFilteredProvider);
               final totalBalance = ref.watch(clientsFilteredBalanceProvider);
+              final creditBalances =
+                  ref.watch(clientCreditBalancesProvider).valueOrNull ??
+                      const <String, double>{};
 
               final canSelect = ref.watch(roleAccessProvider).canDeleteRecord;
               final allSelected =
@@ -297,6 +308,8 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
                                 return _ClientRow(
                                   key: ValueKey(client.id),
                                   client: client,
+                                  creditBalance:
+                                      creditBalances[client.id] ?? 0,
                                   documentDisplay: _documentDisplay(client),
                                   entityLabel: _entityTypeLabel(
                                     client.entityType,
@@ -380,19 +393,13 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
   }
 
   Future<void> _onCreateClient() async {
-    final input = await showDialog<ClientInput>(
-      context: context,
-      builder: (_) => const ClientFormDialog(),
-    );
+    final input = await ClientFormDialog.show(context);
     if (input == null || !mounted) return;
     await _saveClient(input, successMessage: 'Cliente creado');
   }
 
   Future<void> _onEditClient(ClientEntity client) async {
-    final input = await showDialog<ClientInput>(
-      context: context,
-      builder: (_) => ClientFormDialog(initial: client),
-    );
+    final input = await ClientFormDialog.show(context, initial: client);
     if (input == null || !mounted) return;
     await _saveClient(input, successMessage: 'Cliente actualizado');
   }
@@ -491,12 +498,8 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
     }
   }
 
-  Future<void> _onShowPaymentHistory(ClientEntity client) async {
-    await showDialog(
-      context: context,
-      builder: (_) => _PaymentHistoryDialog(client: client),
-    );
-  }
+  Future<void> _onShowPaymentHistory(ClientEntity client) =>
+      showClientHistoryDialog(context, client);
 
   // ─── Excel / PDF: plantilla, exportar, importar ────────────────────────────
 
@@ -1225,8 +1228,85 @@ class _ImportClientsDialogState extends ConsumerState<_ImportClientsDialog> {
   }
 }
 
-// ─── Payment history dialog ─────────────────────────────────────────────────
+// ─── Client history dialog ──────────────────────────────────────────────────
 
+/// Un renglón del historial del cliente: una venta, un pago o una devolución.
+class _HistoryEntry {
+  _HistoryEntry.sale(ClientSaleRow this.sale)
+      : date = sale.date,
+        payment = null,
+        refund = null;
+  _HistoryEntry.payment(ClientPaymentRow this.payment)
+      : date = payment.paidAt,
+        sale = null,
+        refund = null;
+  _HistoryEntry.refund(ClientReturnRow this.refund)
+      : date = refund.date,
+        sale = null,
+        payment = null;
+
+  final DateTime date;
+  final ClientSaleRow? sale;
+  final ClientPaymentRow? payment;
+  final ClientReturnRow? refund;
+
+  /// Renglón del estado de cuenta en PDF.
+  StatementMovement toMovement() {
+    final s = sale;
+    if (s != null) {
+      return StatementMovement(
+        date: s.date,
+        document: s.number,
+        type: s.isVoided
+            ? 'Venta anulada'
+            : s.isCredit
+                ? 'Venta a crédito'
+                : 'Venta de contado',
+        detail: s.isVoided
+            ? null
+            : s.balance > 0.005
+                ? 'Pendiente ${money(s.balance)}'
+                : (s.isCredit ? 'Saldada' : null),
+        amount: s.total,
+        kind: s.isVoided
+            ? StatementMovementKind.voided
+            : StatementMovementKind.sale,
+      );
+    }
+    final p = payment;
+    if (p != null) {
+      final ref = p.reference?.trim();
+      return StatementMovement(
+        date: p.paidAt,
+        document: p.saleNumber ?? 'Abono',
+        type: 'Pago · ${statementPaymentMethodLabel(p.paymentMethod)}',
+        detail: ref == null || ref.isEmpty || ref == p.saleNumber ? null : ref,
+        amount: p.amount,
+        kind: StatementMovementKind.payment,
+      );
+    }
+    final r = refund!;
+    return StatementMovement(
+      date: r.date,
+      document: r.number,
+      type: 'Devolución · ${r.refundLabel}',
+      amount: r.total,
+      kind: StatementMovementKind.refund,
+    );
+  }
+}
+
+/// Abre el historial del cliente (ventas, pagos y devoluciones).
+Future<void> showClientHistoryDialog(BuildContext context, ClientEntity client) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _PaymentHistoryDialog(client: client),
+  );
+}
+
+/// Historial del cliente: ventas (contado, crédito o anuladas), pagos y
+/// devoluciones juntos, con filtro "Desde – hasta", el ojito que abre la
+/// factura para imprimirla y el estado de cuenta en PDF.
 class _PaymentHistoryDialog extends ConsumerStatefulWidget {
   const _PaymentHistoryDialog({required this.client});
 
@@ -1238,7 +1318,10 @@ class _PaymentHistoryDialog extends ConsumerStatefulWidget {
 }
 
 class _PaymentHistoryDialogState extends ConsumerState<_PaymentHistoryDialog> {
-  late Future<List<ClientPaymentRow>> _future;
+  late Future<List<_HistoryEntry>> _future;
+
+  /// Rango de fechas elegido. Null = todo el historial.
+  DateTimeRange? _range;
 
   @override
   void initState() {
@@ -1246,129 +1329,297 @@ class _PaymentHistoryDialogState extends ConsumerState<_PaymentHistoryDialog> {
     _future = _load();
   }
 
-  Future<List<ClientPaymentRow>> _load() async {
+  Future<List<_HistoryEntry>> _load() async {
     final repo = ref.read(clientsRepositoryProvider);
-    return repo.fetchPaymentsForClient(widget.client.id);
+    final id = widget.client.id;
+    final (sales, payments, refunds) = await (
+      repo.fetchSalesForClient(id),
+      repo.fetchPaymentsForClient(id),
+      repo.fetchReturnsForClient(id),
+    ).wait;
+    return [
+      for (final s in sales) _HistoryEntry.sale(s),
+      for (final p in payments) _HistoryEntry.payment(p),
+      for (final r in refunds) _HistoryEntry.refund(r),
+    ]..sort((a, b) => b.date.compareTo(a.date));
   }
 
   void _refresh() {
     setState(() => _future = _load());
   }
 
+  /// La factura (o la devolución) del renglón, con su botón Imprimir.
+  VoidCallback? _viewerFor(_HistoryEntry entry) {
+    final sale = entry.sale;
+    if (sale != null) {
+      return () => showSaleDetailDialog(context, docId: sale.id);
+    }
+    final refund = entry.refund;
+    if (refund != null) {
+      return () =>
+          showSaleDetailDialog(context, docId: refund.id, isReturn: true);
+    }
+    final saleId = entry.payment?.saleId;
+    if (saleId == null || saleId.isEmpty) return null;
+    return () => showSaleDetailDialog(context, docId: saleId);
+  }
+
+  /// El PDF se arma dentro de `onLayout` para que en web la ventana de
+  /// impresión salga con el mismo clic.
+  Future<void> _printStatement(
+    List<_HistoryEntry> entries, {
+    required double debt,
+    required double creditBalance,
+  }) async {
+    final repo = ref.read(clientsRepositoryProvider);
+    final client = widget.client;
+    final range = _range;
+    final doc = client.documentNumber?.trim();
+    try {
+      await Printing.layoutPdf(
+        name: 'estado-de-cuenta-${client.fullName}',
+        onLayout: (_) async =>
+            const AccountStatementPdfBuilder().buildClientHistory(
+          issuer: await repo.fetchStatementIssuer(),
+          party: StatementParty(
+            name: client.fullName,
+            document: doc == null || doc.isEmpty
+                ? null
+                : '${(client.documentType ?? '').toLowerCase().startsWith('c') ? 'Cédula' : 'RNC'}: $doc',
+            phone: client.phone,
+            address: client.addressLine1 ?? client.address,
+            email: client.email,
+          ),
+          movements: [for (final e in entries) e.toMovement()],
+          debt: debt,
+          creditBalance: creditBalance,
+          from: range?.start,
+          to: range?.end,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar el PDF: $error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final debt = widget.client.balanceDue;
+    final creditBalance =
+        ref.watch(clientCreditBalancesProvider).valueOrNull?[widget.client.id] ??
+            0;
     return Dialog(
       insetPadding: const EdgeInsets.all(AppTokens.s24),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 640),
+        constraints: const BoxConstraints(maxWidth: 760, maxHeight: 660),
         child: Padding(
           padding: const EdgeInsets.all(AppTokens.s20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
+          child: FutureBuilder<List<_HistoryEntry>>(
+            future: _future,
+            builder: (context, snap) {
+              final loading = snap.connectionState == ConnectionState.waiting;
+              final all = snap.data ?? const <_HistoryEntry>[];
+              final entries = _range == null
+                  ? all
+                  : all
+                      .where((e) => isWithinDateRange(e.date, _range))
+                      .toList(growable: false);
+              final pdfButton = OutlinedButton.icon(
+                onPressed: loading || snap.hasError
+                    ? null
+                    : () => _printStatement(
+                          entries,
+                          debt: debt,
+                          creditBalance: creditBalance,
+                        ),
+                icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                label: const Text('PDF'),
+              );
+              final rangeButton = DateRangeFilterButton(
+                range: _range,
+                helpText: 'Historial desde – hasta',
+                onChanged: (range) => setState(() => _range = range),
+              );
+              // En pantallas angostas el filtro y el PDF bajan a su fila.
+              final wide = MediaQuery.sizeOf(context).width >= 760;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.payments_outlined, color: AppTokens.primary),
-                  const SizedBox(width: AppTokens.s8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Historial de pagos',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.payments_outlined,
+                        color: AppTokens.primary,
+                      ),
+                      const SizedBox(width: AppTokens.s8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Historial del cliente',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            Text(
+                              widget.client.fullName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: AppTokens.mutedForeground),
+                            ),
+                          ],
                         ),
-                        Text(
-                          widget.client.fullName,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(color: AppTokens.mutedForeground),
-                        ),
+                      ),
+                      if (wide) ...[
+                        rangeButton,
+                        const SizedBox(width: AppTokens.s8),
+                        pdfButton,
+                        const SizedBox(width: AppTokens.s4),
                       ],
+                      IconButton(
+                        onPressed: _refresh,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        tooltip: 'Actualizar',
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, size: 20),
+                      ),
+                    ],
+                  ),
+                  if (!wide)
+                    Padding(
+                      padding: const EdgeInsets.only(top: AppTokens.s8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: rangeButton,
+                            ),
+                          ),
+                          pdfButton,
+                        ],
+                      ),
+                    ),
+                  const Divider(height: AppTokens.s16),
+                  Expanded(
+                    child: _body(
+                      snap,
+                      all: all,
+                      entries: entries,
+                      debt: debt,
+                      creditBalance: creditBalance,
                     ),
                   ),
-                  IconButton(
-                    onPressed: _refresh,
-                    icon: const Icon(Icons.refresh, size: 18),
-                    tooltip: 'Actualizar',
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, size: 20),
-                  ),
                 ],
-              ),
-              const Divider(height: AppTokens.s16),
-              Expanded(
-                child: FutureBuilder<List<ClientPaymentRow>>(
-                  future: _future,
-                  builder: (context, snap) {
-                    if (snap.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    if (snap.hasError) {
-                      return Center(child: Text('Error: ${snap.error}'));
-                    }
-                    final rows = snap.data ?? const <ClientPaymentRow>[];
-                    if (rows.isEmpty) {
-                      return Center(
-                        child: Text(
-                          'Este cliente aún no tiene pagos registrados.',
-                          style: TextStyle(color: AppTokens.mutedForeground),
-                        ),
-                      );
-                    }
-                    final total = rows.fold<double>(
-                      0,
-                      (sum, r) => sum + r.amount,
-                    );
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: AppTokens.s12),
-                          child: Row(
-                            children: [
-                              Text(
-                                '${rows.length} pagos',
-                                style: const TextStyle(
-                                  color: AppTokens.mutedForeground,
-                                ),
-                              ),
-                              const Spacer(),
-                              Text(
-                                'Total pagado: ${money(total)}',
-                                style: const TextStyle(
-                                  color: AppTokens.success,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          child: ListView.separated(
-                            itemCount: rows.length,
-                            separatorBuilder: (_, _) => const Divider(
-                              height: 1,
-                              color: AppTokens.border,
-                            ),
-                            itemBuilder: (context, i) => _PaymentRowTile(
-                              row: rows[i],
-                              onEdit: () => _onEdit(rows[i]),
-                              onDelete: () => _onDelete(rows[i]),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ],
+              );
+            },
           ),
         ),
       ),
+    );
+  }
+
+  Widget _body(
+    AsyncSnapshot<List<_HistoryEntry>> snap, {
+    required List<_HistoryEntry> all,
+    required List<_HistoryEntry> entries,
+    required double debt,
+    required double creditBalance,
+  }) {
+    if (snap.connectionState == ConnectionState.waiting) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (snap.hasError) {
+      return Center(child: Text('Error: ${snap.error}'));
+    }
+    if (all.isEmpty) {
+      return const Center(
+        child: Text(
+          'Este cliente aún no tiene movimientos.',
+          style: TextStyle(color: AppTokens.mutedForeground),
+        ),
+      );
+    }
+    double sum(bool Function(_HistoryEntry e) test, double Function(_HistoryEntry e) pick) =>
+        entries.where(test).fold<double>(0, (s, e) => s + pick(e));
+    final bought = sum(
+      (e) => e.sale != null && !e.sale!.isVoided,
+      (e) => e.sale!.total,
+    );
+    final paid = sum((e) => e.payment != null, (e) => e.payment!.amount);
+    final refunded = sum((e) => e.refund != null, (e) => e.refund!.total);
+
+    Widget stat(String label, double value, Color? color) => Text(
+          '$label: ${money(value)}',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: color,
+          ),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: AppTokens.s12),
+          child: Wrap(
+            spacing: AppTokens.s16,
+            runSpacing: AppTokens.s4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                '${entries.length} movimientos',
+                style: const TextStyle(color: AppTokens.mutedForeground),
+              ),
+              stat('Comprado', bought, null),
+              stat('Pagado', paid, AppTokens.success),
+              if (refunded > 0) stat('Devuelto', refunded, AppTokens.destructive),
+              stat('Deuda', debt, debt > 0 ? AppTokens.warning : null),
+              if (creditBalance > 0)
+                stat('A favor', creditBalance, AppTokens.success),
+            ],
+          ),
+        ),
+        Expanded(
+          child: entries.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No hay movimientos en esas fechas.',
+                    style: TextStyle(color: AppTokens.mutedForeground),
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: entries.length,
+                  separatorBuilder: (_, _) => const Divider(
+                    height: 1,
+                    color: AppTokens.border,
+                  ),
+                  itemBuilder: (context, i) {
+                    final entry = entries[i];
+                    final payment = entry.payment;
+                    if (payment != null) {
+                      return _PaymentRowTile(
+                        row: payment,
+                        onView: _viewerFor(entry),
+                        onEdit: () => _onEdit(payment),
+                        onDelete: () => _onDelete(payment),
+                      );
+                    }
+                    return _HistoryDocumentTile(
+                      entry: entry,
+                      onView: _viewerFor(entry),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
@@ -1442,16 +1693,156 @@ class _PaymentHistoryDialogState extends ConsumerState<_PaymentHistoryDialog> {
   }
 }
 
+/// Venta o devolución en el historial del cliente.
+class _HistoryDocumentTile extends StatelessWidget {
+  const _HistoryDocumentTile({required this.entry, this.onView});
+
+  final _HistoryEntry entry;
+  final VoidCallback? onView;
+
+  @override
+  Widget build(BuildContext context) {
+    final sale = entry.sale;
+    final refund = entry.refund;
+    final isRefund = refund != null;
+    final voided = sale?.isVoided ?? false;
+    final amount = sale?.total ?? refund!.total;
+    final tags = <Widget>[
+      if (sale != null)
+        voided
+            ? const _HistoryTag('Anulada', AppTokens.mutedForeground)
+            : sale.isCredit
+                ? const _HistoryTag('Crédito', AppTokens.warning)
+                : const _HistoryTag('Contado', AppTokens.primary),
+      if (isRefund) ...[
+        const _HistoryTag('Devolución', AppTokens.destructive),
+        _HistoryTag(refund.refundLabel, AppTokens.mutedForeground),
+      ],
+    ];
+    final pending = sale != null && !voided && sale.balance > 0.005;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      '${isRefund ? '- ' : ''}${money(amount)}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        color: isRefund
+                            ? AppTokens.destructive
+                            : voided
+                                ? AppTokens.mutedForeground
+                                : null,
+                        decoration: voided ? TextDecoration.lineThrough : null,
+                      ),
+                    ),
+                    ...tags,
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${formatDateTime(entry.date)} · '
+                  '${isRefund ? 'Devolución ${refund.number}' : 'Venta ${sale!.number}'}',
+                  style: const TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                  ),
+                ),
+                if (pending)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'Pendiente: ${money(sale.balance)}',
+                      style: const TextStyle(
+                        color: AppTokens.destructive,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          _ViewButton(onView: onView),
+        ],
+      ),
+    );
+  }
+}
+
+/// Etiqueta de color del historial (Crédito, Contado, Devolución, Pago...).
+class _HistoryTag extends StatelessWidget {
+  const _HistoryTag(this.label, this.color);
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+/// El ojito: abre la factura o la devolución, que se puede imprimir.
+class _ViewButton extends StatelessWidget {
+  const _ViewButton({this.onView});
+
+  final VoidCallback? onView;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 40,
+      child: onView == null
+          ? null
+          : IconButton(
+              tooltip: 'Ver factura',
+              onPressed: onView,
+              icon: const Icon(Icons.visibility_outlined, size: 18),
+              visualDensity: VisualDensity.compact,
+            ),
+    );
+  }
+}
+
 class _PaymentRowTile extends ConsumerWidget {
   const _PaymentRowTile({
     required this.row,
     required this.onEdit,
     required this.onDelete,
+    this.onView,
   });
 
   final ClientPaymentRow row;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+
+  /// Abre la factura que pagó este abono. Null si el pago no tiene venta.
+  final VoidCallback? onView;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1474,6 +1865,8 @@ class _PaymentRowTile extends ConsumerWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
+                    const _HistoryTag('Pago', AppTokens.success),
+                    const SizedBox(width: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
@@ -1529,6 +1922,7 @@ class _PaymentRowTile extends ConsumerWidget {
               ],
             ),
           ),
+          _ViewButton(onView: onView),
           IconButton(
             tooltip: 'Editar pago',
             onPressed: onEdit,
@@ -1760,6 +2154,11 @@ class _ClientRowHeader extends StatelessWidget {
             flex: 2,
             child: _ColumnLabel('Balance', align: TextAlign.right),
           ),
+          Expanded(
+            flex: 2,
+            child: _ColumnLabel('A favor', align: TextAlign.right),
+          ),
+          const SizedBox(width: AppTokens.s12),
           Expanded(flex: 2, child: _ColumnLabel('Estado')),
           SizedBox(width: 140, child: _ColumnLabel('Acciones')),
         ],
@@ -1800,12 +2199,16 @@ class _ClientRow extends StatelessWidget {
     required this.onEdit,
     required this.onHistory,
     required this.onToggle,
+    this.creditBalance = 0,
     this.showCheckbox = false,
     this.selected = false,
     this.onSelectedChanged,
   });
 
   final ClientEntity client;
+
+  /// Saldo a favor por notas de crédito.
+  final double creditBalance;
   final String documentDisplay;
   final String entityLabel;
   final VoidCallback onEdit;
@@ -1895,6 +2298,19 @@ class _ClientRow extends StatelessWidget {
               ),
             ),
           ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              money(creditBalance),
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: creditBalance > 0 ? AppTokens.success : null,
+              ),
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
           Expanded(
             flex: 2,
             child: StatusBadge(

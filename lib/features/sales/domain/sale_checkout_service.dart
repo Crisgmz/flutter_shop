@@ -469,6 +469,40 @@ double toCents(double amount) => (amount * 100).roundToDouble();
 /// Centavos enteros → monto en pesos.
 double fromCents(double cents) => cents / 100;
 
+/// Cómo se reparte una venta con el saldo a favor del cliente (notas de
+/// crédito): se usa hasta cubrir el total y el resto se cobra.
+///
+///     nota 1,000 · compra 800   → usa 800,   paga 0,   le quedan 200
+///     nota 200   · compra 700   → usa 200,   paga 500, le quedan 0
+///     nota 1,000 · compra 1,400 → usa 1,000, paga 400, le quedan 0
+class CreditSplit {
+  const CreditSplit._({
+    required this.applied,
+    required this.due,
+    required this.remaining,
+  });
+
+  factory CreditSplit.of({required double total, required double available}) {
+    final totalC = total > 0 ? toCents(total) : 0.0;
+    final availableC = available > 0 ? toCents(available) : 0.0;
+    final appliedC = availableC < totalC ? availableC : totalC;
+    return CreditSplit._(
+      applied: fromCents(appliedC),
+      due: fromCents(totalC - appliedC),
+      remaining: fromCents(availableC - appliedC),
+    );
+  }
+
+  /// Lo que se descuenta del saldo a favor en esta venta.
+  final double applied;
+
+  /// Lo que se cobra con otros métodos.
+  final double due;
+
+  /// Lo que le queda a favor al cliente después de la venta.
+  final double remaining;
+}
+
 /// Bruto de la línea en centavos: `round(unit_price × quantity, 2)`.
 double grossCents(double quantity, double unitPrice) {
   // La cantidad admite hasta 3 decimales (ver [round3]); en milésimas enteras

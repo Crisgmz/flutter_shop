@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../printing/data/account_statement.dart';
+
 /// Compra con saldo pendiente de pago a un proveedor (cuenta por pagar).
 /// Espejo de `ReceivableSale` del módulo de Cuentas por Cobrar.
 class PayablePurchase {
@@ -49,6 +51,19 @@ class PayablePurchase {
     final d = daysUntilDue;
     return d != null && d >= 0 && d <= warnDays;
   }
+
+  /// Fila del PDF de la lista de cuentas por pagar.
+  StatementDocument toStatementDocument() => StatementDocument(
+        id: id,
+        date: purchaseDate,
+        number: purchaseNumber,
+        reference: invoiceNumber,
+        partyName: supplierName,
+        dueDate: dueDate,
+        total: totalAmount,
+        paid: paidAmount,
+        balance: balanceDue,
+      );
 
   factory PayablePurchase.fromMap(
     Map<String, dynamic> map,
@@ -276,6 +291,110 @@ class PayablesRepository {
           .eq('id', supplierId)
           .eq('branch_id', branchId);
     }
+  }
+
+  /// Estado de cuenta con un proveedor: las compras que le debemos (las
+  /// mismas que lista Cuentas por pagar), solo las de [from]–[to] si se
+  /// pasan, con los pagos que se les aplicaron.
+  Future<AccountStatement> fetchSupplierStatement(
+    String supplierId, {
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      throw Exception('No hay sucursal asignada para este usuario.');
+    }
+
+    final supplierRows = await _client
+        .from('suppliers')
+        .select('legal_name, trade_name, rnc, phone, address, email')
+        .eq('id', supplierId)
+        .eq('branch_id', branchId)
+        .limit(1);
+    final supplier = supplierRows.isEmpty
+        ? const <String, dynamic>{}
+        : Map<String, dynamic>.from(supplierRows.first as Map);
+    final supplierName = _supplierName(supplier);
+    final rnc = _nullIfEmpty(supplier['rnc']?.toString());
+
+    // Mismo filtro que [fetchPayables]; las fechas se filtran aquí para
+    // contar días completos en hora local.
+    final rows = await _client
+        .from('purchases')
+        .select(
+          'id, purchase_number, invoice_number, purchase_date, total_amount, '
+          'paid_amount, balance_due, due_date',
+        )
+        .eq('branch_id', branchId)
+        .eq('supplier_id', supplierId)
+        .gt('balance_due', 0)
+        .neq('status', 'cancelled')
+        .order('purchase_date');
+    final documents = <StatementDocument>[];
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw as Map);
+      final date =
+          DateTime.tryParse((row['purchase_date'] ?? '').toString()) ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+      if (!isWithinStatementDays(date, from, to)) continue;
+      documents.add(StatementDocument(
+        id: (row['id'] ?? '').toString(),
+        date: date,
+        number: (row['purchase_number'] ?? '-').toString(),
+        reference: _nullIfEmpty(row['invoice_number']?.toString()),
+        partyName: supplierName,
+        dueDate: DateTime.tryParse((row['due_date'] ?? '').toString()),
+        total: _toDouble(row['total_amount']),
+        paid: _toDouble(row['paid_amount']),
+        balance: _toDouble(row['balance_due']),
+      ));
+    }
+
+    // Pagos de esas compras, en tandas: un `in.(...)` con cientos de ids
+    // revienta el largo de la URL.
+    final numberById = {for (final d in documents) d.id: d.number};
+    final ids = numberById.keys.toList();
+    final payments = <StatementPayment>[];
+    for (var i = 0; i < ids.length; i += 100) {
+      final chunk = ids.sublist(i, i + 100 > ids.length ? ids.length : i + 100);
+      final paymentRows = await _client
+          .from('supplier_payments')
+          .select('purchase_id, amount, payment_method, paid_at, reference')
+          .eq('branch_id', branchId)
+          .inFilter('purchase_id', chunk);
+      for (final raw in paymentRows) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        payments.add(StatementPayment(
+          date: DateTime.tryParse((row['paid_at'] ?? '').toString()) ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+          documentNumber: numberById[row['purchase_id']?.toString()] ?? '-',
+          method: statementPaymentMethodLabel(
+            (row['payment_method'] ?? '').toString(),
+          ),
+          amount: _toDouble(row['amount']),
+          reference: _nullIfEmpty(row['reference']?.toString()),
+        ));
+      }
+    }
+    payments.sort((a, b) => a.date.compareTo(b.date));
+
+    return AccountStatement(
+      kind: AccountStatementKind.payable,
+      issuer: await loadStatementIssuer(_client, branchId),
+      party: StatementParty(
+        name: supplierName,
+        document: rnc == null ? null : 'RNC: $rnc',
+        phone: _nullIfEmpty(supplier['phone']?.toString()),
+        address: _nullIfEmpty(supplier['address']?.toString()),
+        email: _nullIfEmpty(supplier['email']?.toString()),
+      ),
+      documents: documents,
+      payments: payments,
+      generatedAt: DateTime.now(),
+      from: from,
+      to: to,
+    );
   }
 
   Future<Map<String, String>> _loadSuppliersById(String branchId) async {

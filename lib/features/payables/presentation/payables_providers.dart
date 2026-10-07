@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart' show DateTimeRange;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../auth/presentation/auth_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/payables_repository.dart';
@@ -11,6 +13,9 @@ enum PayablesFilter { all, nearDue, overdue }
 
 final payablesFilterProvider =
     StateProvider<PayablesFilter>((ref) => PayablesFilter.all);
+
+/// Rango "Desde – hasta" sobre la fecha de la compra. Null = todas.
+final payablesDateRangeProvider = StateProvider<DateTimeRange?>((ref) => null);
 
 final payablesRepositoryProvider = Provider<PayablesRepository>((ref) {
   final client = ref.watch(supabaseClientProvider);
@@ -55,15 +60,17 @@ final payablesCategorySummaryProvider =
   );
 });
 
-/// Cuentas por pagar filtradas por búsqueda + modo, memoizado.
+/// Cuentas por pagar filtradas por búsqueda + modo + fechas, memoizado.
 final payablesFilteredProvider = Provider<List<PayablePurchase>>((ref) {
   final all = ref.watch(payablesListProvider).valueOrNull ?? const [];
   final query = ref.watch(payablesSearchProvider).trim().toLowerCase();
   final mode = ref.watch(payablesFilterProvider);
+  final range = ref.watch(payablesDateRangeProvider);
   final warnDays =
       ref.watch(appSettingsProvider).valueOrNull?.creditWarnDays ?? 7;
 
   return all.where((item) {
+    if (!isWithinDateRange(item.purchaseDate, range)) return false;
     if (query.isNotEmpty) {
       if (!item.purchaseNumber.toLowerCase().contains(query) &&
           !item.supplierName.toLowerCase().contains(query) &&

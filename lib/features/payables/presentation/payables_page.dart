@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:printing/printing.dart';
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/account_statement_dialog.dart';
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../printing/data/account_statement.dart';
+import '../../printing/data/account_statement_pdf_builder.dart';
 import '../../settings/presentation/app_settings_providers.dart';
+import '../../shell/presentation/shell_providers.dart'
+    show shellCurrentBranchNameProvider;
 import '../data/payables_repository.dart';
 import 'payables_providers.dart';
 
@@ -32,6 +39,11 @@ class _PayablesPageState extends ConsumerState<PayablesPage> {
     final payablesAsync = ref.watch(payablesListProvider);
     final paymentsAsync = ref.watch(supplierPaymentsProvider);
     final filterMode = ref.watch(payablesFilterProvider);
+    final dateRange = ref.watch(payablesDateRangeProvider);
+    final filtered = ref.watch(payablesFilteredProvider);
+    // Si todo lo que se ve es de un solo proveedor (por ejemplo, al
+    // buscarlo), el PDF es su estado de cuenta; si no, la lista.
+    final singleSupplier = _singleSupplierRow(filtered);
     final warnDays =
         ref.watch(appSettingsProvider).valueOrNull?.creditWarnDays ?? 7;
 
@@ -39,6 +51,26 @@ class _PayablesPageState extends ConsumerState<PayablesPage> {
       title: 'Cuentas por pagar',
       description: 'Gestiona deudas a proveedores y pagos realizados.',
       actions: [
+        DateRangeFilterButton(
+          range: dateRange,
+          helpText: 'Compras desde – hasta',
+          onChanged: (range) =>
+              ref.read(payablesDateRangeProvider.notifier).state = range,
+        ),
+        Tooltip(
+          message: singleSupplier != null
+              ? 'Estado de cuenta de ${singleSupplier.supplierName}'
+              : 'Lista de cuentas por pagar en PDF',
+          child: OutlinedButton.icon(
+            onPressed: filtered.isEmpty
+                ? null
+                : singleSupplier != null
+                    ? () => _onStatement(singleSupplier)
+                    : _printReport,
+            icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+            label: Text(singleSupplier != null ? 'Estado de cuenta' : 'PDF'),
+          ),
+        ),
         OutlinedButton.icon(
           onPressed: _refreshData,
           icon: const Icon(Icons.refresh, size: 18),
@@ -120,6 +152,9 @@ class _PayablesPageState extends ConsumerState<PayablesPage> {
                                   warnDays: warnDays,
                                   onView: () => _onViewDetail(item),
                                   onPay: () => _onRegisterPayment(item),
+                                  onStatement: item.supplierId == null
+                                      ? null
+                                      : () => _onStatement(item),
                                 );
                               },
                             ),
@@ -188,6 +223,63 @@ class _PayablesPageState extends ConsumerState<PayablesPage> {
     );
   }
 
+  /// PDF de la lista tal como está filtrada (pestaña, búsqueda y fechas).
+  /// Se arma dentro de `onLayout` para que en web la ventana de impresión
+  /// salga con el mismo clic.
+  Future<void> _printReport() async {
+    final documents = [
+      for (final p in ref.read(payablesFilteredProvider)) p.toStatementDocument(),
+    ];
+    final range = ref.read(payablesDateRangeProvider);
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    final query = ref.read(payablesSearchProvider).trim();
+    final filterLabel = [
+      switch (ref.read(payablesFilterProvider)) {
+        PayablesFilter.all => null,
+        PayablesFilter.nearDue => 'Próximas a vencer',
+        PayablesFilter.overdue => 'Vencidas',
+      },
+      if (query.isNotEmpty) 'Búsqueda: "$query"',
+    ].nonNulls.join('  ·  ');
+    try {
+      await Printing.layoutPdf(
+        name: 'cuentas-por-pagar',
+        onLayout: (_) => const AccountStatementPdfBuilder().buildPendingReport(
+          kind: AccountStatementKind.payable,
+          documents: documents,
+          branchName: branchName,
+          from: range?.start,
+          to: range?.end,
+          filterLabel: filterLabel.isEmpty ? null : filterLabel,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar el PDF: $error')),
+      );
+    }
+  }
+
+  /// Estado de cuenta con el proveedor, con el rango de fechas de la
+  /// pantalla (se puede cambiar dentro del diálogo).
+  Future<void> _onStatement(PayablePurchase purchase) {
+    final repository = ref.read(payablesRepositoryProvider);
+    final supplierId = purchase.supplierId!;
+    return showDialog<void>(
+      context: context,
+      builder: (_) => AccountStatementDialog(
+        partyName: purchase.supplierName,
+        initialRange: ref.read(payablesDateRangeProvider),
+        load: (range) => repository.fetchSupplierStatement(
+          supplierId,
+          from: range?.start,
+          to: range?.end,
+        ),
+      ),
+    );
+  }
+
   Future<void> _refreshData() async {
     ref.invalidate(payablesListProvider);
     ref.invalidate(supplierPaymentsProvider);
@@ -228,6 +320,14 @@ class _PayablesPageState extends ConsumerState<PayablesPage> {
       builder: (_) => _PayableViewerDialog(purchase: purchase),
     );
   }
+}
+
+/// La primera fila de [rows] si todas son del mismo proveedor registrado.
+PayablePurchase? _singleSupplierRow(List<PayablePurchase> rows) {
+  if (rows.isEmpty) return null;
+  final id = rows.first.supplierId;
+  if (id == null) return null;
+  return rows.every((r) => r.supplierId == id) ? rows.first : null;
 }
 
 class _PayablesFilterBar extends StatelessWidget {
@@ -294,7 +394,7 @@ class _PayableRowHeader extends StatelessWidget {
           Expanded(flex: 2, child: _ColumnLabel('Total', align: TextAlign.right)),
           Expanded(
               flex: 2, child: _ColumnLabel('Saldo', align: TextAlign.right)),
-          SizedBox(width: 150, child: _ColumnLabel('Acciones')),
+          SizedBox(width: 186, child: _ColumnLabel('Acciones')),
         ],
       ),
     );
@@ -329,12 +429,16 @@ class _PayableRow extends StatelessWidget {
     required this.warnDays,
     required this.onView,
     required this.onPay,
+    this.onStatement,
   });
 
   final PayablePurchase purchase;
   final int warnDays;
   final VoidCallback onView;
   final VoidCallback onPay;
+
+  /// Estado de cuenta con el proveedor. Null en compras sin proveedor.
+  final VoidCallback? onStatement;
 
   @override
   Widget build(BuildContext context) {
@@ -397,7 +501,7 @@ class _PayableRow extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: 150,
+            width: 186,
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -405,6 +509,14 @@ class _PayableRow extends StatelessWidget {
                   tooltip: 'Ver detalle',
                   onPressed: onView,
                   icon: const Icon(Icons.visibility_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+                IconButton(
+                  tooltip: onStatement == null
+                      ? 'Compra sin proveedor: no tiene estado de cuenta'
+                      : 'Estado de cuenta del proveedor',
+                  onPressed: onStatement,
+                  icon: const Icon(Icons.request_page_outlined, size: 18),
                   visualDensity: VisualDensity.compact,
                 ),
                 FilledButton.icon(

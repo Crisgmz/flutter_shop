@@ -110,6 +110,7 @@ class PrintDispatchPayloadBuilder {
         'cashier_name': document.cashierName,
         'reference_number': document.referenceNumber,
         'notes': document.notes,
+        'observation': document.observation,
         'legal_footer_text': document.legalFooterText,
         'footer_message': document.footerMessage,
         'branch': <String, dynamic>{

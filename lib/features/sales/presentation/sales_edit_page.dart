@@ -128,12 +128,18 @@ class _PayLine {
 /// pago: su línea muestra lo que quede pendiente (total − cobrado), que es lo
 /// que pasa a Cuentas por cobrar, sin pedirle al usuario que cuadre dos veces
 /// el mismo número.
+///
+/// `credit_note` (saldo a favor) tiene que estar: un método desconocido se
+/// lee como 'other', y guardar convertiría el pago con nota de crédito en
+/// "Otro" devolviéndole el saldo al cliente. Si se usa más saldo del que
+/// tiene, la base rechaza el cambio (migración 98).
 const List<MapEntry<String, String>> _payMethods = [
   MapEntry('cash', 'Efectivo'),
   MapEntry('transfer', 'Transferencia'),
   MapEntry('card', 'Tarjeta'),
   MapEntry('mobile', 'Pago móvil'),
   MapEntry('other', 'Otro'),
+  MapEntry('credit_note', 'Nota de crédito'),
   MapEntry('credit', 'Crédito'),
 ];
 

@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../printing/data/account_statement.dart';
+
 class ClientEntity {
   ClientEntity({
     required this.id,
@@ -240,6 +242,29 @@ class ClientsRepository {
 
   final SupabaseClient _client;
 
+  /// Saldo a favor por notas de crédito de los clientes que tienen
+  /// (`clients.credit_balance`, migración 98): id → monto. Va aparte de
+  /// [fetchClients] para que, sin la migración, la lista no se caiga; en ese
+  /// caso devuelve vacío.
+  Future<Map<String, double>> fetchCreditBalances() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const {};
+    try {
+      final rows = await _client
+          .from('clients')
+          .select('id, credit_balance')
+          .eq('branch_id', branchId)
+          .gt('credit_balance', 0);
+      return {
+        for (final raw in rows)
+          (raw as Map)['id'].toString():
+              double.tryParse(raw['credit_balance'].toString()) ?? 0,
+      };
+    } on PostgrestException {
+      return const {};
+    }
+  }
+
   Future<List<ClientEntity>> fetchClients() async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
@@ -427,10 +452,64 @@ class ClientsRepository {
         .eq('branch_id', branchId);
   }
 
+  /// Ventas del cliente para su historial (sin las cuentas guardadas, que
+  /// todavía no son ventas), de la más reciente a la más vieja.
+  Future<List<ClientSaleRow>> fetchSalesForClient(
+    String clientId, {
+    int limit = 1000,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+    final rows = await _client
+        .from('sales')
+        .select(
+          'id, sale_number, sale_date, total_amount, paid_amount, balance_due, '
+          'status, due_date',
+        )
+        .eq('branch_id', branchId)
+        .eq('client_id', clientId)
+        .neq('status', 'pending')
+        .order('sale_date', ascending: false)
+        .limit(limit);
+    return rows
+        .map((item) => ClientSaleRow.fromMap(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Devoluciones del cliente para su historial.
+  Future<List<ClientReturnRow>> fetchReturnsForClient(
+    String clientId, {
+    int limit = 1000,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+    final rows = await _client
+        .from('returns')
+        .select('id, return_number, return_date, total_amount, refund_method')
+        .eq('branch_id', branchId)
+        .eq('client_id', clientId)
+        .order('return_date', ascending: false)
+        .limit(limit);
+    return rows
+        .map((item) => ClientReturnRow.fromMap(
+              Map<String, dynamic>.from(item as Map),
+            ))
+        .toList(growable: false);
+  }
+
+  /// Encabezado de la empresa para el estado de cuenta en PDF.
+  Future<StatementIssuer> fetchStatementIssuer() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const StatementIssuer(name: 'Sucursal');
+    return loadStatementIssuer(_client, branchId);
+  }
+
   /// Historial de pagos hechos por un cliente.
   Future<List<ClientPaymentRow>> fetchPaymentsForClient(
     String clientId, {
-    int limit = 200,
+    int limit = 1000,
   }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
@@ -543,6 +622,94 @@ class ClientPaymentRow {
   final double? saleTotal;
   final String? reference;
   final String? notes;
+}
+
+/// Venta en el historial del cliente.
+class ClientSaleRow {
+  ClientSaleRow({
+    required this.id,
+    required this.number,
+    required this.date,
+    required this.total,
+    required this.paid,
+    required this.balance,
+    required this.status,
+    this.dueDate,
+  });
+
+  factory ClientSaleRow.fromMap(Map<String, dynamic> map) {
+    final rawDue = map['due_date']?.toString();
+    return ClientSaleRow(
+      id: (map['id'] ?? '').toString(),
+      number: (map['sale_number'] ?? '-').toString(),
+      date: DateTime.tryParse(map['sale_date']?.toString() ?? '') ??
+          DateTime.now(),
+      total: _toDouble(map['total_amount']),
+      paid: _toDouble(map['paid_amount']),
+      balance: _toDouble(map['balance_due']),
+      status: (map['status'] ?? '').toString(),
+      dueDate:
+          rawDue == null || rawDue.isEmpty ? null : DateTime.tryParse(rawDue),
+    );
+  }
+
+  final String id;
+  final String number;
+  final DateTime date;
+  final double total;
+  final double paid;
+  final double balance;
+  final String status;
+
+  /// Solo las ventas a crédito tienen vencimiento.
+  final DateTime? dueDate;
+
+  bool get isVoided => status == 'voided';
+
+  /// A crédito aunque ya la haya saldado: al cobrar el último abono el estado
+  /// pasa a 'completed', pero la fecha de vencimiento se queda.
+  bool get isCredit =>
+      !isVoided && (status == 'credit' || dueDate != null || balance > 0);
+}
+
+/// Devolución en el historial del cliente.
+class ClientReturnRow {
+  ClientReturnRow({
+    required this.id,
+    required this.number,
+    required this.date,
+    required this.total,
+    required this.refundMethod,
+  });
+
+  factory ClientReturnRow.fromMap(Map<String, dynamic> map) {
+    return ClientReturnRow(
+      id: (map['id'] ?? '').toString(),
+      number: (map['return_number'] ?? '-').toString(),
+      date: DateTime.tryParse(map['return_date']?.toString() ?? '') ??
+          DateTime.now(),
+      total: _toDouble(map['total_amount']),
+      refundMethod: (map['refund_method'] ?? 'cash').toString(),
+    );
+  }
+
+  final String id;
+  final String number;
+  final DateTime date;
+  final double total;
+
+  /// `cash`, `credit_note`, `credit_balance` (se fue a la deuda)...
+  final String refundMethod;
+
+  /// Cómo se le reembolsó, en español.
+  String get refundLabel => switch (refundMethod) {
+        'cash' => 'Efectivo',
+        'credit_note' => 'Nota de crédito',
+        'credit_balance' => 'A la deuda',
+        'card' => 'Tarjeta',
+        'transfer' => 'Transferencia',
+        _ => refundMethod,
+      };
 }
 
 String? _nullIfEmpty(String? value) {

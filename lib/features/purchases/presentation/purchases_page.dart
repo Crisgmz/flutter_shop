@@ -200,7 +200,7 @@ class _PurchasesPageState extends ConsumerState<PurchasesPage> {
     if (detail == null || !mounted) return;
     await showDialog(
       context: context,
-      builder: (_) => _PurchaseDetailDialog(detail: detail),
+      builder: (_) => _PurchaseDetailDialog(purchaseId: p.id, detail: detail),
     );
   }
 
@@ -1861,17 +1861,40 @@ Future<void> showPurchaseDetailDialog(
   if (detail == null || !context.mounted) return;
   await showDialog<void>(
     context: context,
-    builder: (_) => _PurchaseDetailDialog(detail: detail!),
+    builder: (_) =>
+        _PurchaseDetailDialog(purchaseId: purchaseId, detail: detail!),
   );
 }
 
-class _PurchaseDetailDialog extends StatelessWidget {
-  const _PurchaseDetailDialog({required this.detail});
+class _PurchaseDetailDialog extends ConsumerWidget {
+  const _PurchaseDetailDialog({required this.purchaseId, required this.detail});
 
+  final String purchaseId;
   final PurchaseDetail detail;
 
+  Future<void> _print(BuildContext context, WidgetRef ref) async {
+    try {
+      final job = await ref
+          .read(purchasesRepositoryProvider)
+          .preparePurchasePrintJob(purchaseId);
+      if (!context.mounted) return;
+      if (job == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se pudo preparar la impresión.')),
+        );
+        return;
+      }
+      await PrintReceiptDialog.show(context, job);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo imprimir: $error')),
+      );
+    }
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return AlertDialog(
       title: Text('Compra ${detail.purchaseNumber ?? ''}'.trim()),
       content: SizedBox(
@@ -1939,6 +1962,11 @@ class _PurchaseDetailDialog extends StatelessWidget {
         ),
       ),
       actions: [
+        TextButton.icon(
+          onPressed: () => _print(context, ref),
+          icon: const Icon(Icons.print_outlined, size: 18),
+          label: const Text('Imprimir'),
+        ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cerrar'),

@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/date_range_filter_button.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
@@ -16,9 +17,12 @@ import '../../purchases/presentation/purchases_page.dart'
 import '../../sales/presentation/sales_history_page.dart'
     show showSaleDetailDialog;
 import '../../settings/presentation/app_settings_providers.dart';
+import '../../shell/presentation/shell_providers.dart'
+    show shellCurrentBranchNameProvider;
 import '../data/file_io_helper.dart';
 import '../data/inventory_excel_service.dart';
 import '../data/inventory_repository.dart';
+import '../data/product_history_pdf_builder.dart';
 import 'inventory_providers.dart';
 import 'product_form_dialog.dart';
 import 'package:pdf/pdf.dart';
@@ -2159,7 +2163,8 @@ class _ImportResultDialog extends StatelessWidget {
   }
 }
 
-/// Dialog que muestra el historial unificado de movimientos de un producto.
+/// Dialog que muestra el historial unificado de movimientos de un producto,
+/// con filtro "Desde – hasta" y PDF del listado.
 class _ProductHistoryDialog extends ConsumerStatefulWidget {
   const _ProductHistoryDialog({required this.product});
 
@@ -2173,6 +2178,9 @@ class _ProductHistoryDialog extends ConsumerStatefulWidget {
 class _ProductHistoryDialogState
     extends ConsumerState<_ProductHistoryDialog> {
   late Future<List<ProductMovementEntry>> _future;
+
+  /// Rango de fechas elegido. Null = todos los movimientos.
+  DateTimeRange? _range;
 
   @override
   void initState() {
@@ -2188,8 +2196,53 @@ class _ProductHistoryDialogState
 
   void _refresh() => setState(() => _future = _load());
 
-  /// Abre la factura de origen del movimiento (venta, devolución o compra).
-  VoidCallback? _viewerFor(ProductMovementEntry entry) {
+  /// Los movimientos que caen dentro de [_range]. El filtro va después de
+  /// calcular la columna Stock: así cada fila conserva el stock real que
+  /// quedó en ese momento.
+  List<ProductMovementLine> _inRange(List<ProductMovementLine> lines) {
+    if (_range == null) return lines;
+    return lines
+        .where((l) => isWithinDateRange(l.entry.when, _range))
+        .toList(growable: false);
+  }
+
+  /// El PDF se arma dentro de `onLayout` para que en web la ventana de
+  /// impresión salga con el mismo clic (ver CashClosureDetailDialog._print).
+  Future<void> _printHistory(List<ProductMovementLine> lines) async {
+    final product = widget.product;
+    final range = _range;
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    try {
+      await Printing.layoutPdf(
+        name: 'historial-${product.sku ?? product.name}',
+        onLayout: (_) => const ProductHistoryPdfBuilder().buildHistory(
+          productName: product.name,
+          sku: product.sku,
+          lines: lines,
+          from: range?.start,
+          to: range?.end,
+          branchName: branchName,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo generar el PDF: $error')),
+      );
+    }
+  }
+
+  /// Ojito: la factura de origen (venta, devolución o compra) o, en ajustes,
+  /// mermas y traslados, el detalle con motivo, comentario y usuario.
+  VoidCallback? _viewerFor(ProductMovementLine line) {
+    final entry = line.entry;
+    if (entry.isManual) {
+      return () => showDialog<void>(
+            context: context,
+            builder: (_) =>
+                _MovementDetailDialog(product: widget.product, line: line),
+          );
+    }
     final id = entry.documentId;
     final document = entry.document;
     if (id == null || id.isEmpty || document == null) return null;
@@ -2211,204 +2264,250 @@ class _ProductHistoryDialogState
         constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
         child: Padding(
           padding: const EdgeInsets.all(AppTokens.s20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
+          child: FutureBuilder<List<ProductMovementEntry>>(
+            future: _future,
+            builder: (context, snap) {
+              final loading =
+                  snap.connectionState == ConnectionState.waiting;
+              final all = productMovementLines(
+                snap.data ?? const <ProductMovementEntry>[],
+                widget.product.stock,
+              );
+              final lines = _inRange(all);
+              final pdfButton = OutlinedButton.icon(
+                onPressed: loading || lines.isEmpty
+                    ? null
+                    : () => _printHistory(lines),
+                icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                label: const Text('PDF'),
+              );
+              // En pantallas angostas el filtro y el PDF bajan a su propia
+              // fila para no apretar el nombre del producto.
+              final wide = MediaQuery.sizeOf(context).width >= 720;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.history_rounded,
-                      color: AppTokens.primary),
-                  const SizedBox(width: AppTokens.s8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Historial del producto',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
+                  Row(
+                    children: [
+                      const Icon(Icons.history_rounded,
+                          color: AppTokens.primary),
+                      const SizedBox(width: AppTokens.s8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Historial del producto',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            Text(
+                              '${widget.product.name}'
+                              '${widget.product.sku != null ? "  ·  SKU ${widget.product.sku}" : ""}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                      color: AppTokens.mutedForeground),
+                            ),
+                          ],
                         ),
-                        Text(
-                          '${widget.product.name}'
-                          '${widget.product.sku != null ? "  ·  SKU ${widget.product.sku}" : ""}',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: AppTokens.mutedForeground),
-                        ),
+                      ),
+                      if (wide) ...[
+                        _rangeFilter(),
+                        const SizedBox(width: AppTokens.s8),
+                        pdfButton,
+                        const SizedBox(width: AppTokens.s4),
                       ],
+                      IconButton(
+                        onPressed: _refresh,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        tooltip: 'Actualizar',
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close, size: 20),
+                      ),
+                    ],
+                  ),
+                  if (!wide)
+                    Padding(
+                      padding: const EdgeInsets.only(top: AppTokens.s8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _rangeFilter(),
+                            ),
+                          ),
+                          pdfButton,
+                        ],
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: _refresh,
-                    icon: const Icon(Icons.refresh, size: 18),
-                    tooltip: 'Actualizar',
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, size: 20),
-                  ),
+                  const Divider(height: AppTokens.s16),
+                  Expanded(child: _body(snap, all, lines)),
                 ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _rangeFilter() => DateRangeFilterButton(
+        range: _range,
+        helpText: 'Historial desde – hasta',
+        onChanged: (range) => setState(() => _range = range),
+      );
+
+  Widget _body(
+    AsyncSnapshot<List<ProductMovementEntry>> snap,
+    List<ProductMovementLine> all,
+    List<ProductMovementLine> lines,
+  ) {
+    if (snap.connectionState == ConnectionState.waiting) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (snap.hasError) {
+      return Center(child: Text('Error: ${snap.error}'));
+    }
+    if (all.isEmpty) {
+      return const Center(
+        child: Text(
+          'Este producto aún no tiene movimientos.',
+          style: TextStyle(color: AppTokens.mutedForeground),
+        ),
+      );
+    }
+    final totalIn = lines
+        .where((l) => l.entry.isIncoming)
+        .fold<double>(0, (s, l) => s + l.entry.quantity);
+    final totalOut = lines
+        .where((l) => !l.entry.isIncoming)
+        .fold<double>(0, (s, l) => s + l.entry.quantity.abs());
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: AppTokens.s12),
+          child: Row(
+            children: [
+              Text(
+                '${lines.length} movimientos',
+                style: const TextStyle(color: AppTokens.mutedForeground),
               ),
-              const Divider(height: AppTokens.s16),
-              Expanded(
-                child: FutureBuilder<List<ProductMovementEntry>>(
-                  future: _future,
-                  builder: (context, snap) {
-                    if (snap.connectionState == ConnectionState.waiting) {
-                      return const Center(
-                          child: CircularProgressIndicator());
-                    }
-                    if (snap.hasError) {
-                      return Center(
-                        child: Text('Error: ${snap.error}'),
-                      );
-                    }
-                    final entries =
-                        snap.data ?? const <ProductMovementEntry>[];
-                    if (entries.isEmpty) {
-                      return Center(
-                        child: Text(
-                          'Este producto aún no tiene movimientos.',
-                          style: TextStyle(
-                              color: AppTokens.mutedForeground),
-                        ),
-                      );
-                    }
-                    final totalIn = entries
-                        .where((e) => e.isIncoming)
-                        .fold<double>(0, (s, e) => s + e.quantity);
-                    final totalOut = entries
-                        .where((e) => !e.isIncoming)
-                        .fold<double>(0, (s, e) => s + e.quantity.abs());
-                    final runningStocks = List<double>.filled(entries.length, 0);
-                    double currentStock = widget.product.stock;
-                    for (int i = 0; i < entries.length; i++) {
-                      runningStocks[i] = currentStock;
-                      currentStock -= entries[i].quantity;
-                    }
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: AppTokens.s12),
-                          child: Row(
-                            children: [
-                              Text(
-                                '${entries.length} movimientos',
-                                style: const TextStyle(
-                                    color: AppTokens.mutedForeground),
-                              ),
-                              const Spacer(),
-                              Text(
-                                'Entradas: ${qty(totalIn.toInt())}',
-                                style: const TextStyle(
-                                  color: AppTokens.success,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              Text(
-                                'Salidas: ${qty(totalOut.toInt())}',
-                                style: const TextStyle(
-                                  color: AppTokens.destructive,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              Text(
-                                'Stock actual: ${qty(widget.product.stock.toInt())}',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w800),
-                              ),
-                            ],
-                          ),
-                        ),
-                        // Column Headers Row
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: AppTokens.s8),
-                          child: Row(
-                            children: [
-                              const SizedBox(width: 44), // matches leading icon + spacing
-                              const Expanded(
-                                child: Text(
-                                  'Detalle / Concepto',
-                                  style: TextStyle(
-                                    color: AppTokens.mutedForeground,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                              SizedBox(
-                                width: 80,
-                                child: Text(
-                                  'Entradas',
-                                  textAlign: TextAlign.end,
-                                  style: TextStyle(
-                                    color: AppTokens.success.withValues(alpha: 0.85),
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: AppTokens.s12),
-                              SizedBox(
-                                width: 80,
-                                child: Text(
-                                  'Salidas',
-                                  textAlign: TextAlign.end,
-                                  style: TextStyle(
-                                    color: AppTokens.destructive.withValues(alpha: 0.85),
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: AppTokens.s12),
-                              const SizedBox(
-                                width: 80,
-                                child: Text(
-                                  'Stock',
-                                  textAlign: TextAlign.end,
-                                  style: TextStyle(
-                                    color: AppTokens.mutedForeground,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              // Columna del ojito (ver factura).
-                              const SizedBox(width: 44),
-                            ],
-                          ),
-                        ),
-                        const Divider(height: 1, color: AppTokens.border),
-                        Expanded(
-                          child: ListView.separated(
-                            itemCount: entries.length,
-                            separatorBuilder: (_, _) => const Divider(
-                              height: 1,
-                              color: AppTokens.border,
-                            ),
-                            itemBuilder: (context, i) => _MovementTile(
-                              entry: entries[i],
-                              runningStock: runningStocks[i],
-                              onView: _viewerFor(entries[i]),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
+              const Spacer(),
+              Text(
+                'Entradas: ${qty(totalIn.toInt())}',
+                style: const TextStyle(
+                  color: AppTokens.success,
+                  fontWeight: FontWeight.w700,
                 ),
+              ),
+              const SizedBox(width: 16),
+              Text(
+                'Salidas: ${qty(totalOut.toInt())}',
+                style: const TextStyle(
+                  color: AppTokens.destructive,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Text(
+                'Stock actual: ${qty(widget.product.stock.toInt())}',
+                style: const TextStyle(fontWeight: FontWeight.w800),
               ),
             ],
           ),
         ),
-      ),
+        // Column Headers Row
+        Padding(
+          padding: const EdgeInsets.only(bottom: AppTokens.s8),
+          child: Row(
+            children: [
+              const SizedBox(width: 44), // matches leading icon + spacing
+              const Expanded(
+                child: Text(
+                  'Detalle / Concepto',
+                  style: TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 80,
+                child: Text(
+                  'Entradas',
+                  textAlign: TextAlign.end,
+                  style: TextStyle(
+                    color: AppTokens.success.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppTokens.s12),
+              SizedBox(
+                width: 80,
+                child: Text(
+                  'Salidas',
+                  textAlign: TextAlign.end,
+                  style: TextStyle(
+                    color: AppTokens.destructive.withValues(alpha: 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppTokens.s12),
+              const SizedBox(
+                width: 80,
+                child: Text(
+                  'Stock',
+                  textAlign: TextAlign.end,
+                  style: TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              // Columna del ojito (ver factura o detalle del ajuste).
+              const SizedBox(width: 44),
+            ],
+          ),
+        ),
+        const Divider(height: 1, color: AppTokens.border),
+        Expanded(
+          child: lines.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No hay movimientos en esas fechas.',
+                    style: TextStyle(color: AppTokens.mutedForeground),
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: lines.length,
+                  separatorBuilder: (_, _) => const Divider(
+                    height: 1,
+                    color: AppTokens.border,
+                  ),
+                  itemBuilder: (context, i) => _MovementTile(
+                    entry: lines[i].entry,
+                    runningStock: lines[i].stockAfter,
+                    onView: _viewerFor(lines[i]),
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }
@@ -2423,7 +2522,7 @@ class _MovementTile extends StatelessWidget {
   final ProductMovementEntry entry;
   final double runningStock;
 
-  /// Abre la factura de origen. Null en ajustes, mermas y traslados.
+  /// Abre la factura de origen o el detalle del ajuste/merma/traslado.
   final VoidCallback? onView;
 
   @override
@@ -2431,6 +2530,7 @@ class _MovementTile extends StatelessWidget {
     final color = entry.isIncoming
         ? AppTokens.success
         : AppTokens.destructive;
+    final remarks = entry.remarks;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: AppTokens.s10),
       child: Row(
@@ -2479,18 +2579,24 @@ class _MovementTile extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${formatDateTime(entry.when)}'
-                  '${entry.reference != null ? "  ·  ${entry.reference}" : ""}',
+                  [
+                    formatDateTime(entry.when),
+                    ?entry.reference,
+                    if (entry.recordedBy != null) 'por ${entry.recordedBy}',
+                  ].join('  ·  '),
                   style: const TextStyle(
                     color: AppTokens.mutedForeground,
                     fontSize: 12,
                   ),
                 ),
-                if (entry.notes != null && entry.notes!.isNotEmpty)
+                // Motivo y comentario del ajuste.
+                if (remarks != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
                     child: Text(
-                      entry.notes!,
+                      remarks,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppTokens.mutedForeground,
                         fontSize: 11,
@@ -2599,12 +2705,164 @@ class _MovementTile extends StatelessWidget {
                 ? null
                 : IconButton(
                     onPressed: onView,
-                    tooltip: 'Ver factura',
+                    tooltip: entry.isManual ? 'Ver detalle' : 'Ver factura',
                     icon: const Icon(Icons.visibility_outlined, size: 18),
                     color: AppTokens.mutedForeground,
                     visualDensity: VisualDensity.compact,
                   ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Detalle de un ajuste, merma o traslado (el ojito del historial): motivo,
+/// comentario y quién lo hizo, con su comprobante para imprimir.
+class _MovementDetailDialog extends ConsumerWidget {
+  const _MovementDetailDialog({required this.product, required this.line});
+
+  final InventoryProduct product;
+  final ProductMovementLine line;
+
+  /// Igual que el PDF del historial: se arma dentro de `onLayout`.
+  Future<void> _print(BuildContext context, WidgetRef ref) async {
+    final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
+    try {
+      await Printing.layoutPdf(
+        name: 'ajuste-${product.sku ?? product.name}',
+        onLayout: (_) => const ProductHistoryPdfBuilder().buildMovementTicket(
+          productName: product.name,
+          sku: product.sku,
+          line: line,
+          branchName: branchName,
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo imprimir: $error')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final entry = line.entry;
+    final color =
+        entry.isIncoming ? AppTokens.success : AppTokens.destructive;
+    final signed = entry.isIncoming
+        ? '+${qty(entry.quantity)}'
+        : '-${qty(entry.quantity.abs())}';
+    return AlertDialog(
+      title: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              entry.isIncoming ? Icons.arrow_downward : Icons.arrow_upward,
+              color: color,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: AppTokens.s12),
+          Expanded(child: Text(entry.typeLabel)),
+        ],
+      ),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _DetailField(
+                'Producto',
+                product.sku == null
+                    ? product.name
+                    : '${product.name}  ·  SKU ${product.sku}',
+              ),
+              _DetailField('Fecha', formatDateTime(entry.when)),
+              _DetailField(
+                'Cantidad',
+                signed,
+                style: TextStyle(color: color, fontWeight: FontWeight.w800),
+              ),
+              _DetailField(
+                'Stock',
+                '${qty(line.stockBefore)}  →  ${qty(line.stockAfter)}',
+              ),
+              if (entry.amount > 0)
+                _DetailField(
+                  'Valor',
+                  '${money(entry.amount)}  (${money(entry.unitCost)} c/u)',
+                ),
+              const Divider(height: AppTokens.s24),
+              _DetailField('Motivo', entry.reason ?? '-'),
+              _DetailField(
+                'Comentario',
+                entry.notes ?? 'Sin comentario',
+                style: entry.notes == null
+                    ? const TextStyle(color: AppTokens.mutedForeground)
+                    : null,
+              ),
+              _DetailField(
+                'Realizado por',
+                entry.recordedBy ?? 'No registrado',
+                style: entry.recordedBy == null
+                    ? const TextStyle(color: AppTokens.mutedForeground)
+                    : const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: () => _print(context, ref),
+          icon: const Icon(Icons.print_outlined, size: 18),
+          label: const Text('Imprimir'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Fila "Etiqueta   valor" del detalle del movimiento.
+class _DetailField extends StatelessWidget {
+  const _DetailField(this.label, this.value, {this.style});
+
+  final String label;
+  final String value;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppTokens.s4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 110,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppTokens.mutedForeground,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(child: Text(value, style: style)),
         ],
       ),
     );
@@ -2624,6 +2882,13 @@ class _InventoryKpis extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Margen sobre el costo, como el "Margen %" del producto
+    // (precio = costo × (1 + margen)). Sin costo no hay sobre qué calcularlo.
+    final profit = totalPriceValuation - totalCostValuation;
+    final margin =
+        totalCostValuation > 0 ? profit / totalCostValuation : null;
+    final marginColor =
+        (margin ?? 0) < 0 ? AppTokens.destructive : AppTokens.success;
     final cards = [
       KPICard(
         label: 'Valor Total de Inventario',
@@ -2635,7 +2900,33 @@ class _InventoryKpis extends StatelessWidget {
         label: 'Valor Total (Venta)',
         value: money(totalPriceValuation),
         icon: Icons.monetization_on_outlined,
-        trend: 'Ingresos potenciales',
+        trend: margin == null
+            ? 'Ingresos potenciales'
+            : 'Ganancia potencial: ${money(profit)}',
+        isPositive: profit >= 0,
+        badge: margin == null
+            ? null
+            : Tooltip(
+                message: 'Margen sobre el costo: (venta - costo) ÷ costo',
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppTokens.s8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: marginColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(AppTokens.radiusS),
+                  ),
+                  child: Text(
+                    'Margen ${percent(margin)}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: marginColor,
+                    ),
+                  ),
+                ),
+              ),
       ),
       KPICard(
         label: 'Existencias Totales',

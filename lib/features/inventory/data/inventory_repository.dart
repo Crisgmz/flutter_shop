@@ -247,6 +247,8 @@ class InventoryProductInput {
     this.allowNegativeStock = false,
     this.imeis = const <String>[],
     this.imeiOnPurchase = false,
+    this.applyStock = true,
+    this.applyImeis = true,
     this.priceTier1,
     this.priceTier2,
     this.priceTier3,
@@ -295,6 +297,13 @@ class InventoryProductInput {
 
   /// Espeja `products.imei_on_purchase`: pedir IMEIs al comprarlo.
   final bool imeiOnPurchase;
+
+  /// [InventoryRepository.saveProduct]: si [stock] / [imeis] se escriben. El
+  /// formulario los manda en false cuando el campo está bloqueado
+  /// (Configuración → Inventario) o no se tocó, para no pisar con lo que
+  /// había al abrirlo.
+  final bool applyStock;
+  final bool applyImeis;
 
   final double? priceTier1;
   final double? priceTier2;
@@ -571,22 +580,43 @@ class InventoryRepository {
 
   /// Crea o actualiza el producto y devuelve su id. El POS lo usa para meter
   /// al carrito el producto que se acaba de crear dentro de la venta.
+  ///
+  /// El stock NUNCA se escribe directo: si [InventoryProductInput.applyStock],
+  /// la diferencia entra como ajuste (`inventory_movements`, con el usuario),
+  /// igual que "Ajustar stock", y queda en el historial del producto. Antes
+  /// guardar el formulario reponía el stock que había al abrirlo aunque en
+  /// el medio se hubiera vendido. Los IMEIs solo se escriben con
+  /// [InventoryProductInput.applyImeis], por lo mismo (un IMEI vendido
+  /// volvía a quedar disponible).
   Future<String> saveProduct(InventoryProductInput input) async {
     final branchId = await _currentBranchId();
     if (branchId == null) {
       throw Exception('No hay sucursal asignada para este usuario.');
     }
 
-    final payload = _buildProductPayload(input);
+    final payload = _buildProductPayload(input)..remove('stock');
+    if (!input.applyImeis) payload.remove('imeis');
+    final wantsStock = input.applyStock && !input.isService;
 
     if (input.id == null) {
       payload['branch_id'] = branchId;
+      payload['stock'] = 0;
+      payload['imeis'] ??= const <String>[];
       final row = await _client
           .from('products')
           .insert(payload)
           .select('id')
           .single();
-      return (row['id'] ?? '').toString();
+      final id = (row['id'] ?? '').toString();
+      if (wantsStock && input.stock != 0) {
+        await adjustStock(
+          productId: id,
+          currentStock: 0,
+          newStock: input.stock,
+          reason: 'Stock inicial',
+        );
+      }
+      return id;
     }
 
     await _client
@@ -594,6 +624,21 @@ class InventoryRepository {
         .update(payload)
         .eq('id', input.id!)
         .eq('branch_id', branchId);
+    if (wantsStock) {
+      // Contra el stock de AHORA, no el de cuando se abrió el formulario.
+      final current = await _client
+          .from('products')
+          .select('stock')
+          .eq('id', input.id!)
+          .eq('branch_id', branchId)
+          .single();
+      await adjustStock(
+        productId: input.id!,
+        currentStock: _toDouble(current['stock']),
+        newStock: input.stock,
+        reason: 'Edición del producto',
+      );
+    }
     return input.id!;
   }
 
@@ -917,27 +962,35 @@ class InventoryRepository {
   ///   - Anulaciones (venta `voided`) → la venta sale y el stock vuelve
   ///
   /// Cada venta, anulación y devolución lleva el cliente ("Genérico" si no
-  /// tenía), y cada compra su proveedor.
+  /// tenía), cada compra su proveedor y cada ajuste/merma/traslado el usuario
+  /// que lo registró.
+  ///
+  /// Trae el historial completo (paginado, hasta [_historyMaxRows] filas por
+  /// fuente): el filtro por fecha del diálogo y el PDF tienen que llegar a
+  /// movimientos viejos, y la columna Stock se reconstruye hacia atrás desde
+  /// el stock actual, así que no puede faltar ningún movimiento reciente.
   Future<List<ProductMovementEntry>> fetchProductHistory(
-    String productId, {
-    int limit = 200,
-  }) async {
+    String productId,
+  ) async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
     final entries = <ProductMovementEntry>[];
 
     // Ventas
-    final saleItems = await _client
-        .from('sale_items')
-        .select(
-          'quantity, line_total, created_at, sale_id, '
-          'sales(sale_number, sale_date, status, client_id, updated_at)',
-        )
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .order('created_at', ascending: false)
-        .limit(limit);
+    final saleItems = await _fetchPaged(
+      (from, to) => _client
+          .from('sale_items')
+          .select(
+            'quantity, line_total, created_at, sale_id, '
+            'sales(sale_number, sale_date, status, client_id, updated_at)',
+          )
+          .eq('branch_id', branchId)
+          .eq('product_id', productId)
+          .order('created_at', ascending: false)
+          .order('id')
+          .range(from, to),
+    );
 
     // Los nombres se buscan aparte y en bloque: los FK de clientes y
     // proveedores son compuestos (id, branch_id) y no conviene embeberlos.
@@ -956,28 +1009,34 @@ class InventoryRepository {
     }
 
     // Compras
-    final purchaseItems = await _client
-        .from('purchase_items')
-        .select(
-          'quantity, line_total, created_at, purchase_id, '
-          'purchases(purchase_number, purchase_date, status, supplier_id)',
-        )
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .order('created_at', ascending: false)
-        .limit(limit);
+    final purchaseItems = await _fetchPaged(
+      (from, to) => _client
+          .from('purchase_items')
+          .select(
+            'quantity, line_total, created_at, purchase_id, '
+            'purchases(purchase_number, purchase_date, status, supplier_id)',
+          )
+          .eq('branch_id', branchId)
+          .eq('product_id', productId)
+          .order('created_at', ascending: false)
+          .order('id')
+          .range(from, to),
+    );
 
     // Devoluciones
-    final returnItems = await _client
-        .from('return_items')
-        .select(
-          'quantity, line_total, created_at, return_id, '
-          'returns(return_number, return_date, client_id)',
-        )
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .order('created_at', ascending: false)
-        .limit(limit);
+    final returnItems = await _fetchPaged(
+      (from, to) => _client
+          .from('return_items')
+          .select(
+            'quantity, line_total, created_at, return_id, '
+            'returns(return_number, return_date, client_id)',
+          )
+          .eq('branch_id', branchId)
+          .eq('product_id', productId)
+          .order('created_at', ascending: false)
+          .order('id')
+          .range(from, to),
+    );
 
     final supplierIds = <String>{};
     for (final raw in purchaseItems) {
@@ -1093,15 +1152,41 @@ class InventoryRepository {
     }
 
     // Movimientos manuales (mermas/ajustes/traslados)
-    final movements = await _client
-        .from('inventory_movements')
-        .select(
-          'quantity, unit_cost, occurred_at, movement_type, reason, notes',
-        )
-        .eq('branch_id', branchId)
-        .eq('product_id', productId)
-        .order('occurred_at', ascending: false)
-        .limit(limit);
+    final movements = await _fetchPaged(
+      (from, to) => _client
+          .from('inventory_movements')
+          .select(
+            'quantity, unit_cost, occurred_at, movement_type, reason, notes, '
+            'recorded_by, created_by',
+          )
+          .eq('branch_id', branchId)
+          .eq('product_id', productId)
+          .order('occurred_at', ascending: false)
+          .order('id')
+          .range(from, to),
+    );
+
+    // Quién hizo cada ajuste. `recorded_by` lo pone la app; `created_by` (el
+    // trigger de auditoría) cubre los que se insertaron sin él.
+    String? userIdOf(Map row) =>
+        _nullIfEmpty(row['recorded_by']?.toString()) ??
+        _nullIfEmpty(row['created_by']?.toString());
+    final userIds = <String>{
+      for (final row in movements) ?userIdOf(row),
+    };
+    final userNames = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final rows = await _client
+          .from('profiles')
+          .select('id, full_name, email')
+          .inFilter('id', userIds.toList());
+      for (final raw in rows) {
+        final m = raw as Map;
+        final name = _nullIfEmpty(m['full_name']?.toString()) ??
+            _nullIfEmpty(m['email']?.toString());
+        if (name != null) userNames[m['id'].toString()] = name;
+      }
+    }
 
     for (final raw in movements) {
       final row = Map<String, dynamic>.from(raw as Map);
@@ -1120,8 +1205,13 @@ class InventoryRepository {
         kind: _movementKindFromType(type),
         quantity: isPositive ? qty : -qty,
         amount: qty * cost,
-        reference: type,
-        notes: row['reason']?.toString() ?? row['notes']?.toString(),
+        movementType: type,
+        // Antes se mostraba `reason ?? notes`: como el ajuste siempre trae
+        // motivo ("Conteo físico"), la nota que escribía el usuario nunca
+        // aparecía.
+        reason: _nullIfEmpty(row['reason']?.toString()),
+        notes: _nullIfEmpty(row['notes']?.toString()),
+        recordedBy: userNames[userIdOf(row)],
       ));
     }
 
@@ -1148,6 +1238,26 @@ class InventoryRepository {
 
     entries.sort((a, b) => b.when.compareTo(a.when));
     return entries;
+  }
+
+  /// Tope de filas por fuente del historial: protege el diálogo de un
+  /// producto con decenas de miles de líneas.
+  static const _historyMaxRows = 10000;
+
+  /// Trae todas las filas de una consulta en páginas de 1000 (el tope de
+  /// PostgREST), hasta [_historyMaxRows]. [page] arma la consulta del rango
+  /// pedido y debe ordenar por una llave única para no saltar filas.
+  Future<List<Map<String, dynamic>>> _fetchPaged(
+    Future<List<Map<String, dynamic>>> Function(int from, int to) page,
+  ) async {
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    while (rows.length < _historyMaxRows) {
+      final chunk = await page(rows.length, rows.length + pageSize - 1);
+      rows.addAll(chunk);
+      if (chunk.length < pageSize) break;
+    }
+    return rows;
   }
 
   Future<String?> _currentBranchId() async {
@@ -1218,6 +1328,34 @@ ProductMovementKind _movementKindFromType(String type) {
   }
 }
 
+/// Nombre legible de `inventory_movements.movement_type`.
+String _movementTypeLabel(String type) {
+  switch (type) {
+    case 'adjustment_in':
+      return 'Ajuste de entrada';
+    case 'adjustment_out':
+      return 'Ajuste de salida';
+    case 'opening':
+      return 'Inventario inicial';
+    case 'recount':
+      return 'Reconteo';
+    case 'waste':
+      return 'Merma';
+    case 'breakage':
+      return 'Rotura';
+    case 'expired':
+      return 'Producto vencido';
+    case 'kitchen_return':
+      return 'Devolución de cocina';
+    case 'transfer_in':
+      return 'Traslado (entrada)';
+    case 'transfer_out':
+      return 'Traslado (salida)';
+    default:
+      return type;
+  }
+}
+
 /// Documento que se abre con el ojito del historial.
 enum ProductMovementDocument { sale, saleReturn, purchase }
 
@@ -1228,10 +1366,13 @@ class ProductMovementEntry {
     required this.quantity,
     required this.amount,
     this.reference,
+    this.reason,
     this.notes,
     this.party,
     this.documentId,
     this.document,
+    this.movementType,
+    this.recordedBy,
   });
 
   final DateTime when;
@@ -1240,7 +1381,12 @@ class ProductMovementEntry {
   /// Cantidad con signo: positivo = entrada, negativo = salida.
   final double quantity;
   final double amount;
+
+  /// Número del documento (FA-000110, compra, devolución).
   final String? reference;
+
+  /// Motivo del ajuste ("Conteo físico") y la nota que escribió el usuario.
+  final String? reason;
   final String? notes;
 
   /// Cliente (venta, anulación, devolución) o proveedor (compra).
@@ -1251,7 +1397,55 @@ class ProductMovementEntry {
   final String? documentId;
   final ProductMovementDocument? document;
 
+  /// `inventory_movements.movement_type` crudo. Solo en movimientos manuales.
+  final String? movementType;
+
+  /// Nombre de quien registró el movimiento manual.
+  final String? recordedBy;
+
   bool get isIncoming => quantity > 0;
+
+  /// Ajuste, merma o traslado (sale de `inventory_movements`).
+  bool get isManual => movementType != null;
+
+  /// "Ajuste de entrada", "Merma"... o la etiqueta corta en documentos.
+  String get typeLabel =>
+      movementType == null ? kind.label : _movementTypeLabel(movementType!);
+
+  /// Costo unitario con que se valoró el movimiento manual.
+  double get unitCost => quantity == 0 ? 0 : amount / quantity.abs();
+
+  /// Motivo y nota juntos, para la línea en cursiva del historial.
+  String? get remarks {
+    final parts = [reason, notes].whereType<String>().toList();
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+}
+
+/// Un movimiento con el stock que quedó después de aplicarlo.
+class ProductMovementLine {
+  const ProductMovementLine(this.entry, this.stockAfter);
+
+  final ProductMovementEntry entry;
+  final double stockAfter;
+
+  double get stockBefore => stockAfter - entry.quantity;
+}
+
+/// Reconstruye la columna Stock caminando hacia atrás desde [currentStock].
+/// [entries] viene del más nuevo al más viejo, como lo devuelve
+/// `fetchProductHistory`.
+List<ProductMovementLine> productMovementLines(
+  List<ProductMovementEntry> entries,
+  double currentStock,
+) {
+  var stock = currentStock;
+  final lines = <ProductMovementLine>[];
+  for (final entry in entries) {
+    lines.add(ProductMovementLine(entry, stock));
+    stock -= entry.quantity;
+  }
+  return lines;
 }
 
 String? _nullIfEmpty(String? value) {

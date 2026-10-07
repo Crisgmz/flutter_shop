@@ -213,6 +213,18 @@ final salesClientsProvider = FutureProvider<List<SalesClient>>((ref) async {
   return repository.fetchClients();
 });
 
+/// Saldo a favor (notas de crédito) del cliente elegido en el POS. Se
+/// invalida al cobrar y al dar una nota de crédito.
+final clientCreditBalanceProvider =
+    FutureProvider.autoDispose.family<double, String>((ref, clientId) {
+  return ref.watch(salesRepositoryProvider).fetchClientCreditBalance(clientId);
+});
+
+/// Si la base ya soporta saldo a favor (migración 98).
+final creditNotesReadyProvider = FutureProvider<bool>((ref) {
+  return ref.watch(salesRepositoryProvider).creditNotesReady();
+});
+
 /// Productos filtrados por búsqueda + categoría, memoizado.
 ///
 /// Antes el POS llamaba `_filterProducts(...)` en cada `build()` — un

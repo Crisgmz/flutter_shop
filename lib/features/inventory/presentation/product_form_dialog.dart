@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -198,9 +199,23 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
     super.dispose();
   }
 
+  /// Stock e IMEI se escriben aquí solo si el dueño lo permitió en
+  /// Configuración → Inventario. Bloqueados de fábrica (y mientras la
+  /// configuración no cargue).
+  bool get _stockEditable =>
+      ref.read(appSettingsProvider).valueOrNull?.invAllowProductStockEdit ??
+      false;
+  bool get _imeiEditable =>
+      ref.read(appSettingsProvider).valueOrNull?.invAllowProductImeiEdit ??
+      false;
+
   @override
   Widget build(BuildContext context) {
     final isMobile = ResponsiveLayout.isMobile(context);
+    // Re-dibuja cuando llega la configuración.
+    ref.watch(appSettingsProvider);
+    final stockEditable = _stockEditable;
+    final imeiEditable = _imeiEditable;
 
     return AlertDialog(
       title: Text(
@@ -270,12 +285,22 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                     Expanded(
                       child: TextField(
                         controller: _imeiController,
+                        enabled: imeiEditable,
                         decoration: InputDecoration(
                           labelText: _imeis.isEmpty
                               ? 'IMEI'
                               : 'IMEI (${_imeis.length} agregado'
                                   '${_imeis.length == 1 ? '' : 's'})',
                           hintText: 'Escribe un IMEI y presiona +',
+                          helperText: imeiEditable
+                              ? null
+                              : 'Bloqueado: los IMEI entran por Compras. El '
+                                  'dueño lo puede abrir en Configuración → '
+                                  'Inventario.',
+                          helperMaxLines: 2,
+                          prefixIcon: imeiEditable
+                              ? null
+                              : const Icon(Icons.lock_outline, size: 18),
                         ),
                         onSubmitted: (_) => _addImei(),
                       ),
@@ -284,7 +309,7 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                     IconButton(
                       tooltip: 'Agregar IMEI',
                       icon: const Icon(Icons.add_circle, color: AppTokens.primary),
-                      onPressed: _addImei,
+                      onPressed: imeiEditable ? _addImei : null,
                     ),
                   ],
                 ),
@@ -298,7 +323,9 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                         Chip(
                           label: Text(imei,
                               style: const TextStyle(fontSize: 12)),
-                          onDeleted: () => setState(() => _imeis.remove(imei)),
+                          onDeleted: imeiEditable
+                              ? () => setState(() => _imeis.remove(imei))
+                              : null,
                           deleteIcon: const Icon(Icons.close, size: 16),
                           materialTapTargetSize:
                               MaterialTapTargetSize.shrinkWrap,
@@ -457,10 +484,21 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                   _formRow(isMobile, [
                     TextFormField(
                       controller: _stockController,
+                      enabled: stockEditable,
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
-                      decoration: const InputDecoration(labelText: 'Stock'),
+                      decoration: InputDecoration(
+                        labelText: 'Stock',
+                        helperText: stockEditable
+                            ? null
+                            : 'Bloqueado: se cambia con Compras o con '
+                                '"Ajustar stock".',
+                        helperMaxLines: 2,
+                        prefixIcon: stockEditable
+                            ? null
+                            : const Icon(Icons.lock_outline, size: 18),
+                      ),
                       validator: (value) {
                         final parsed = double.tryParse(value ?? '');
                         if (parsed == null) return 'Stock inválido';
@@ -593,6 +631,17 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
   void _submit() {
     if (!_formKey.currentState!.validate()) return;
 
+    // Solo se manda lo que el usuario cambió y tenía permiso de cambiar: el
+    // resto lo deja como está en la base (el stock o los IMEIs pudieron
+    // moverse por una venta mientras el formulario estaba abierto).
+    final initial = widget.initial;
+    final typedStock = _isService ? 0.0 : double.parse(_stockController.text);
+    final stockChanged =
+        initial == null ? typedStock != 0 : typedStock != initial.stock;
+    final imeisChanged = initial == null
+        ? _imeis.isNotEmpty
+        : !listEquals(_imeis, initial.imeis);
+
     final input = InventoryProductInput(
       id: widget.initial?.id,
       name: _nameController.text,
@@ -619,6 +668,8 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
       trackInventory: _trackInventory,
       imeis: List<String>.from(_imeis),
       imeiOnPurchase: _imeiOnPurchase,
+      applyStock: _stockEditable && stockChanged,
+      applyImeis: _imeiEditable && imeisChanged,
       priceTier1: _parseTier(_priceTierControllers[0].text),
       priceTier2: _parseTier(_priceTierControllers[1].text),
       priceTier3: _parseTier(_priceTierControllers[2].text),

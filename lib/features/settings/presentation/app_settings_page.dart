@@ -1272,6 +1272,26 @@ class _InventorySection extends StatelessWidget {
               'negativo.',
         ),
         _BoolRow(
+          label: 'Permitir cambiar el stock desde "Editar producto"',
+          column: 'inv_allow_product_stock_edit',
+          value: settings.invAllowProductStockEdit,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+          helper: 'Apagado (recomendado): el campo Stock viene bloqueado y '
+              'el stock solo cambia con Compras o con "Ajustar stock", que '
+              'deja en el historial quién lo hizo y por qué. Prendido, el '
+              'cambio también queda como ajuste en el historial.',
+        ),
+        _BoolRow(
+          label: 'Permitir escribir IMEIs desde "Editar producto"',
+          column: 'inv_allow_product_imei_edit',
+          value: settings.invAllowProductImeiEdit,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+          helper: 'Apagado (recomendado): los IMEIs entran por Compras '
+              '(con "Agregar IMEI en la compra" en el producto).',
+        ),
+        _BoolRow(
           label: 'Resaltar artículos en stock mínimo',
           column: 'inv_highlight_min_stock',
           value: settings.invHighlightMinStock,

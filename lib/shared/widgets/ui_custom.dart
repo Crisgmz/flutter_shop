@@ -13,6 +13,9 @@ class KPICard extends StatelessWidget {
   final Color? backgroundColor;
   final VoidCallback? onTap;
 
+  /// Etiqueta pequeña pegada al título (por ejemplo, el margen %).
+  final Widget? badge;
+
   const KPICard({
     super.key,
     required this.label,
@@ -22,6 +25,7 @@ class KPICard extends StatelessWidget {
     this.isPositive = true,
     this.backgroundColor,
     this.onTap,
+    this.badge,
   });
 
   @override
@@ -64,16 +68,26 @@ class KPICard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: subColor,
-                        letterSpacing: 0.2,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    child: () {
+                      final title = Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: subColor,
+                          letterSpacing: 0.2,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      );
+                      if (badge == null) return title;
+                      return Row(
+                        children: [
+                          Flexible(child: title),
+                          const SizedBox(width: AppTokens.s8),
+                          badge!,
+                        ],
+                      );
+                    }(),
                   ),
                   Container(
                     padding: const EdgeInsets.all(AppTokens.s8),
@@ -362,11 +376,17 @@ class FlexTableColumn {
     required this.label,
     this.flex = 1,
     this.numeric = false,
+    this.minWidth,
   });
 
   final String label;
   final int flex;
   final bool numeric;
+
+  /// Ancho mínimo en px (padding incluido). La columna sigue repartiendo
+  /// espacio con [flex], pero en pantallas angostas no baja de aquí y las
+  /// demás ceden: sirve para montos que no deben partirse en renglones.
+  final double? minWidth;
 }
 
 class FlexTable extends StatelessWidget {
@@ -393,7 +413,12 @@ class FlexTable extends StatelessWidget {
   Widget build(BuildContext context) {
     final colWidths = <int, TableColumnWidth>{
       for (int i = 0; i < columns.length; i++)
-        i: FlexColumnWidth(columns[i].flex.toDouble()),
+        i: columns[i].minWidth == null
+            ? FlexColumnWidth(columns[i].flex.toDouble())
+            : MaxColumnWidth(
+                FlexColumnWidth(columns[i].flex.toDouble()),
+                FixedColumnWidth(columns[i].minWidth!),
+              ),
     };
 
     return Table(
