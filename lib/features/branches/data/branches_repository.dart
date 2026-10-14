@@ -1,4 +1,52 @@
+import 'dart:math';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// El código de sucursal ya existe. `branches.code` es único en TODA la base
+/// (la comparten todos los negocios), así que puede ser de otro negocio que
+/// este usuario no ve.
+class BranchCodeTakenException implements Exception {
+  const BranchCodeTakenException(this.code);
+  final String code;
+
+  @override
+  String toString() =>
+      'El código "$code" ya lo usa otra sucursal del sistema (puede ser de '
+      'otro negocio). Escribe otro o déjalo vacío para generarlo solo.';
+}
+
+/// Corre [save] con el código de la sucursal. Sin código ([typedCode] vacío)
+/// genera uno y, si por casualidad ya existe, reintenta con otro; con un
+/// código escrito que ya existe lanza [BranchCodeTakenException] en vez del
+/// error crudo de Postgres (23505 en `branches_code_key`).
+Future<T> saveWithBranchCode<T>(
+  String typedCode,
+  Future<T> Function(String code) save, {
+  Random? random,
+}) async {
+  final typed = typedCode.trim().toUpperCase();
+  final auto = typed.isEmpty;
+  for (var attempt = 0; ; attempt++) {
+    final code = auto ? generateBranchCode(random) : typed;
+    try {
+      return await save(code);
+    } on PostgrestException catch (e) {
+      final duplicateCode =
+          e.code == '23505' && e.message.contains('branches_code_key');
+      if (!duplicateCode) rethrow;
+      if (!auto) throw BranchCodeTakenException(typed);
+      if (attempt >= 4) rethrow;
+    }
+  }
+}
+
+/// Código automático para una sucursal nueva sin código, con el mismo
+/// formato que las que crea el alta del negocio ("B-6874CD7E").
+String generateBranchCode([Random? random]) {
+  final rnd = random ?? Random.secure();
+  const hex = '0123456789ABCDEF';
+  return 'B-${List.generate(8, (_) => hex[rnd.nextInt(16)]).join()}';
+}
 
 class BranchEntity {
   BranchEntity({
@@ -234,9 +282,15 @@ class BranchesRepository {
         .toList(growable: false);
   }
 
-  Future<String> saveBranch(BranchInput input) async {
+  /// Crea o actualiza la sucursal (ver [saveWithBranchCode]).
+  Future<String> saveBranch(BranchInput input) => saveWithBranchCode(
+        input.code,
+        (code) => _saveBranchWithCode(input, code),
+      );
+
+  Future<String> _saveBranchWithCode(BranchInput input, String code) async {
     final payload = <String, dynamic>{
-      'code': input.code.trim().toUpperCase(),
+      'code': code,
       'name': input.name.trim(),
       'address': _nullIfEmpty(input.address),
       'phone': _nullIfEmpty(input.phone),

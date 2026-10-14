@@ -399,17 +399,27 @@ class _BranchesPageState extends ConsumerState<BranchesPage> {
   Future<void> _onCreateBranch() async {
     final input = await showDialog<BranchInput>(
       context: context,
-      builder: (_) => const _BranchDialog(),
+      builder: (_) => _BranchDialog(takenCodes: _takenCodes()),
     );
     if (input == null || !mounted) return;
 
     await _saveBranch(input, success: 'Sucursal creada');
   }
 
+  /// Códigos de las sucursales de este negocio, para avisar antes de guardar.
+  Set<String> _takenCodes({String? exceptId}) => {
+        for (final b in ref.read(branchesListProvider).valueOrNull ??
+            const <BranchEntity>[])
+          if (b.id != exceptId) b.code.trim().toUpperCase(),
+      };
+
   Future<void> _onEditBranch(BranchEntity branch) async {
     final input = await showDialog<BranchInput>(
       context: context,
-      builder: (_) => _BranchDialog(branch: branch),
+      builder: (_) => _BranchDialog(
+        branch: branch,
+        takenCodes: _takenCodes(exceptId: branch.id),
+      ),
     );
     if (input == null || !mounted) return;
 
@@ -427,6 +437,24 @@ class _BranchesPageState extends ConsumerState<BranchesPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(success)));
+    } on BranchCodeTakenException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString())),
+      );
+      // Se vuelve a abrir con lo que escribió: solo tiene que cambiar el
+      // código (antes el cuadro ya se había cerrado y se perdía todo).
+      final retry = await showDialog<BranchInput>(
+        context: context,
+        builder: (_) => _BranchDialog(
+          draft: input,
+          takenCodes: _takenCodes(exceptId: input.id),
+          codeError: 'Ese código ya existe en el sistema. Usa otro o déjalo '
+              'vacío.',
+        ),
+      );
+      if (retry == null || !mounted) return;
+      await _saveBranch(retry, success: success);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -617,9 +645,23 @@ class _BranchKpis extends StatelessWidget {
 }
 
 class _BranchDialog extends StatefulWidget {
-  const _BranchDialog({this.branch});
+  const _BranchDialog({
+    this.branch,
+    this.draft,
+    this.takenCodes = const {},
+    this.codeError,
+  });
 
   final BranchEntity? branch;
+
+  /// Lo que el usuario había escrito, al reabrir tras un código repetido.
+  final BranchInput? draft;
+
+  /// Códigos de las otras sucursales del negocio (en mayúsculas).
+  final Set<String> takenCodes;
+
+  /// Aviso sobre el código al reabrir (lo usa otro negocio).
+  final String? codeError;
 
   @override
   State<_BranchDialog> createState() => _BranchDialogState();
@@ -638,13 +680,44 @@ class _BranchDialogState extends State<_BranchDialog> {
   void initState() {
     super.initState();
     final branch = widget.branch;
-    _codeController = TextEditingController(text: branch?.code ?? '');
-    _nameController = TextEditingController(text: branch?.name ?? '');
-    _addressController = TextEditingController(text: branch?.address ?? '');
-    _phoneController = TextEditingController(text: branch?.phone ?? '');
-    _isActive = branch?.isActive ?? true;
-    _isMain = branch?.isMain ?? false;
+    final draft = widget.draft;
+    _codeController =
+        TextEditingController(text: draft?.code ?? branch?.code ?? '');
+    _nameController =
+        TextEditingController(text: draft?.name ?? branch?.name ?? '');
+    _addressController =
+        TextEditingController(text: draft?.address ?? branch?.address ?? '');
+    _phoneController =
+        TextEditingController(text: draft?.phone ?? branch?.phone ?? '');
+    _isActive = draft?.isActive ?? branch?.isActive ?? true;
+    _isMain = draft?.isMain ?? branch?.isMain ?? false;
+    _codeError = widget.codeError;
   }
+
+  /// Error del código que vino de afuera; se borra al cambiarlo.
+  String? _codeError;
+
+  bool get _isNew => (widget.draft?.id ?? widget.branch?.id) == null;
+
+  /// Opcional: vacío se genera solo al guardar. Si ya lo usa otra sucursal
+  /// de este negocio se avisa aquí; si es de otro negocio lo dice la base.
+  String? _validateCode(String? value) {
+    final code = (value ?? '').trim().toUpperCase();
+    if (code.isEmpty) {
+      return _isNew ? null : 'Campo requerido';
+    }
+    if (widget.takenCodes.contains(code)) {
+      return 'Ya tienes otra sucursal con ese código';
+    }
+    return null;
+  }
+
+  InputDecoration get _codeDecoration => InputDecoration(
+        labelText: _isNew ? 'Código (opcional)' : 'Código',
+        helperText: _isNew ? 'Vacío = se genera solo' : null,
+        errorText: _codeError,
+        errorMaxLines: 2,
+      );
 
   @override
   void dispose() {
@@ -672,14 +745,12 @@ class _BranchDialogState extends State<_BranchDialog> {
                 ...[
                   TextFormField(
                     controller: _codeController,
-                    decoration: const InputDecoration(labelText: 'Código'),
+                    decoration: _codeDecoration,
                     textCapitalization: TextCapitalization.characters,
-                    validator: (value) {
-                      if ((value ?? '').trim().isEmpty) {
-                        return 'Campo requerido';
-                      }
-                      return null;
+                    onChanged: (_) {
+                      if (_codeError != null) setState(() => _codeError = null);
                     },
+                    validator: _validateCode,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -699,14 +770,14 @@ class _BranchDialogState extends State<_BranchDialog> {
                     Expanded(
                       child: TextFormField(
                         controller: _codeController,
-                        decoration: const InputDecoration(labelText: 'Código'),
+                        decoration: _codeDecoration,
                         textCapitalization: TextCapitalization.characters,
-                        validator: (value) {
-                          if ((value ?? '').trim().isEmpty) {
-                            return 'Campo requerido';
+                        onChanged: (_) {
+                          if (_codeError != null) {
+                            setState(() => _codeError = null);
                           }
-                          return null;
                         },
+                        validator: _validateCode,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -767,7 +838,7 @@ class _BranchDialogState extends State<_BranchDialog> {
 
     Navigator.of(context).pop(
       BranchInput(
-        id: widget.branch?.id,
+        id: widget.draft?.id ?? widget.branch?.id,
         code: _codeController.text.trim(),
         name: _nameController.text.trim(),
         address: _addressController.text.trim(),
