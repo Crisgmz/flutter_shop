@@ -8,6 +8,8 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../fiscal_documents/data/fiscal_labels.dart'
+    show paymentBreakdownLabel;
 import '../../inventory/data/file_io_helper.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../shell/presentation/shell_providers.dart'
@@ -246,7 +248,9 @@ class TaxesPage extends ConsumerWidget {
               columns: const [
                 DataColumn(label: Text('Fecha')),
                 DataColumn(label: Text('Cliente')),
+                DataColumn(label: Text('RNC')),
                 DataColumn(label: Text('NCF')),
+                DataColumn(label: Text('Método de pago')),
                 DataColumn(label: Text('Total'), numeric: true),
                 DataColumn(label: Text('ITBIS'), numeric: true),
               ],
@@ -257,10 +261,12 @@ class TaxesPage extends ConsumerWidget {
                       cells: [
                         DataCell(Text(formatDate(row.saleDate))),
                         DataCell(Text(row.clientName)),
+                        DataCell(Text(row.clientDocument ?? '-')),
                         DataCell(Text(
                           row.ncf ?? '-',
                           style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
                         )),
+                        DataCell(Text(paymentBreakdownLabel(row.paymentBreakdown))),
                         DataCell(Text(money(row.totalAmount))),
                         DataCell(Text(money(row.taxAmount))),
                       ],

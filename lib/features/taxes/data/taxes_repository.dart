@@ -1,5 +1,8 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../fiscal_documents/data/fiscal_documents_repository.dart'
+    show FiscalSalePayment, fetchPaymentsBySale, salePaymentBreakdown;
+
 class TaxesDateRange {
   const TaxesDateRange({required this.start, required this.end});
 
@@ -34,6 +37,10 @@ class TaxSaleRecord {
     required this.totalAmount,
     required this.taxAmount,
     required this.dgiiStatus,
+    this.clientDocument,
+    this.saleNumber,
+    this.status,
+    this.payments = const [],
   });
 
   final DateTime saleDate;
@@ -44,10 +51,31 @@ class TaxSaleRecord {
   final double taxAmount;
   final String dgiiStatus;
 
+  /// RNC o cédula del cliente (el mismo dato que usa el 607 de la DGII).
+  final String? clientDocument;
+  final String? saleNumber;
+  final String? status;
+  final List<FiscalSalePayment> payments;
+
+  /// Cómo se pagó al vender (ver `salePaymentBreakdown`). Vacío si la venta
+  /// no está cobrada ni a crédito (ej. una cuenta guardada).
+  Map<String, double> get paymentBreakdown {
+    final saleStatus = status;
+    if (saleStatus != 'completed' && saleStatus != 'credit') return const {};
+    return salePaymentBreakdown(
+      total: totalAmount,
+      saleNumber: saleNumber,
+      saleDate: saleDate,
+      saleStatus: saleStatus!,
+      payments: payments,
+    );
+  }
+
   factory TaxSaleRecord.fromMap(Map<String, dynamic> map) {
     final client = Map<String, dynamic>.from(
       (map['clients'] as Map?) ?? const <String, dynamic>{},
     );
+    final document = client['document_number']?.toString().trim() ?? '';
 
     return TaxSaleRecord(
       saleDate:
@@ -59,6 +87,14 @@ class TaxSaleRecord {
       totalAmount: _toDouble(map['total_amount']),
       taxAmount: _toDouble(map['tax_amount']),
       dgiiStatus: (map['dgii_status'] ?? '').toString(),
+      clientDocument: document.isEmpty ? null : document,
+      saleNumber: map['sale_number']?.toString(),
+      status: map['status']?.toString(),
+      payments: [
+        for (final raw in (map['payments'] as List?) ?? const [])
+          if (raw is Map)
+            FiscalSalePayment.fromMap(Map<String, dynamic>.from(raw)),
+      ],
     );
   }
 }
@@ -226,11 +262,12 @@ class TaxesRepository {
   String build607Csv(List<TaxSaleRecord> rows) {
     final buffer = StringBuffer();
     buffer.writeln(
-      'fecha,cliente,tipo_comprobante,ncf,total,itbis,estado_dgii',
+      'fecha,cliente,rnc,tipo_comprobante,ncf,metodo_pago,total,itbis,estado_dgii',
     );
     for (final row in rows) {
+      final methods = row.paymentBreakdown.keys.join('+');
       buffer.writeln(
-        '${_escapeCsv(_date(row.saleDate))},${_escapeCsv(row.clientName)},${_escapeCsv(row.receiptType)},${_escapeCsv(row.ncf ?? '')},${row.totalAmount.toStringAsFixed(2)},${row.taxAmount.toStringAsFixed(2)},${_escapeCsv(row.dgiiStatus)}',
+        '${_escapeCsv(_date(row.saleDate))},${_escapeCsv(row.clientName)},${_escapeCsv(row.clientDocument ?? '')},${_escapeCsv(row.receiptType)},${_escapeCsv(row.ncf ?? '')},${_escapeCsv(methods)},${row.totalAmount.toStringAsFixed(2)},${row.taxAmount.toStringAsFixed(2)},${_escapeCsv(row.dgiiStatus)}',
       );
     }
     return buffer.toString();
@@ -247,30 +284,53 @@ class TaxesRepository {
     return buffer.toString();
   }
 
+  /// Ventas del período, de 1000 en 1000. Antes había un tope de 500: en un
+  /// mes con más ventas el 607 (y los totales) salían incompletos sin avisar.
   Future<List<TaxSaleRecord>> _fetchSales(
     String branchId,
     TaxesDateRange range,
   ) async {
-    final startIso = _atStartOfDay(range.start).toIso8601String();
-    final endIso = _atEndExclusive(range.end).toIso8601String();
+    // En UTC: sin la zona, el servidor leía la medianoche local como UTC y
+    // el rango se corría 4 horas (se perdía la noche del último día).
+    final startIso = _atStartOfDay(range.start).toUtc().toIso8601String();
+    final endIso = _atEndExclusive(range.end).toUtc().toIso8601String();
 
-    final rows = await _client
-        .from('sales')
-        .select(
-          'sale_date, receipt_type, ncf, total_amount, tax_amount, dgii_status, clients(full_name)',
-        )
-        .eq('branch_id', branchId)
-        .neq('status', 'voided')
-        .gte('sale_date', startIso)
-        .lt('sale_date', endIso)
-        .order('sale_date', ascending: false)
-        .limit(500);
+    const pageSize = 1000;
+    final rows = <Map<String, dynamic>>[];
+    var offset = 0;
+    while (true) {
+      final page = await _client
+          .from('sales')
+          .select(
+            'id, sale_date, sale_number, status, receipt_type, ncf, '
+            'total_amount, tax_amount, dgii_status, '
+            'clients(full_name, document_number)',
+          )
+          .eq('branch_id', branchId)
+          .neq('status', 'voided')
+          .gte('sale_date', startIso)
+          .lt('sale_date', endIso)
+          .order('sale_date', ascending: false)
+          .order('id', ascending: false)
+          .range(offset, offset + pageSize - 1);
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
 
-    return rows
-        .map(
-          (row) => TaxSaleRecord.fromMap(Map<String, dynamic>.from(row as Map)),
-        )
-        .toList(growable: false);
+    // Los pagos aparte y por id: unidos a esta consulta, con la RLS, la
+    // consulta podía recorrer todos los pagos de la sucursal (57014).
+    final payments = await fetchPaymentsBySale(
+      _client,
+      rows.map((row) => row['id'].toString()),
+    );
+    return [
+      for (final row in rows)
+        TaxSaleRecord.fromMap({
+          ...row,
+          'payments': payments[row['id'].toString()] ?? const [],
+        }),
+    ];
   }
 
   Future<List<TaxPurchaseRecord>> _fetchPurchases(

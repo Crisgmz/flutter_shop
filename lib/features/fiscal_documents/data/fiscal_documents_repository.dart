@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/supabase/select_in.dart';
 import 'fiscal_consumo_summary.dart';
 
 class FiscalDocument implements FiscalSummarySource {
@@ -349,6 +350,28 @@ Map<String, double> salePaymentBreakdown({
   return byMethod;
 }
 
+/// Pagos de cada venta (`sale_id` → filas de `payments`), buscados por id en
+/// grupos (ver `selectIn`). Nunca unir `payments` dentro de la consulta de
+/// ventas o comprobantes: con la RLS, Postgres puede resolver esa unión
+/// recorriendo todo el historial y la consulta muere por tiempo (57014).
+Future<Map<String, List<Map<String, dynamic>>>> fetchPaymentsBySale(
+  SupabaseClient client,
+  Iterable<String> saleIds,
+) async {
+  final rows = await selectIn(
+    client,
+    table: 'payments',
+    columns: 'sale_id, payment_method, amount, paid_at, reference',
+    column: 'sale_id',
+    values: saleIds,
+  );
+  final bySale = <String, List<Map<String, dynamic>>>{};
+  for (final row in rows) {
+    bySale.putIfAbsent(row['sale_id'].toString(), () => []).add(row);
+  }
+  return bySale;
+}
+
 /// Venta con NCF y sus pagos. El 607 sale de `sales` (no de
 /// `fiscal_documents`): con esto se le pone el método de pago a cada fila y
 /// se arma su resumen.
@@ -435,8 +458,11 @@ class FiscalDocumentsRepository {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
+    // Sin unir `sales`/`payments` aquí: con esa unión la consulta de los
+    // 100 más recientes se iba a todo el historial y moría por tiempo
+    // (57014). La venta y los pagos se buscan después, por id.
     const pageSize = 1000;
-    final docs = <FiscalDocument>[];
+    final rows = <Map<String, dynamic>>[];
     var offset = 0;
     while (true) {
       var query = _client
@@ -449,9 +475,7 @@ class FiscalDocumentsRepository {
             'subtotal, discount_amount, taxable_amount, exempt_amount, tax_amount, '
             'service_charge_amount, total_amount, '
             'ecf_status, alanube_document_id, ecf_tracking_number, ecf_security_code, '
-            'ecf_signed_at, public_url, xml_url, pdf_url, submitted_at, accepted_at, last_error, '
-            'sales(sale_number, sale_date, status, '
-            'payments(payment_method, amount, paid_at, reference))',
+            'ecf_signed_at, public_url, xml_url, pdf_url, submitted_at, accepted_at, last_error',
           )
           .eq('branch_id', branchId);
 
@@ -466,22 +490,59 @@ class FiscalDocumentsRepository {
       if (from != null) query = query.gte('issued_at', _dayStartUtc(from));
       if (to != null) query = query.lt('issued_at', _nextDayStartUtc(to));
 
-      final remaining = limit == null ? pageSize : limit - docs.length;
-      final take = remaining < pageSize ? remaining : pageSize;
-      final rows = await query
-          .order('issued_at', ascending: false)
+      if (limit != null) {
+        // Solo por fecha y con NULLS FIRST (issued_at nunca es nulo): es el
+        // orden del índice (branch_id, issued_at desc), así los 100 más
+        // recientes salen de él sin ordenar toda la sucursal. El
+        // `desc.nullslast` que manda postgrest por defecto no lo usa.
+        final page = await query
+            .order('issued_at', ascending: false, nullsFirst: true)
+            .limit(limit);
+        rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+        break;
+      }
+
+      // Paginando hace falta un desempate fijo; el rango ya acota las filas.
+      final page = await query
+          .order('issued_at', ascending: false, nullsFirst: true)
           .order('id', ascending: false)
-          .range(offset, offset + take - 1);
-      docs.addAll(rows.map((item) =>
-          FiscalDocument.fromMap(Map<String, dynamic>.from(item as Map))));
-      if (rows.length < take || (limit != null && docs.length >= limit)) break;
-      offset += rows.length;
+          .range(offset, offset + pageSize - 1);
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      if (page.length < pageSize) break;
+      offset += page.length;
     }
-    return docs;
+
+    final saleIds = [
+      for (final row in rows)
+        if (row['sale_id'] != null) row['sale_id'].toString(),
+    ];
+    final (sales, payments) = await (
+      selectIn(
+        _client,
+        table: 'sales',
+        columns: 'id, sale_number, sale_date, status',
+        column: 'id',
+        values: saleIds,
+      ),
+      fetchPaymentsBySale(_client, saleIds),
+    ).wait;
+    final salesById = {for (final sale in sales) sale['id'].toString(): sale};
+
+    return [
+      for (final row in rows)
+        FiscalDocument.fromMap({
+          ...row,
+          if (salesById[row['sale_id']?.toString()] case final sale?)
+            'sales': {
+              ...sale,
+              'payments': payments[sale['id'].toString()] ?? const [],
+            },
+        }),
+    ];
   }
 
   /// Ventas con NCF del rango (días locales completos) con sus pagos, de
-  /// 1000 en 1000.
+  /// 1000 en 1000. Los pagos van aparte, por id (ver [fetchPaymentsBySale]).
   Future<List<FiscalSale>> fetchSalesWithPayments({
     required DateTime from,
     required DateTime to,
@@ -490,15 +551,14 @@ class FiscalDocumentsRepository {
     if (branchId == null) return const [];
 
     const pageSize = 1000;
-    final sales = <FiscalSale>[];
+    final rows = <Map<String, dynamic>>[];
     var offset = 0;
     while (true) {
-      final rows = await _client
+      final page = await _client
           .from('sales')
           .select(
             'id, ncf, receipt_type, status, sale_number, sale_date, '
-            'total_amount, tax_amount, service_charge_amount, '
-            'payments(payment_method, amount, paid_at, reference)',
+            'total_amount, tax_amount, service_charge_amount',
           )
           .eq('branch_id', branchId)
           .not('ncf', 'is', null)
@@ -507,12 +567,22 @@ class FiscalDocumentsRepository {
           .order('sale_date')
           .order('id')
           .range(offset, offset + pageSize - 1);
-      sales.addAll(rows.map((item) =>
-          FiscalSale.fromMap(Map<String, dynamic>.from(item as Map))));
-      if (rows.length < pageSize) break;
-      offset += rows.length;
+      rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
+      if (page.length < pageSize) break;
+      offset += page.length;
     }
-    return sales;
+
+    final payments = await fetchPaymentsBySale(
+      _client,
+      rows.map((row) => row['id'].toString()),
+    );
+    return [
+      for (final row in rows)
+        FiscalSale.fromMap({
+          ...row,
+          'payments': payments[row['id'].toString()] ?? const [],
+        }),
+    ];
   }
 
   Future<FiscalDocument?> fetchDocument(String id) async {

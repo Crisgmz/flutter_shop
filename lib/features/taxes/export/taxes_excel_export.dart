@@ -32,22 +32,26 @@ class TaxesExcelExport {
       columns: const [
         'Fecha',
         'Cliente',
+        'RNC',
         'Tipo de comprobante',
         'NCF',
+        'Método de pago',
         'Total',
         'ITBIS',
         'Estado DGII',
       ],
-      widths: const [12, 30, 20, 16, 14, 14, 14],
-      amountColumns: const (4, 5),
+      widths: const [12, 30, 14, 20, 16, 22, 14, 14, 14],
+      amountColumns: const (6, 7),
       rows: [
         for (final row in rows)
           (
             text: [
               formatDate(row.saleDate),
               row.clientName,
+              row.clientDocument ?? '',
               fiscalReceiptLabel(row.receiptType),
               row.ncf ?? '',
+              paymentBreakdownLabel(row.paymentBreakdown),
               null,
               null,
               fiscalStatusLabels[row.dgiiStatus] ?? row.dgiiStatus,
