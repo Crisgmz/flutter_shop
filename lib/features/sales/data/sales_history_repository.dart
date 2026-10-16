@@ -183,72 +183,81 @@ class SalesHistoryRepository {
     final from = pageIndex * pageSize;
     final to = from + pageSize; // pedimos 1 extra para saber si hay más
 
-    var query = _client
-        .from('sales_history_entries')
-        .select(
-          'entry_kind, id, branch_id, doc_number, doc_date, status, '
-          'receipt_type, ncf, subtotal, tax_amount, total_amount, '
-          'paid_amount, balance_due, due_date, client_id, cashier_id, '
-          'cash_session_id, notes, refund_method',
-        )
-        .eq('branch_id', branchId);
-    // Nota: las ventas anuladas (voided) SÍ se incluyen — deben quedar en el
-    // historial marcadas como "Anulada", no desaparecer.
-
-    if (filter.from != null) {
-      query = query.gte('doc_date', filter.from!.toIso8601String());
-    }
-    if (filter.to != null) {
-      // incluir todo el día
-      final endOfDay = DateTime(
-        filter.to!.year,
-        filter.to!.month,
-        filter.to!.day,
-        23,
-        59,
-        59,
-      );
-      query = query.lte('doc_date', endOfDay.toIso8601String());
-    }
-    if (filter.statuses.isNotEmpty) {
-      query = query.inFilter('status', filter.statuses);
-    }
-    final search = filter.search.trim();
-    if (search.isNotEmpty) {
-      // Número de documento, NCF o IMEI. Si el texto parece un IMEI (6+
-      // caracteres) resolvemos primero IMEI → ids y los sumamos al OR.
-      final conditions = <String>[
-        'doc_number.ilike.%$search%',
-        'ncf.ilike.%$search%',
-      ];
-      if (search.length >= 6) {
-        final ids = await _resolveIdsByImei(branchId, search);
-        if (ids.isNotEmpty) {
-          conditions.add('id.in.(${ids.join(",")})');
-        }
-      }
-      query = query.or(conditions.join(','));
-    }
-
     // Filtro por caja: los documentos guardan `cash_session_id`, así que se
     // traducen las sesiones de esa caja a ids. Si la caja nunca abrió sesión,
     // no hay nada que mostrar.
     final registerId = filter.cashRegisterId;
+    List<String>? registerSessionIds;
     if (registerId != null && registerId.isNotEmpty) {
-      final sessionIds = await _sessionIdsForRegister(
+      registerSessionIds = await _sessionIdsForRegister(
         branchId: branchId,
         cashRegisterId: registerId,
         filter: filter,
       );
-      if (sessionIds.isEmpty) {
+      if (registerSessionIds.isEmpty) {
         return SalesHistoryPage(rows: const [], hasMore: false);
       }
-      query = query.inFilter('cash_session_id', sessionIds);
     }
 
-    final rows = await query
-        .order('doc_date', ascending: false)
-        .range(from, to);
+    Future<List<dynamic>> runQuery(List<String>? searchConditions) {
+      var query = _client
+          .from('sales_history_entries')
+          .select(
+            'entry_kind, id, branch_id, doc_number, doc_date, status, '
+            'receipt_type, ncf, subtotal, tax_amount, total_amount, '
+            'paid_amount, balance_due, due_date, client_id, cashier_id, '
+            'cash_session_id, notes, refund_method',
+          )
+          .eq('branch_id', branchId);
+      // Nota: las ventas anuladas (voided) SÍ se incluyen — deben quedar en el
+      // historial marcadas como "Anulada", no desaparecer.
+
+      if (filter.from != null) {
+        query = query.gte('doc_date', filter.from!.toIso8601String());
+      }
+      if (filter.to != null) {
+        // incluir todo el día
+        final endOfDay = DateTime(
+          filter.to!.year,
+          filter.to!.month,
+          filter.to!.day,
+          23,
+          59,
+          59,
+        );
+        query = query.lte('doc_date', endOfDay.toIso8601String());
+      }
+      if (filter.statuses.isNotEmpty) {
+        query = query.inFilter('status', filter.statuses);
+      }
+      if (searchConditions != null) {
+        query = query.or(searchConditions.join(','));
+      }
+      if (registerSessionIds != null) {
+        query = query.inFilter('cash_session_id', registerSessionIds);
+      }
+      return query.order('doc_date', ascending: false).range(from, to);
+    }
+
+    // Búsqueda: con la RLS, Postgres no puede usar índices para `ilike` ni
+    // para el IMEI (`@>`): esas búsquedas recorren todo el historial y en un
+    // negocio grande morían por tiempo (57014). Un número de documento o un
+    // NCF completo se busca EXACTO, que sí va por índice; solo si no aparece
+    // se cae a la búsqueda parcial de siempre.
+    final search = filter.search.trim();
+    List<dynamic> rows;
+    if (search.isEmpty) {
+      rows = await runQuery(null);
+    } else if (_exactDocPattern.hasMatch(search) ||
+        _ncfPattern.hasMatch(search)) {
+      final upper = search.toUpperCase();
+      rows = await runQuery(['doc_number.eq.$upper', 'ncf.eq.$upper']);
+      if (rows.isEmpty) {
+        rows = await runQuery(await _partialSearchConditions(branchId, search));
+      }
+    } else {
+      rows = await runQuery(await _partialSearchConditions(branchId, search));
+    }
 
     final list = rows
         .map((row) => Map<String, dynamic>.from(row as Map))
@@ -380,6 +389,36 @@ class SalesHistoryRepository {
 
   /// Ids (de venta y de devolución) que contienen un IMEI dado. Usa los índices
   /// GIN `sale_items_imeis_gin` / `return_items_imeis_gin`.
+  /// Número de venta o devolución completo: `FA-014294`, `DV-00012`.
+  static final _exactDocPattern = RegExp(r'^[A-Za-z0-9]{1,10}-\d{1,9}$');
+
+  /// NCF completo: `B0200001271`, `E320000000123`.
+  static final _ncfPattern = RegExp(r'^[BbEe]\d{10,12}$');
+
+  /// Parece IMEI o serial: letras y números sin guiones ni espacios, 8+.
+  /// Un número corto o con guion es casi siempre un documento, y buscarlo
+  /// como IMEI recorría todas las líneas de venta del negocio.
+  static final _imeiPattern = RegExp(r'^[A-Za-z0-9]{8,}$');
+
+  /// Búsqueda parcial: número de documento o NCF que contengan el texto, más
+  /// los documentos con ese IMEI si el texto parece uno.
+  Future<List<String>> _partialSearchConditions(
+    String branchId,
+    String search,
+  ) async {
+    final conditions = <String>[
+      'doc_number.ilike.%$search%',
+      'ncf.ilike.%$search%',
+    ];
+    if (_imeiPattern.hasMatch(search) && !_ncfPattern.hasMatch(search)) {
+      final ids = await _resolveIdsByImei(branchId, search);
+      if (ids.isNotEmpty) {
+        conditions.add('id.in.(${ids.join(",")})');
+      }
+    }
+    return conditions;
+  }
+
   Future<List<String>> _resolveIdsByImei(String branchId, String imei) async {
     final ids = <String>{};
 
