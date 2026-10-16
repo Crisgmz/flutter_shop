@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-class FiscalDocument {
+import 'fiscal_consumo_summary.dart';
+
+class FiscalDocument implements FiscalSummarySource {
   FiscalDocument({
     required this.id,
     required this.branchId,
@@ -42,6 +44,10 @@ class FiscalDocument {
     this.submittedAt,
     this.acceptedAt,
     this.lastError,
+    this.saleNumber,
+    this.saleDate,
+    this.saleStatus,
+    this.salePayments = const [],
   });
 
   final String id;
@@ -49,6 +55,7 @@ class FiscalDocument {
   final String? saleId;
   final String? clientId;
   final String? ncfSequenceId;
+  @override
   final String receiptType;
   final String ncf;
   final int? sequenceNumber;
@@ -68,8 +75,11 @@ class FiscalDocument {
   final double discountAmount;
   final double taxableAmount;
   final double exemptAmount;
+  @override
   final double taxAmount;
+  @override
   final double serviceChargeAmount;
+  @override
   final double totalAmount;
 
   // === e-CF (DGII vía Alanube). Solo populado en documentos serie E ===
@@ -85,7 +95,32 @@ class FiscalDocument {
   final DateTime? acceptedAt;
   final String? lastError;
 
+  // === Venta de origen (embed `sales`), para saber cómo se pagó ===
+  final String? saleNumber;
+  final DateTime? saleDate;
+  final String? saleStatus;
+  final List<FiscalSalePayment> salePayments;
+
   bool get isVoided => voidedAt != null;
+
+  /// Anulado como comprobante o anulada la venta. "Anular venta" no marca el
+  /// comprobante, así que hay que mirar las dos cosas.
+  @override
+  bool get isCancelled => isVoided || saleStatus == 'voided';
+
+  /// Cómo se pagó la factura al venderla (ver [salePaymentBreakdown]).
+  /// Vacío si el comprobante no tiene venta asociada.
+  @override
+  Map<String, double> get paymentBreakdown => saleStatus == null
+      ? const {}
+      : salePaymentBreakdown(
+          total: totalAmount,
+          saleNumber: saleNumber,
+          saleDate: saleDate,
+          saleStatus: saleStatus!,
+          payments: salePayments,
+        );
+
   bool get isApproved => fiscalStatus == 'approved';
   bool get isPending => fiscalStatus == 'pending';
 
@@ -163,6 +198,9 @@ class FiscalDocument {
   }
 
   factory FiscalDocument.fromMap(Map<String, dynamic> map) {
+    final sale = map['sales'] is Map
+        ? Map<String, dynamic>.from(map['sales'] as Map)
+        : null;
     return FiscalDocument(
       id: (map['id'] ?? '').toString(),
       branchId: (map['branch_id'] ?? '').toString(),
@@ -215,6 +253,164 @@ class FiscalDocument {
           ? null
           : DateTime.tryParse(map['accepted_at'].toString()),
       lastError: map['last_error']?.toString(),
+      saleNumber: sale?['sale_number']?.toString(),
+      saleDate: sale?['sale_date'] == null
+          ? null
+          : DateTime.tryParse(sale!['sale_date'].toString()),
+      saleStatus: sale?['status']?.toString(),
+      salePayments: [
+        for (final raw in (sale?['payments'] as List?) ?? const [])
+          if (raw is Map)
+            FiscalSalePayment.fromMap(Map<String, dynamic>.from(raw)),
+      ],
+    );
+  }
+}
+
+/// Un pago (`payments`) de la venta de origen del comprobante.
+class FiscalSalePayment {
+  const FiscalSalePayment({
+    required this.method,
+    required this.amount,
+    this.paidAt,
+    this.reference,
+  });
+
+  final String method;
+  final double amount;
+  final DateTime? paidAt;
+  final String? reference;
+
+  factory FiscalSalePayment.fromMap(Map<String, dynamic> map) {
+    return FiscalSalePayment(
+      method: (map['payment_method'] ?? '').toString(),
+      amount: _toDouble(map['amount']),
+      paidAt: map['paid_at'] == null
+          ? null
+          : DateTime.tryParse(map['paid_at'].toString()),
+      reference: map['reference']?.toString(),
+    );
+  }
+}
+
+/// Cómo se pagó una venta al venderla: monto por método de pago (`cash`,
+/// `card`, `transfer`…) y `credit` para lo que quedó debiendo.
+///
+/// Los abonos que se cobraron después NO cuentan: para la DGII una factura
+/// a crédito sigue siendo "A crédito" aunque ya esté saldada. Los pagos
+/// hechos al vender (checkout y el editor de pagos) llevan como referencia
+/// el número de la venta; los abonos de Cobros llevan la del usuario. La
+/// conversión de cotización no pone referencia, pero se registra en el
+/// mismo instante que la venta.
+Map<String, double> salePaymentBreakdown({
+  required double total,
+  required String? saleNumber,
+  required DateTime? saleDate,
+  required String saleStatus,
+  required List<FiscalSalePayment> payments,
+}) {
+  // Venta vieja cobrada sin filas en `payments`: igual que el 607
+  // (`dgii_607_data`), una venta completada sin pagos cuenta como efectivo.
+  if (payments.isEmpty && saleStatus == 'completed') {
+    return {'cash': total};
+  }
+
+  bool paidAtSale(FiscalSalePayment payment) {
+    if (saleNumber != null &&
+        saleNumber.isNotEmpty &&
+        payment.reference == saleNumber) {
+      return true;
+    }
+    final paidAt = payment.paidAt;
+    if (saleDate == null || paidAt == null) return false;
+    return paidAt.difference(saleDate).inMinutes.abs() <= 2;
+  }
+
+  final byMethod = <String, double>{};
+  var paid = 0.0;
+  for (final payment in payments.where(paidAtSale)) {
+    byMethod[payment.method] = (byMethod[payment.method] ?? 0) + payment.amount;
+    paid += payment.amount;
+  }
+
+  // Si la venta se editó después de emitir el comprobante, los pagos pueden
+  // pasar del total del comprobante: se reparten en proporción para que el
+  // desglose cuadre con el monto fiscal.
+  if (paid > total && paid > 0) {
+    final factor = total / paid;
+    byMethod.updateAll((_, amount) => amount * factor);
+    paid = total;
+  }
+
+  final credit = total - paid;
+  if (credit > 0.005) {
+    byMethod['credit'] = (byMethod['credit'] ?? 0) + credit;
+  }
+  return byMethod;
+}
+
+/// Venta con NCF y sus pagos. El 607 sale de `sales` (no de
+/// `fiscal_documents`): con esto se le pone el método de pago a cada fila y
+/// se arma su resumen.
+class FiscalSale implements FiscalSummarySource {
+  const FiscalSale({
+    required this.id,
+    required this.ncf,
+    required this.receiptType,
+    required this.status,
+    required this.totalAmount,
+    required this.taxAmount,
+    required this.serviceChargeAmount,
+    this.saleNumber,
+    this.saleDate,
+    this.payments = const [],
+  });
+
+  final String id;
+  final String ncf;
+  @override
+  final String receiptType;
+  final String status;
+  @override
+  final double totalAmount;
+  @override
+  final double taxAmount;
+  @override
+  final double serviceChargeAmount;
+  final String? saleNumber;
+  final DateTime? saleDate;
+  final List<FiscalSalePayment> payments;
+
+  @override
+  bool get isCancelled => status == 'voided';
+
+  @override
+  Map<String, double> get paymentBreakdown => salePaymentBreakdown(
+        total: totalAmount,
+        saleNumber: saleNumber,
+        saleDate: saleDate,
+        saleStatus: status,
+        payments: payments,
+      );
+
+  factory FiscalSale.fromMap(Map<String, dynamic> map) {
+    return FiscalSale(
+      id: (map['id'] ?? '').toString(),
+      ncf: (map['ncf'] ?? '').toString(),
+      receiptType: (map['receipt_type'] ?? '').toString(),
+      status: (map['status'] ?? '').toString(),
+      totalAmount: _toDouble(map['total_amount']),
+      taxAmount: _toDouble(map['tax_amount']),
+      serviceChargeAmount: _toDouble(map['service_charge_amount']),
+      saleNumber: map['sale_number']?.toString(),
+      saleDate: map['sale_date'] == null
+          ? null
+          : DateTime.tryParse(map['sale_date'].toString()),
+      payments: [
+        for (final raw in (map['payments'] as List?) ?? const [])
+          if (raw is Map)
+            FiscalSalePayment.fromMap(Map<String, dynamic>.from(raw)),
+      ],
     );
   }
 }
@@ -224,49 +420,99 @@ class FiscalDocumentsRepository {
 
   final SupabaseClient _client;
 
+  /// Comprobantes de la sucursal con su venta de origen y los pagos de esa
+  /// venta (para la columna "Método de pago" y el resumen DGII).
+  ///
+  /// Con `limit` trae solo los más recientes; con `limit: null` trae todos
+  /// los del filtro, de 1000 en 1000 (el tope por petición de PostgREST).
   Future<List<FiscalDocument>> fetchDocuments({
     String? statusFilter,
     String? receiptTypeFilter,
     DateTime? from,
     DateTime? to,
-    int limit = 100,
+    int? limit = 100,
   }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
-    var query = _client
-        .from('fiscal_documents')
-        .select(
-          'id, branch_id, sale_id, client_id, ncf_sequence_id, receipt_type, ncf, '
-          'sequence_number, fiscal_status, issued_at, expires_on, voided_at, void_reason, '
-          'customer_name, customer_document_type, customer_document_number, customer_address, '
-          'issuer_name, issuer_tax_id, issuer_address, '
-          'subtotal, discount_amount, taxable_amount, exempt_amount, tax_amount, '
-          'service_charge_amount, total_amount, '
-          'ecf_status, alanube_document_id, ecf_tracking_number, ecf_security_code, '
-          'ecf_signed_at, public_url, xml_url, pdf_url, submitted_at, accepted_at, last_error',
-        )
-        .eq('branch_id', branchId);
+    const pageSize = 1000;
+    final docs = <FiscalDocument>[];
+    var offset = 0;
+    while (true) {
+      var query = _client
+          .from('fiscal_documents')
+          .select(
+            'id, branch_id, sale_id, client_id, ncf_sequence_id, receipt_type, ncf, '
+            'sequence_number, fiscal_status, issued_at, expires_on, voided_at, void_reason, '
+            'customer_name, customer_document_type, customer_document_number, customer_address, '
+            'issuer_name, issuer_tax_id, issuer_address, '
+            'subtotal, discount_amount, taxable_amount, exempt_amount, tax_amount, '
+            'service_charge_amount, total_amount, '
+            'ecf_status, alanube_document_id, ecf_tracking_number, ecf_security_code, '
+            'ecf_signed_at, public_url, xml_url, pdf_url, submitted_at, accepted_at, last_error, '
+            'sales(sale_number, sale_date, status, '
+            'payments(payment_method, amount, paid_at, reference))',
+          )
+          .eq('branch_id', branchId);
 
-    if (statusFilter != null && statusFilter.isNotEmpty) {
-      query = query.eq('fiscal_status', statusFilter);
-    }
-    if (receiptTypeFilter != null && receiptTypeFilter.isNotEmpty) {
-      query = query.eq('receipt_type', receiptTypeFilter);
-    }
-    if (from != null) {
-      query = query.gte('issued_at', from.toIso8601String());
-    }
-    if (to != null) {
-      query = query.lte('issued_at', to.toIso8601String());
-    }
+      if (statusFilter != null && statusFilter.isNotEmpty) {
+        query = query.eq('fiscal_status', statusFilter);
+      }
+      if (receiptTypeFilter != null && receiptTypeFilter.isNotEmpty) {
+        query = query.eq('receipt_type', receiptTypeFilter);
+      }
+      // Días locales completos. Antes se mandaba la medianoche local sin zona
+      // y el servidor la leía como UTC: el último día del rango quedaba fuera.
+      if (from != null) query = query.gte('issued_at', _dayStartUtc(from));
+      if (to != null) query = query.lt('issued_at', _nextDayStartUtc(to));
 
-    final rows = await query.order('issued_at', ascending: false).limit(limit);
+      final remaining = limit == null ? pageSize : limit - docs.length;
+      final take = remaining < pageSize ? remaining : pageSize;
+      final rows = await query
+          .order('issued_at', ascending: false)
+          .order('id', ascending: false)
+          .range(offset, offset + take - 1);
+      docs.addAll(rows.map((item) =>
+          FiscalDocument.fromMap(Map<String, dynamic>.from(item as Map))));
+      if (rows.length < take || (limit != null && docs.length >= limit)) break;
+      offset += rows.length;
+    }
+    return docs;
+  }
 
-    return rows
-        .map((item) =>
-            FiscalDocument.fromMap(Map<String, dynamic>.from(item as Map)))
-        .toList(growable: false);
+  /// Ventas con NCF del rango (días locales completos) con sus pagos, de
+  /// 1000 en 1000.
+  Future<List<FiscalSale>> fetchSalesWithPayments({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    const pageSize = 1000;
+    final sales = <FiscalSale>[];
+    var offset = 0;
+    while (true) {
+      final rows = await _client
+          .from('sales')
+          .select(
+            'id, ncf, receipt_type, status, sale_number, sale_date, '
+            'total_amount, tax_amount, service_charge_amount, '
+            'payments(payment_method, amount, paid_at, reference)',
+          )
+          .eq('branch_id', branchId)
+          .not('ncf', 'is', null)
+          .gte('sale_date', _dayStartUtc(from))
+          .lt('sale_date', _nextDayStartUtc(to))
+          .order('sale_date')
+          .order('id')
+          .range(offset, offset + pageSize - 1);
+      sales.addAll(rows.map((item) =>
+          FiscalSale.fromMap(Map<String, dynamic>.from(item as Map))));
+      if (rows.length < pageSize) break;
+      offset += rows.length;
+    }
+    return sales;
   }
 
   Future<FiscalDocument?> fetchDocument(String id) async {
@@ -339,6 +585,12 @@ class FiscalDocumentsRepository {
         .eq('id', id)
         .eq('branch_id', branchId);
   }
+
+  static String _dayStartUtc(DateTime d) =>
+      DateTime(d.year, d.month, d.day).toUtc().toIso8601String();
+
+  static String _nextDayStartUtc(DateTime d) =>
+      DateTime(d.year, d.month, d.day + 1).toUtc().toIso8601String();
 
   Future<String?> _currentBranchId() async {
     final result = await _client.rpc('current_branch_id');

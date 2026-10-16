@@ -97,6 +97,14 @@ String formatDateTime(Object? value) {
   return '${formatDate(dt)} ${_formatTime(dt)}';
 }
 
+/// Solo la hora (12h/24h según settings), para cuando la fecha va en otra
+/// columna.
+String formatTime(Object? value) {
+  final dt = _parseDate(value);
+  if (dt == null) return '—';
+  return _formatTime(dt);
+}
+
 /// Relative date label: "Hoy", "Ayer", or formato configurado.
 String formatDateRelative(Object? value) {
   final dt = _parseDate(value);
@@ -160,6 +168,32 @@ String _formatTime(DateTime dt) {
 String percent(Object? value) {
   final v = toDouble(value);
   return '${(v * 100).toStringAsFixed(1)}%';
+}
+
+// ── Payment methods ─────────────────────────────────────────────────────────
+
+/// Etiqueta en español de un valor del enum `payment_method`.
+String paymentMethodLabel(String method) {
+  switch (method) {
+    case 'cash':
+      return 'Efectivo';
+    case 'card':
+      return 'Tarjeta';
+    case 'transfer':
+      return 'Transferencia';
+    case 'mobile':
+      return 'Pago móvil';
+    case 'other':
+      return 'Otro';
+    case 'credit':
+      return 'Crédito';
+    case 'credit_note':
+      return 'Nota de crédito';
+    case 'mixed':
+      return 'Mixto';
+    default:
+      return method;
+  }
 }
 
 // ── Quantity ─────────────────────────────────────────────────────────────────

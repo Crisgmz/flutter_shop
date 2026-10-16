@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,23 +9,16 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../../settings/presentation/app_settings_providers.dart';
+import '../../shell/presentation/shell_providers.dart'
+    show shellCurrentBranchNameProvider;
+import '../data/fiscal_consumo_summary.dart';
 import '../data/fiscal_documents_repository.dart';
+import '../data/fiscal_labels.dart';
+import '../export/fiscal_documents_export.dart';
+import 'fiscal_consumo_summary_panel.dart';
 import 'fiscal_documents_providers.dart';
-
-const _receiptLabels = <String, String>{
-  'consumer_final': 'Consumidor Final',
-  'fiscal_credit': 'Crédito Fiscal',
-  'governmental': 'Gubernamental',
-  'special': 'Especial',
-  'export': 'Exportación',
-};
-
-const _statusLabels = <String, String>{
-  'pending': 'Pendiente',
-  'sent': 'Enviado',
-  'approved': 'Aprobado',
-  'rejected': 'Rechazado',
-};
 
 const _statusColors = <String, Color>{
   'pending': Color(0xFFF59E0B),
@@ -62,16 +57,21 @@ const _statusOptions = <String>[
   'rejected',
 ];
 
+/// Filas que se pintan en pantalla. Un mes puede tener miles de comprobantes
+/// y la tabla los construye todos de una vez; el PDF y el Excel llevan todo.
+const _maxVisibleRows = 500;
+
 class FiscalDocumentsPage extends ConsumerWidget {
   const FiscalDocumentsPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final docsAsync = ref.watch(fiscalDocumentsProvider);
+    final view = ref.watch(fiscalViewProvider);
     final statusFilter = ref.watch(fiscalStatusFilterProvider);
     final receiptTypeFilter = ref.watch(fiscalReceiptTypeFilterProvider);
     final dateFrom = ref.watch(fiscalDateFromProvider);
     final dateTo = ref.watch(fiscalDateToProvider);
+    final isSummary = view == FiscalDocumentsView.summary;
 
     return ModulePage(
       title: 'Comprobantes Fiscales',
@@ -89,41 +89,159 @@ class FiscalDocumentsPage extends ConsumerWidget {
             ref.read(fiscalDateToProvider.notifier).state = to;
           },
         ),
-        const SizedBox(width: AppTokens.s8),
-        _ReceiptTypeChip(selected: receiptTypeFilter),
-        const SizedBox(width: AppTokens.s8),
-        _StatusChip(selected: statusFilter),
-        const SizedBox(width: AppTokens.s8),
+        // El resumen es siempre de facturas de consumo: tipo y estado no
+        // aplican.
+        if (!isSummary) _ReceiptTypeChip(selected: receiptTypeFilter),
+        if (!isSummary) _StatusChip(selected: statusFilter),
+        const _ExportButtons(),
         OutlinedButton.icon(
-          onPressed: () => ref.invalidate(fiscalDocumentsProvider),
+          onPressed: () {
+            ref.invalidate(fiscalDocumentsProvider);
+            ref.invalidate(fiscalConsumoSummaryProvider);
+          },
           icon: const Icon(Icons.refresh, size: 18),
           label: const Text('Actualizar'),
         ),
       ],
-      child: docsAsync.when(
-        data: (docs) => _DocsList(docs: docs),
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => Card(
-          child: Padding(
-            padding: const EdgeInsets.all(AppTokens.s24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('No se pudieron cargar los comprobantes: $error'),
-                const SizedBox(height: AppTokens.s12),
-                FilledButton.icon(
-                  onPressed: () => ref.invalidate(fiscalDocumentsProvider),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Reintentar'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+      child: isSummary ? const _SummaryView() : const _DetailView(),
     );
   }
 }
+
+class _ViewToggle extends ConsumerWidget {
+  const _ViewToggle();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return SegmentedButton<FiscalDocumentsView>(
+      style: SegmentedButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        textStyle: const TextStyle(fontSize: 13),
+      ),
+      segments: const [
+        ButtonSegment(
+          value: FiscalDocumentsView.summary,
+          icon: Icon(Icons.summarize_outlined, size: 16),
+          label: Text('Resumen'),
+        ),
+        ButtonSegment(
+          value: FiscalDocumentsView.detail,
+          icon: Icon(Icons.list_alt_outlined, size: 16),
+          label: Text('Detallado'),
+        ),
+      ],
+      selected: {ref.watch(fiscalViewProvider)},
+      onSelectionChanged: (s) =>
+          ref.read(fiscalViewProvider.notifier).state = s.first,
+      showSelectedIcon: false,
+    );
+  }
+}
+
+/// PDF y Excel de la vista activa: el resumen DGII o el detallado con los
+/// filtros aplicados.
+class _ExportButtons extends ConsumerStatefulWidget {
+  const _ExportButtons();
+
+  @override
+  ConsumerState<_ExportButtons> createState() => _ExportButtonsState();
+}
+
+class _ExportButtonsState extends ConsumerState<_ExportButtons> {
+  bool _busy = false;
+
+  Future<void> _export({required bool pdf}) async {
+    setState(() => _busy = true);
+    try {
+      final exporter = FiscalDocumentsExport(
+        settings: await ref.read(appSettingsProvider.future),
+        branchName: ref.read(shellCurrentBranchNameProvider).valueOrNull,
+      );
+      final String fileName;
+      final Uint8List bytes;
+
+      if (ref.read(fiscalViewProvider) == FiscalDocumentsView.summary) {
+        final summary = await ref.read(fiscalConsumoSummaryProvider.future);
+        fileName = 'resumen_facturas_consumo_${summary.period}';
+        bytes = pdf
+            ? await exporter.summaryPdf(summary)
+            : exporter.summaryXlsx(summary);
+      } else {
+        final docs = await ref.read(fiscalDocumentsProvider.future);
+        final from = ref.read(fiscalDateFromProvider);
+        final to = ref.read(fiscalDateToProvider);
+        final filterLabel =
+            _detailFilterLabel(ref, hasRange: from != null || to != null);
+        fileName = 'comprobantes_detallado_${_stamp(DateTime.now())}';
+        bytes = pdf
+            ? await exporter.detailPdf(docs,
+                from: from, to: to, filterLabel: filterLabel)
+            : exporter.detailXlsx(docs,
+                from: from, to: to, filterLabel: filterLabel);
+      }
+
+      final extension = pdf ? 'pdf' : 'xlsx';
+      final saved = await FileIoHelper.saveBytes(
+        bytes: bytes,
+        fileName: '$fileName.$extension',
+        extension: extension,
+        dialogTitle: 'Guardar comprobantes fiscales',
+      );
+      if (!mounted || !saved) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(pdf ? 'PDF exportado.' : 'Excel exportado.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo exportar: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: AppTokens.s8,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _busy ? null : () => _export(pdf: true),
+          icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+          label: const Text('PDF'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : () => _export(pdf: false),
+          icon: _busy
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.grid_on_outlined, size: 18),
+          label: const Text('Excel'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Filtros del detallado en palabras, para el encabezado del archivo.
+String? _detailFilterLabel(WidgetRef ref, {required bool hasRange}) {
+  final type = ref.read(fiscalReceiptTypeFilterProvider);
+  final status = ref.read(fiscalStatusFilterProvider);
+  final parts = [
+    if (type != null) fiscalReceiptLabel(type),
+    if (status != null) fiscalStatusLabels[status] ?? status,
+    if (!hasRange) 'Últimos 100 comprobantes',
+  ];
+  return parts.isEmpty ? null : parts.join(' · ');
+}
+
+String _stamp(DateTime d) => '${d.year}'
+    '${d.month.toString().padLeft(2, '0')}'
+    '${d.day.toString().padLeft(2, '0')}';
 
 class _DateRangeButton extends StatelessWidget {
   const _DateRangeButton({
@@ -190,7 +308,7 @@ class _ReceiptTypeChip extends ConsumerWidget {
           ..._receiptTypes.map(
             (type) => DropdownMenuItem(
               value: type,
-              child: Text(_receiptLabels[type] ?? type),
+              child: Text(fiscalReceiptLabel(type)),
             ),
           ),
         ],
@@ -220,7 +338,7 @@ class _StatusChip extends ConsumerWidget {
           ..._statusOptions.map(
             (status) => DropdownMenuItem(
               value: status,
-              child: Text(_statusLabels[status] ?? status),
+              child: Text(fiscalStatusLabels[status] ?? status),
             ),
           ),
         ],
@@ -232,47 +350,133 @@ class _StatusChip extends ConsumerWidget {
   }
 }
 
-class _DocsList extends ConsumerWidget {
-  const _DocsList({required this.docs});
+class _LoadError extends StatelessWidget {
+  const _LoadError({required this.error, required this.onRetry});
 
-  final List<FiscalDocument> docs;
+  final Object error;
+  final VoidCallback onRetry;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (docs.isEmpty) {
-      return const EmptyStateCard(
-        icon: Icons.receipt_long_outlined,
-        message: 'No se encontraron documentos fiscales para los filtros seleccionados.',
-      );
-    }
-
-    return DataTableShell(
-      title: 'Documentos fiscales (${docs.length})',
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          columnSpacing: AppTokens.s16,
-          columns: const [
-            DataColumn(label: Text('NCF')),
-            DataColumn(label: Text('Tipo')),
-            DataColumn(label: Text('Estado')),
-            DataColumn(label: Text('Cliente')),
-            DataColumn(label: Text('Emisión')),
-            DataColumn(label: Text('Total'), numeric: true),
-            DataColumn(label: Text('ITBIS'), numeric: true),
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(AppTokens.s24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('No se pudieron cargar los comprobantes: $error'),
+            const SizedBox(height: AppTokens.s12),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reintentar'),
+            ),
           ],
-          rows: docs.map((doc) => _buildRow(context, doc, ref)).toList(growable: false),
         ),
       ),
     );
   }
+}
+
+// ─── Detallado ────────────────────────────────────────────────────────────
+
+class _DetailView extends ConsumerWidget {
+  const _DetailView();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final docsAsync = ref.watch(fiscalDocumentsProvider);
+    final hasRange = ref.watch(fiscalDateFromProvider) != null ||
+        ref.watch(fiscalDateToProvider) != null;
+
+    return docsAsync.when(
+      data: (docs) {
+        final title = !hasRange && docs.length >= 100
+            ? 'Documentos fiscales (últimos ${docs.length})'
+            : 'Documentos fiscales (${docs.length})';
+        if (docs.isEmpty) {
+          return DataTableShell(
+            title: title,
+            trailing: const _ViewToggle(),
+            scrollable: false,
+            child: const EmptyStateCard(
+              icon: Icons.receipt_long_outlined,
+              message:
+                  'No se encontraron documentos fiscales para los filtros seleccionados.',
+            ),
+          );
+        }
+        return _DocsList(docs: docs, title: title);
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => _LoadError(
+        error: error,
+        onRetry: () => ref.invalidate(fiscalDocumentsProvider),
+      ),
+    );
+  }
+}
+
+class _DocsList extends ConsumerWidget {
+  const _DocsList({required this.docs, required this.title});
+
+  final List<FiscalDocument> docs;
+  final String title;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final visible = docs.length > _maxVisibleRows
+        ? docs.sublist(0, _maxVisibleRows)
+        : docs;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        DataTableShell(
+          title: title,
+          trailing: const _ViewToggle(),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columnSpacing: AppTokens.s16,
+              columns: const [
+                DataColumn(label: Text('NCF')),
+                DataColumn(label: Text('Tipo')),
+                DataColumn(label: Text('Estado')),
+                DataColumn(label: Text('RNC')),
+                DataColumn(label: Text('Cliente')),
+                DataColumn(label: Text('Método de pago')),
+                DataColumn(label: Text('Emisión')),
+                DataColumn(label: Text('Total'), numeric: true),
+                DataColumn(label: Text('ITBIS'), numeric: true),
+              ],
+              rows: visible
+                  .map((doc) => _buildRow(context, doc, ref))
+                  .toList(growable: false),
+            ),
+          ),
+        ),
+        if (visible.length < docs.length)
+          Padding(
+            padding: const EdgeInsets.only(top: AppTokens.s8),
+            child: Text(
+              'Mostrando ${visible.length} de ${docs.length}. '
+              'El PDF y el Excel llevan todos.',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppTokens.mutedForeground,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 
   DataRow _buildRow(BuildContext context, FiscalDocument doc, WidgetRef ref) {
-    final statusColor =
-        _statusColors[doc.fiscalStatus] ?? AppTokens.mutedForeground;
-    final statusLabel = _statusLabels[doc.fiscalStatus] ?? doc.fiscalStatus;
-    final receiptLabel =
-        _receiptLabels[doc.receiptType] ?? _pretty(doc.receiptType);
+    final statusColor = doc.isCancelled
+        ? AppTokens.destructive
+        : _statusColors[doc.fiscalStatus] ?? AppTokens.mutedForeground;
+    final rnc = doc.customerDocumentNumber?.trim() ?? '';
 
     return DataRow(
       cells: [
@@ -291,7 +495,10 @@ class _DocsList extends ConsumerWidget {
             ),
           ),
         ),
-        DataCell(Text(receiptLabel, style: const TextStyle(fontSize: 13))),
+        DataCell(Text(
+          fiscalReceiptLabel(doc.receiptType),
+          style: const TextStyle(fontSize: 13),
+        )),
         DataCell(
           Wrap(
             spacing: 4,
@@ -307,7 +514,7 @@ class _DocsList extends ConsumerWidget {
                   borderRadius: BorderRadius.circular(AppTokens.radiusS),
                 ),
                 child: Text(
-                  statusLabel,
+                  fiscalStatusLabel(doc),
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -341,9 +548,17 @@ class _DocsList extends ConsumerWidget {
           ),
         ),
         DataCell(Text(
+          rnc.isEmpty ? '—' : rnc,
+          style: const TextStyle(fontSize: 13),
+        )),
+        DataCell(Text(
           doc.customerName ?? '—',
           style: const TextStyle(fontSize: 13),
           overflow: TextOverflow.ellipsis,
+        )),
+        DataCell(Text(
+          fiscalPaymentLabel(doc),
+          style: const TextStyle(fontSize: 13),
         )),
         DataCell(Text(
           formatDate(doc.issuedAt),
@@ -362,6 +577,44 @@ class _DocsList extends ConsumerWidget {
     showDialog<void>(
       context: context,
       builder: (_) => _FiscalDocDetailDialog(doc: doc, listRef: ref),
+    );
+  }
+}
+
+// ─── Resumen ──────────────────────────────────────────────────────────────
+
+/// "Resumen Facturas Consumo" en pantalla, con las mismas líneas que el
+/// formulario de la DGII (y que el PDF/Excel).
+class _SummaryView extends ConsumerWidget {
+  const _SummaryView();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final summaryAsync = ref.watch(fiscalConsumoSummaryProvider);
+    final hasRange = ref.watch(fiscalDateFromProvider) != null ||
+        ref.watch(fiscalDateToProvider) != null;
+
+    return DataTableShell(
+      title: FiscalConsumoSummary.title,
+      trailing: const _ViewToggle(),
+      scrollable: false,
+      child: summaryAsync.when(
+        loading: () => const Padding(
+          padding: EdgeInsets.all(AppTokens.s32),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (error, _) => Padding(
+          padding: const EdgeInsets.all(AppTokens.s20),
+          child: _LoadError(
+            error: error,
+            onRetry: () => ref.invalidate(fiscalConsumoSummaryProvider),
+          ),
+        ),
+        data: (summary) => FiscalConsumoSummaryPanel(
+          summary: summary,
+          rangeNote: hasRange ? null : 'mes en curso',
+        ),
+      ),
     );
   }
 }
@@ -481,11 +734,11 @@ class _FiscalDocDetailDialogState
   @override
   Widget build(BuildContext context) {
     final doc = widget.doc;
-    final statusColor =
-        _statusColors[doc.fiscalStatus] ?? AppTokens.mutedForeground;
-    final statusLabel = _statusLabels[doc.fiscalStatus] ?? doc.fiscalStatus;
-    final receiptLabel =
-        _receiptLabels[doc.receiptType] ?? _pretty(doc.receiptType);
+    final statusColor = doc.isCancelled
+        ? AppTokens.destructive
+        : _statusColors[doc.fiscalStatus] ?? AppTokens.mutedForeground;
+    final statusLabel = fiscalStatusLabel(doc);
+    final receiptLabel = fiscalReceiptLabel(doc.receiptType);
     final access = ref.watch(roleAccessProvider);
     final canVoid =
         !doc.isVoided && doc.fiscalStatus != 'voided' && access.canVoidSale;
@@ -538,6 +791,8 @@ class _FiscalDocDetailDialogState
                   if (doc.sequenceNumber != null)
                     _DetailRow('Secuencia #', doc.sequenceNumber.toString()),
                   _DetailRow('Emisión', formatDateTime(doc.issuedAt)),
+                  if (doc.saleStatus != null)
+                    _DetailRow('Método de pago', fiscalPaymentLabel(doc)),
                   if (doc.expiresOn != null)
                     _DetailRow('Vence', formatDate(doc.expiresOn)),
                   if (doc.isVoided) ...[
@@ -742,13 +997,4 @@ class _DetailRow {
       ),
     );
   }
-}
-
-String _pretty(String value) {
-  if (value.isEmpty) return '—';
-  return value
-      .split('_')
-      .map((part) =>
-          part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}')
-      .join(' ');
 }

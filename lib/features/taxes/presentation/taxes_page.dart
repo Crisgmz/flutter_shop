@@ -8,7 +8,12 @@ import '../../../shared/responsive/responsive_layout.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
+import '../../inventory/data/file_io_helper.dart';
+import '../../settings/presentation/app_settings_providers.dart';
+import '../../shell/presentation/shell_providers.dart'
+    show shellCurrentBranchNameProvider;
 import '../data/taxes_repository.dart';
+import '../export/taxes_excel_export.dart';
 import 'taxes_providers.dart';
 
 const _receiptLabels = <String, String>{
@@ -98,6 +103,13 @@ class TaxesPage extends ConsumerWidget {
                                     context: context,
                                     title: 'Exportar 606 (CSV)',
                                     csv: repository.build606Csv(data.purchases),
+                                    excelFileName:
+                                        'dgii_606_${_stamp(data.range)}',
+                                    buildExcel: () async =>
+                                        (await _excelExport(ref)).purchases606(
+                                      data.purchases,
+                                      data.range,
+                                    ),
                                   ),
                           icon: const Icon(Icons.download, size: 18),
                           label: const Text('Exportar 606'),
@@ -109,6 +121,13 @@ class TaxesPage extends ConsumerWidget {
                                     context: context,
                                     title: 'Exportar 607 (CSV)',
                                     csv: repository.build607Csv(data.sales),
+                                    excelFileName:
+                                        'dgii_607_${_stamp(data.range)}',
+                                    buildExcel: () async =>
+                                        (await _excelExport(ref)).sales607(
+                                      data.sales,
+                                      data.range,
+                                    ),
                                   ),
                           icon: const Icon(Icons.download, size: 18),
                           label: const Text('Exportar 607'),
@@ -318,10 +337,25 @@ class TaxesPage extends ConsumerWidget {
     );
   }
 
+  Future<TaxesExcelExport> _excelExport(WidgetRef ref) async =>
+      TaxesExcelExport(
+        settings: await ref.read(appSettingsProvider.future),
+        branchName: ref.read(shellCurrentBranchNameProvider).valueOrNull,
+      );
+
+  /// `20261001_20261015` para el nombre del archivo.
+  static String _stamp(TaxesDateRange range) {
+    String ymd(DateTime d) =>
+        '${d.year}${d.month.toString().padLeft(2, '0')}${d.day.toString().padLeft(2, '0')}';
+    return '${ymd(range.start)}_${ymd(range.end)}';
+  }
+
   Future<void> _showCsv({
     required BuildContext context,
     required String title,
     required String csv,
+    required String excelFileName,
+    required Future<Uint8List> Function() buildExcel,
   }) async {
     await showDialog<void>(
       context: context,
@@ -349,6 +383,29 @@ class TaxesPage extends ConsumerWidget {
             },
             icon: const Icon(Icons.copy_all_outlined, size: 18),
             label: const Text('Copiar'),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                final saved = await FileIoHelper.saveBytes(
+                  bytes: await buildExcel(),
+                  fileName: '$excelFileName.xlsx',
+                  extension: 'xlsx',
+                  dialogTitle: 'Guardar Excel',
+                );
+                if (!saved) return;
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Excel exportado.')),
+                );
+              } catch (error) {
+                messenger.showSnackBar(
+                  SnackBar(content: Text('No se pudo exportar: $error')),
+                );
+              }
+            },
+            icon: const Icon(Icons.table_view_outlined, size: 18),
+            label: const Text('Excel'),
           ),
         ],
       ),

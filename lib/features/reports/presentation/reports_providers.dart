@@ -1,9 +1,16 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../auth/presentation/auth_providers.dart';
+import '../../fiscal_documents/data/fiscal_consumo_summary.dart';
+import '../../fiscal_documents/data/fiscal_documents_repository.dart';
+import '../../fiscal_documents/presentation/fiscal_documents_providers.dart';
+import '../../settings/data/app_settings.dart';
 import '../data/reports_repository.dart';
 import '../domain/report_category.dart';
 import '../export/report_export_models.dart';
+import '../export/report_export_service.dart';
 
 final reportPeriodProvider =
     StateProvider<ReportPeriod>((ref) => ReportPeriod.monthly);
@@ -261,6 +268,46 @@ final dgii607Provider =
   return repo.fetchDgii607(year: year, month: month);
 });
 
+/// Vista del 607: Resumen (formato DGII de facturas de consumo) o Detallado.
+final dgii607ViewProvider =
+    StateProvider<FiscalDocumentsView>((ref) => FiscalDocumentsView.detail);
+
+/// Ventas con NCF del período del 607 y sus pagos, por NCF: dan el método de
+/// pago de cada fila y el resumen. Se toma un día de más a cada lado porque
+/// el RPC corta el mes en otra zona horaria según su versión; se cruza por
+/// NCF, así que lo de más no se cuela.
+final dgii607SalesProvider =
+    FutureProvider.autoDispose<Map<String, FiscalSale>>((ref) async {
+  final repo = ref.watch(fiscalDocumentsRepositoryProvider);
+  final year = ref.watch(dgiiYearProvider);
+  final month = ref.watch(dgiiMonthProvider);
+  final sales = await repo.fetchSalesWithPayments(
+    from: DateTime(year, month, 0),
+    to: DateTime(year, month + 1, 1),
+  );
+  return {for (final sale in sales) sale.ncf: sale};
+});
+
+/// "Resumen Facturas Consumo" del 607: las ventas de consumo que salen en el
+/// 607 del mes (las mismas filas del detallado).
+final dgii607SummaryProvider =
+    FutureProvider.autoDispose<FiscalConsumoSummary>((ref) async {
+  final data = await ref.watch(dgii607Provider.future);
+  final sales = await ref.watch(dgii607SalesProvider.future);
+  final year = ref.watch(dgiiYearProvider);
+  final month = ref.watch(dgiiMonthProvider);
+  final rows = (data['rows'] as List?) ?? const [];
+  return FiscalConsumoSummary.fromDocuments(
+    [
+      for (final raw in rows)
+        if (raw is Map && sales[(raw['ncf'] ?? '').toString()] != null)
+          sales[(raw['ncf'] ?? '').toString()]!,
+    ],
+    from: DateTime(year, month, 1),
+    to: DateTime(year, month + 1, 0),
+  );
+});
+
 final dgiiIt1Provider =
     FutureProvider.autoDispose<Map<String, dynamic>>((ref) async {
   final repo = ref.watch(reportsRepositoryProvider);
@@ -292,8 +339,9 @@ final pendingExportFormatProvider = StateProvider<String?>((ref) => null);
 class ReportExportSnapshot {
   ReportExportSnapshot({
     required this.fileBaseName,
-    required this.buildData,
-  });
+    this.buildData,
+    this.render,
+  }) : assert(buildData != null || render != null);
 
   /// Nombre del archivo sin extensión (ej. 'ventas_resumen_20260513').
   final String fileBaseName;
@@ -301,7 +349,15 @@ class ReportExportSnapshot {
   /// Función que construye `ReportExportData` al momento de exportar. Se
   /// usa una función (no el modelo directo) para que la metadata de
   /// compañía / sucursal se evalúe en tiempo de export, no de render.
-  final ReportExportData Function() buildData;
+  final ReportExportData Function()? buildData;
+
+  /// Para reportes con formato propio (ej. el resumen DGII del 607): arma
+  /// los bytes directamente en vez de pasar por el renderer común.
+  final Future<Uint8List> Function(
+    ReportExportFormat format,
+    AppSettings? settings,
+    String? branchName,
+  )? render;
 }
 
 // ─── Sub-reportes de Ventas (PRD §F-Ventas) ──────────────────────────────

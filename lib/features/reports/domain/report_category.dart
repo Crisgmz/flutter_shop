@@ -330,7 +330,7 @@ enum VentasSubReport {
       case VentasSubReport.beneficioEntregas:
         return 'Reporte de beneficio por entregas';
       case VentasSubReport.detallado607:
-        return 'Reportes Detallados 607';
+        return 'Reportes 607';
       case VentasSubReport.resumenTime:
         return 'Resumen de ventas por Time Reports';
       case VentasSubReport.graficoTime:

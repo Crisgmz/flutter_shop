@@ -24,6 +24,12 @@ import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../cash_register/presentation/cash_register_filter_chip.dart';
+import '../../fiscal_documents/data/fiscal_labels.dart'
+    show paymentBreakdownLabel;
+import '../../fiscal_documents/export/fiscal_documents_export.dart';
+import '../../fiscal_documents/presentation/fiscal_consumo_summary_panel.dart';
+import '../../fiscal_documents/presentation/fiscal_documents_providers.dart'
+    show FiscalDocumentsView;
 import '../../inventory/data/file_io_helper.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../../shell/presentation/shell_providers.dart';
@@ -2045,7 +2051,8 @@ class _DetailedSalesReport extends ConsumerWidget {
 
         final tableRows = rows
             .map((r) => [
-                  formatDateTime(r.saleDate),
+                  formatDate(r.saleDate),
+                  formatTime(r.saleDate),
                   r.saleNumber,
                   r.ncf ?? '—',
                   r.clientName ?? 'Consumidor Final',
@@ -2067,6 +2074,7 @@ class _DetailedSalesReport extends ConsumerWidget {
 
         final columns = [
           'Fecha',
+          'Hora',
           '#',
           'NCF',
           'Cliente',
@@ -2094,7 +2102,7 @@ class _DetailedSalesReport extends ConsumerWidget {
                   columns: columns,
                   rows: tableRows,
                   numericColumns:
-                      canViewProfit ? const {7, 8, 9, 10} : const {7, 8, 9},
+                      canViewProfit ? const {8, 9, 10, 11} : const {8, 9, 10},
                 ),
                 totals: rows.isEmpty
                     ? null
@@ -3780,7 +3788,10 @@ class _DescuentosReport extends ConsumerWidget {
 // ═════════════════════════════════════════════════════════════════════════
 
 class _DgiiYearMonthPicker extends ConsumerWidget {
-  const _DgiiYearMonthPicker();
+  const _DgiiYearMonthPicker({this.trailing});
+
+  /// Control extra al final de la fila (ej. Resumen | Detallado del 607).
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -3815,6 +3826,7 @@ class _DgiiYearMonthPicker extends ConsumerWidget {
                 if (v != null) ref.read(dgiiMonthProvider.notifier).state = v;
               },
             ),
+            ?trailing,
           ],
         ),
       ),
@@ -3884,12 +3896,17 @@ class _DgiiReportSection extends StatelessWidget {
     required this.data,
     required this.txtBuilder,
     required this.fileName,
+    this.paymentLabelFor,
   });
 
   final String title;
   final Map<String, dynamic> data;
   final String Function(Map<String, dynamic>) txtBuilder;
   final String fileName;
+
+  /// Método de pago por NCF. Si viene, la vista previa lleva esa columna
+  /// (607); el 606 no la usa.
+  final String Function(String ncf)? paymentLabelFor;
 
   @override
   Widget build(BuildContext context) {
@@ -3991,7 +4008,14 @@ class _DgiiReportSection extends StatelessWidget {
                 ),
           ),
           _SimpleTable(
-            columns: const ['NCF', 'Fecha', 'Documento', 'Monto', 'ITBIS'],
+            columns: [
+              'NCF',
+              'Fecha',
+              'Documento',
+              if (paymentLabelFor != null) 'Método de pago',
+              'Monto',
+              'ITBIS',
+            ],
             rows: [
               for (final raw in rows.take(50))
                 if (raw is Map)
@@ -4000,6 +4024,8 @@ class _DgiiReportSection extends StatelessWidget {
                     (raw['fecha_comprobante'] ?? '').toString(),
                     (raw['rnc_proveedor'] ?? raw['rnc_cliente'] ?? '—')
                         .toString(),
+                    if (paymentLabelFor != null)
+                      paymentLabelFor!((raw['ncf'] ?? '').toString()),
                     money((raw['monto_facturado'] as num?)?.toDouble() ?? 0),
                     money((raw['itbis_facturado'] as num?)?.toDouble() ?? 0),
                   ],
@@ -4080,40 +4106,137 @@ class _Dgii607Report extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(dgii607Provider);
+    final view = ref.watch(dgii607ViewProvider);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _DgiiYearMonthPicker(),
-        async.when(
-          loading: () => const _LoadingBox(),
-          error: (e, _) => ErrorCard(
-            message: 'No se pudo generar 607: $e',
-            onRetry: () => ref.invalidate(dgii607Provider),
+        _DgiiYearMonthPicker(
+          trailing: SegmentedButton<FiscalDocumentsView>(
+            style: SegmentedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              textStyle: const TextStyle(fontSize: 13),
+            ),
+            segments: const [
+              ButtonSegment(
+                value: FiscalDocumentsView.summary,
+                icon: Icon(Icons.summarize_outlined, size: 16),
+                label: Text('Resumen'),
+              ),
+              ButtonSegment(
+                value: FiscalDocumentsView.detail,
+                icon: Icon(Icons.list_alt_outlined, size: 16),
+                label: Text('Detallado'),
+              ),
+            ],
+            selected: {view},
+            onSelectionChanged: (s) =>
+                ref.read(dgii607ViewProvider.notifier).state = s.first,
+            showSelectedIcon: false,
           ),
-          data: (data) {
-            final year = ref.read(dgiiYearProvider);
-            final month = ref.read(dgiiMonthProvider);
-            _publishDgiiExport(
-              ref,
-              data: data,
-              year: year,
-              month: month,
-              fileBaseName: 'dgii_607',
-              title: '607 — Ventas DGII',
-              proveedorOrCliente: 'Cliente',
-            );
-            return _DgiiReportSection(
-              title: '607 — Ventas DGII',
-              data: data,
-              txtBuilder: _build607Txt,
-              fileName:
-                  'DGII_F_607_${(data['rnc_negocio'] ?? '').toString()}_'
-                  '$year${month.toString().padLeft(2, "0")}.TXT',
-            );
-          },
         ),
+        if (view == FiscalDocumentsView.summary)
+          const _Dgii607Summary()
+        else
+          const _Dgii607Detail(),
       ],
+    );
+  }
+}
+
+class _Dgii607Detail extends ConsumerWidget {
+  const _Dgii607Detail();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(dgii607Provider);
+    final salesAsync = ref.watch(dgii607SalesProvider);
+
+    // Cómo se pagó cada factura al venderla (ver `salePaymentBreakdown`).
+    String paymentLabelFor(String ncf) => salesAsync.when(
+          data: (sales) {
+            final sale = sales[ncf];
+            return sale == null
+                ? '—'
+                : paymentBreakdownLabel(sale.paymentBreakdown);
+          },
+          loading: () => '…',
+          error: (_, _) => '—',
+        );
+
+    return async.when(
+      loading: () => const _LoadingBox(),
+      error: (e, _) => ErrorCard(
+        message: 'No se pudo generar 607: $e',
+        onRetry: () => ref.invalidate(dgii607Provider),
+      ),
+      data: (data) {
+        final year = ref.read(dgiiYearProvider);
+        final month = ref.read(dgiiMonthProvider);
+        _publishDgiiExport(
+          ref,
+          data: data,
+          year: year,
+          month: month,
+          fileBaseName: 'dgii_607',
+          title: '607 — Ventas DGII',
+          proveedorOrCliente: 'Cliente',
+          paymentLabelFor: paymentLabelFor,
+        );
+        return _DgiiReportSection(
+          title: '607 — Ventas DGII',
+          data: data,
+          txtBuilder: _build607Txt,
+          fileName:
+              'DGII_F_607_${(data['rnc_negocio'] ?? '').toString()}_'
+              '$year${month.toString().padLeft(2, "0")}.TXT',
+          paymentLabelFor: paymentLabelFor,
+        );
+      },
+    );
+  }
+}
+
+/// "Resumen Facturas Consumo" del mes, con el formato del formulario DGII.
+/// El PDF/Excel del encabezado sale en ese mismo formato.
+class _Dgii607Summary extends ConsumerWidget {
+  const _Dgii607Summary();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(dgii607SummaryProvider);
+    return async.when(
+      loading: () => const _LoadingBox(),
+      error: (e, _) => ErrorCard(
+        message: 'No se pudo generar el resumen del 607: $e',
+        onRetry: () {
+          ref.invalidate(dgii607Provider);
+          ref.invalidate(dgii607SalesProvider);
+        },
+      ),
+      data: (summary) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ref.read(currentReportExportProvider.notifier).state =
+              ReportExportSnapshot(
+            fileBaseName: 'dgii_607_resumen_${summary.period}',
+            render: (format, settings, branchName) async {
+              final export = FiscalDocumentsExport(
+                settings: settings,
+                branchName: branchName,
+              );
+              return format == ReportExportFormat.pdf
+                  ? export.summaryPdf(summary)
+                  : export.summaryXlsx(summary);
+            },
+          );
+        });
+        return _ReportCard(
+          title: '607 — Resumen Facturas Consumo · Período ${summary.period}',
+          child: FiscalConsumoSummaryPanel(
+            summary: summary,
+            padding: const EdgeInsets.only(top: AppTokens.s12),
+          ),
+        );
+      },
     );
   }
 }
@@ -4803,8 +4926,8 @@ String _paymentMethodLabel(String method) {
 
 /// Publica un snapshot exportable para 606/607 con el formato común DGII:
 /// metadata (RNC, período, registros válidos/inconsistencias) + tabla con
-/// los primeros 200 registros para que quepa en el PDF/XLSX. El TXT oficial
-/// sigue siendo el botón "Copiar TXT" del propio reporte.
+/// todos los registros. El TXT oficial sigue siendo el botón "Copiar TXT"
+/// del propio reporte.
 void _publishDgiiExport(
   WidgetRef ref, {
   required Map<String, dynamic> data,
@@ -4813,20 +4936,23 @@ void _publishDgiiExport(
   required String fileBaseName,
   required String title,
   required String proveedorOrCliente,
+  String Function(String ncf)? paymentLabelFor,
 }) {
   final rnc = (data['rnc_negocio'] ?? '').toString();
   final period = (data['period'] ?? '').toString();
   final count = (data['records_count'] as num?)?.toInt() ?? 0;
   final inconsistencies = (data['inconsistencies_count'] as num?)?.toInt() ?? 0;
   final rows = (data['rows'] as List?) ?? const [];
+  final withPayment = paymentLabelFor != null;
 
   final tableRows = <List<String>>[
-    for (final raw in rows.take(200))
+    for (final raw in rows)
       if (raw is Map)
         [
           (raw['ncf'] ?? '').toString(),
           (raw['fecha_comprobante'] ?? '').toString(),
           (raw['rnc_proveedor'] ?? raw['rnc_cliente'] ?? '—').toString(),
+          if (withPayment) paymentLabelFor((raw['ncf'] ?? '').toString()),
           money((raw['monto_facturado'] as num?)?.toDouble() ?? 0),
           money((raw['itbis_facturado'] as num?)?.toDouble() ?? 0),
         ],
@@ -4852,11 +4978,18 @@ void _publishDgiiExport(
           ],
         ),
         ReportSection(
-          title: 'Vista previa (primeros 200 registros)',
+          title: 'Registros (${tableRows.length})',
           table: ReportTable(
-            columns: ['NCF', 'Fecha', 'RNC $proveedorOrCliente', 'Monto', 'ITBIS'],
+            columns: [
+              'NCF',
+              'Fecha',
+              'RNC $proveedorOrCliente',
+              if (withPayment) 'Método de pago',
+              'Monto',
+              'ITBIS',
+            ],
             rows: tableRows,
-            numericColumns: const {3, 4},
+            numericColumns: withPayment ? const {4, 5} : const {3, 4},
           ),
           note: rnc.isEmpty
               ? 'Falta configurar el RNC en /configuracion antes de generar el TXT DGII.'
@@ -4928,12 +5061,15 @@ Future<void> _exportCurrentSnapshot(
   final settings = ref.read(appSettingsProvider).valueOrNull;
   final branchName = ref.read(shellCurrentBranchNameProvider).valueOrNull;
   try {
-    final bytes = await ReportExportService().renderBytes(
-      data: snap.buildData(),
-      format: format,
-      settings: settings,
-      branchName: branchName,
-    );
+    final render = snap.render;
+    final bytes = render != null
+        ? await render(format, settings, branchName)
+        : await ReportExportService().renderBytes(
+            data: snap.buildData!(),
+            format: format,
+            settings: settings,
+            branchName: branchName,
+          );
     if (!context.mounted) return;
     final ext = format == ReportExportFormat.pdf ? 'pdf' : 'xlsx';
     final saved = await FileIoHelper.saveBytes(

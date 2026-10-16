@@ -43,6 +43,9 @@ class ReportPdfRenderer {
         ),
         header: (ctx) => _buildHeader(ctx, data),
         footer: (ctx) => _buildFooter(ctx),
+        // El tope por defecto es 20 páginas (~900 filas): un mes de
+        // comprobantes o ventas lo pasa y el PDF fallaba.
+        maxPages: 1000,
         build: (ctx) => _buildBody(data),
       ),
     );
@@ -108,7 +111,7 @@ class ReportPdfRenderer {
                 ),
               if (data.dateFrom != null && data.dateTo != null)
                 pw.Text(
-                  '${_fmtDate(data.dateFrom!)} → ${_fmtDate(data.dateTo!)}',
+                  '${_fmtDate(data.dateFrom!)} – ${_fmtDate(data.dateTo!)}',
                   style: pw.TextStyle(fontSize: 9, color: muted),
                 ),
             ],

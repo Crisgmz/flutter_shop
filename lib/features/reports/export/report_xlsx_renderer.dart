@@ -6,11 +6,16 @@
 //   - Fila N+1: línea en blanco.
 //   - Por cada sección: título en bold (si existe), tabla con headers en
 //     bold + filas, totales debajo.
+//   - Montos: los modelos traen "RD\$ 1,234.00" (money()) porque el PDF los
+//     muestra así; en el Excel van SIN el símbolo y como número, para que el
+//     contable los sume y los suba a la DGII. Lo mismo con los números de las
+//     columnas numéricas (moneyPlain(), qty()).
 
 import 'dart:typed_data';
 
 import 'package:excel/excel.dart';
 
+import '../../../shared/formatters/live_settings.dart';
 import 'report_export_models.dart';
 
 const _sheetName = 'Reporte';
@@ -68,6 +73,8 @@ class ReportXlsxRenderer {
       row++; // blank line between sections
     }
 
+    _fitColumns(sheet, data.sections);
+
     excel.setDefaultSheet(_sheetName);
     final bytes = excel.save();
     if (bytes == null) {
@@ -93,7 +100,8 @@ class ReportXlsxRenderer {
       // Rows
       for (final r in t.rows) {
         for (var i = 0; i < r.length; i++) {
-          _writeCell(sheet, row, i, r[i]);
+          _writeValue(sheet, row, i, r[i],
+              numericColumn: t.numericColumns.contains(i));
         }
         row++;
       }
@@ -102,7 +110,7 @@ class ReportXlsxRenderer {
     if (section.kv != null && section.kv!.isNotEmpty) {
       for (final entry in section.kv!) {
         _writeCell(sheet, row, 0, entry.label);
-        _writeCell(
+        _writeValue(
           sheet,
           row,
           1,
@@ -117,7 +125,7 @@ class ReportXlsxRenderer {
       row++; // blank line before totals
       for (final entry in section.totals!) {
         _writeCell(sheet, row, 0, entry.label, bold: true);
-        _writeCell(sheet, row, 1, entry.value, bold: true);
+        _writeValue(sheet, row, 1, entry.value, bold: true);
         row++;
       }
     }
@@ -129,6 +137,76 @@ class ReportXlsxRenderer {
 
     return row;
   }
+
+  /// Escribe un valor de la tabla / totales: los montos ("RD\$ 1,234.00")
+  /// salen como número sin el símbolo; en columnas numéricas también los
+  /// números sin símbolo ("1,234.00", "12"). Lo demás queda como texto, sin
+  /// el "RD\$" si lo trae metido (ej. "RD\$ 100.00 / RD\$ 200.00").
+  void _writeValue(
+    Sheet sheet,
+    int row,
+    int col,
+    String value, {
+    bool numericColumn = false,
+    bool bold = false,
+  }) {
+    final stripped = stripCurrencySymbol(value);
+    final hadSymbol = stripped != value;
+    final number =
+        hadSymbol || numericColumn ? parseFormattedNumber(stripped) : null;
+    if (number == null) {
+      _writeCell(sheet, row, col, stripped, bold: bold);
+      return;
+    }
+    final cell = sheet.cell(
+      CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row),
+    );
+    final decimals = _hasDecimals(stripped);
+    cell.value = decimals
+        ? DoubleCellValue(number)
+        : IntCellValue(number.round());
+    cell.cellStyle = CellStyle(
+      bold: bold,
+      horizontalAlign: HorizontalAlign.Right,
+      numberFormat: decimals ? NumFormat.standard_4 : NumFormat.standard_3,
+    );
+  }
+
+  /// Ancho de cada columna según lo más largo que trae (encabezado o
+  /// celdas), para que la fecha o el cliente no queden cortados.
+  void _fitColumns(Sheet sheet, List<ReportSection> sections) {
+    final widths = <int, int>{};
+    void measure(int col, String text) {
+      final length = stripCurrencySymbol(text).length;
+      if (length > (widths[col] ?? 0)) widths[col] = length;
+    }
+
+    for (final section in sections) {
+      final t = section.table;
+      if (t != null) {
+        for (var i = 0; i < t.columns.length; i++) {
+          measure(i, t.columns[i]);
+        }
+        for (final r in t.rows) {
+          for (var i = 0; i < r.length; i++) {
+            measure(i, r[i]);
+          }
+        }
+      }
+      for (final entry in [...?section.kv, ...?section.totals]) {
+        measure(0, entry.label);
+        measure(1, entry.value);
+      }
+    }
+    widths.forEach((col, length) {
+      sheet.setColumnWidth(col, (length + 2).clamp(8, 45).toDouble());
+    });
+  }
+
+  bool _hasDecimals(String value) =>
+      LiveSettings.decimalPoint.isNotEmpty &&
+      value.contains(LiveSettings.decimalPoint) &&
+      LiveSettings.currencyDecimals > 0;
 
   void _writeCell(
     Sheet sheet,
@@ -142,7 +220,7 @@ class ReportXlsxRenderer {
     final cell = sheet.cell(
       CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row),
     );
-    cell.value = TextCellValue(value);
+    cell.value = TextCellValue(stripCurrencySymbol(value));
     if (bold || italic || fontSize != null) {
       cell.cellStyle = CellStyle(
         bold: bold,
@@ -164,4 +242,30 @@ class ReportXlsxRenderer {
         '${local.hour.toString().padLeft(2, '0')}:'
         '${local.minute.toString().padLeft(2, '0')}';
   }
+}
+
+/// Quita el símbolo de moneda (el configurado y "RD\$") de un texto ya
+/// formateado: "RD\$ 1,234.00" → "1,234.00", "RD\$ -5.00" → "-5.00".
+String stripCurrencySymbol(String value) {
+  var out = value;
+  for (final symbol in {LiveSettings.currencySymbol, r'RD$'}) {
+    if (symbol.isEmpty) continue;
+    out = out.replaceAll('$symbol ', '').replaceAll(symbol, '');
+  }
+  return out == value ? value : out.trim();
+}
+
+/// Lee un número formateado con los separadores configurados ("1,234.50",
+/// "-5.00", "12"). null si el texto no es solo un número.
+double? parseFormattedNumber(String value) {
+  final text = value.trim();
+  if (text.isEmpty) return null;
+  final thousands = LiveSettings.thousandsSep;
+  final decimalPoint = LiveSettings.decimalPoint;
+  var normalized = thousands.isEmpty ? text : text.replaceAll(thousands, '');
+  if (decimalPoint.isNotEmpty && decimalPoint != '.') {
+    normalized = normalized.replaceAll(decimalPoint, '.');
+  }
+  if (!RegExp(r'^-?\d+(\.\d+)?$').hasMatch(normalized)) return null;
+  return double.tryParse(normalized);
 }
