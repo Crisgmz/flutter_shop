@@ -39,6 +39,11 @@ const kSalesPriceTierPermission = 'sales.price_tier';
 /// El mínimo es el más bajo entre el precio base y los niveles del producto.
 const kSalesBelowMinPricePermission = 'sales.below_min_price';
 
+/// Código del permiso "Administrar NCF" (`permissions.code`). Ningún rol lo
+/// trae en `role_permissions`: en la base pasa el admin (`is_admin()`) o quien
+/// tenga el override. Lo exige `resolve_uncertain_ecf_emission` (migración 101).
+const kNcfManagePermission = 'ncf.manage';
+
 /// Códigos del módulo Gastos (`permissions.code`, migración 86).
 const kExpensesViewPermission = 'expenses.view';
 const kExpensesCreatePermission = 'expenses.create';
@@ -179,6 +184,18 @@ final canVoidSaleProvider = Provider<bool>((ref) {
   return access.hasPermission(
     kSalesVoidPermission,
     roleDefault: access.canVoidSale,
+  );
+});
+
+/// ¿Puede el usuario resolver un envío e-CF incierto (Comprobantes)?
+///
+/// Por rol: solo admin, igual que `has_permission('ncf.manage')` en la base.
+/// Un override sobre `ncf.manage` manda en ambos sentidos.
+final canManageNcfProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kNcfManagePermission,
+    roleDefault: access.isAdmin,
   );
 });
 

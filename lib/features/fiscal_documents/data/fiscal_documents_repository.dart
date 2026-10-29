@@ -84,7 +84,9 @@ class FiscalDocument implements FiscalSummarySource {
   final double totalAmount;
 
   // === e-CF (DGII vía Alanube). Solo populado en documentos serie E ===
-  final String? ecfStatus; // 'pending' | 'sent' | 'accepted' | 'rejected'
+  /// 'pending' | 'sent' | 'accepted' | 'rejected' | 'uncertain' (Alanube pudo
+  /// haberlo recibido; no se reenvía solo, ver migración 101).
+  final String? ecfStatus;
   final String? alanubeDocumentId;
   final String? ecfTrackingNumber;
   final String? ecfSecurityCode;
@@ -188,6 +190,8 @@ class FiscalDocument implements FiscalSummarySource {
         return 'Pendiente de emisión a DGII';
       case 'sent':
         return 'En proceso DGII (esperando confirmación)';
+      case 'uncertain':
+        return 'Envío a DGII sin confirmar';
       case 'rejected':
         final err = lastError ?? '';
         return err.isNotEmpty
@@ -634,6 +638,23 @@ class FiscalDocumentsRepository {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Resuelve un envío e-CF incierto (migración 101). Con [foundInAlanube] y
+  /// el id que muestra Alanube, el comprobante queda enviado; sin él, vuelve a
+  /// la cola con el mismo e-NCF y la misma llave de idempotencia.
+  Future<void> resolveUncertainEmission({
+    required String fiscalDocumentId,
+    required bool foundInAlanube,
+    String? alanubeDocumentId,
+    String? note,
+  }) async {
+    await _client.rpc('resolve_uncertain_ecf_emission', params: {
+      'p_fiscal_document_id': fiscalDocumentId,
+      'p_resolution': foundInAlanube ? 'found_in_alanube' : 'not_in_alanube',
+      'p_alanube_document_id': alanubeDocumentId,
+      'p_note': note,
+    });
   }
 
   Future<void> voidDocument({

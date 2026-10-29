@@ -20,16 +20,10 @@ class DateRangeFilterButton extends StatelessWidget {
   final String helpText;
 
   Future<void> _pick(BuildContext context) async {
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-      initialDateRange: range,
+    final picked = await showAppDateRangePicker(
+      context,
+      initialRange: range,
       helpText: helpText,
-      saveText: 'Aplicar',
-      cancelText: 'Cancelar',
-      fieldStartLabelText: 'Desde',
-      fieldEndLabelText: 'Hasta',
     );
     if (picked != null) onChanged(picked);
   }
@@ -69,4 +63,36 @@ bool isWithinDateRange(DateTime when, DateTimeRange? range) {
   final end = range.end;
   final to = DateTime(end.year, end.month, end.day + 1);
   return !when.isBefore(from) && when.isBefore(to);
+}
+
+/// Selector de rango de fechas de la app: en pantallas anchas se muestra como
+/// ventana centrada (el de Material ocupa toda la pantalla); en el celular
+/// sigue a pantalla completa.
+Future<DateTimeRange?> showAppDateRangePicker(
+  BuildContext context, {
+  DateTimeRange? initialRange,
+  String helpText = 'Desde – hasta',
+}) {
+  final now = DateTime.now();
+  return showDateRangePicker(
+    context: context,
+    firstDate: DateTime(2020),
+    lastDate: DateTime(now.year + 1, 12, 31),
+    currentDate: now,
+    initialDateRange: initialRange,
+    helpText: helpText,
+    saveText: 'Aplicar',
+    cancelText: 'Cancelar',
+    fieldStartLabelText: 'Desde',
+    fieldEndLabelText: 'Hasta',
+    builder: (context, child) => Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440, maxHeight: 640),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: child,
+        ),
+      ),
+    ),
+  );
 }

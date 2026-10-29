@@ -1493,7 +1493,10 @@ class SalesRepository {
       var doc = await fiscalRepo.fetchDocumentBySaleId(saleId);
       if (doc == null || !doc.isElectronic) return null;
 
-      if (!doc.hasQrData && doc.ecfStatus != 'rejected') {
+      // Incierto: no se reenvía al imprimir (se resuelve en Comprobantes).
+      if (!doc.hasQrData &&
+          doc.ecfStatus != 'rejected' &&
+          doc.ecfStatus != 'uncertain') {
         doc = await fiscalRepo.emitElectronicDocument(doc.id) ?? doc;
       }
 

@@ -166,17 +166,23 @@ async function processWebhook(
   }
 
   if (!docRow && encf && typeof encf === 'string') {
-    // fiscal_documents.ncf es unique por (branch_id, ncf); un eNCF válido no
-    // debería repetirse entre sucursales de la misma instalación, pero por
-    // seguridad tomamos el más reciente.
+    // La respuesta del envío se perdió (doc 'uncertain', o todavía en vuelo) y
+    // no tenemos su id de Alanube. Cada empresa numera su propia serie E, así
+    // que el mismo e-NCF existe en varias: solo se adopta si coincide con UN
+    // solo documento sin id de Alanube. Ambiguo → no se toca (se resuelve a
+    // mano en Comprobantes).
     const { data: byNcf, error: ncfErr } = await supabase
       .from('fiscal_documents')
       .select('id, branch_id, ecf_status, alanube_document_id')
       .eq('ncf', encf)
-      .order('created_at', { ascending: false })
-      .limit(1)
+      .is('alanube_document_id', null)
+      .limit(2)
     if (ncfErr) throw new Error(`db error finding doc by ncf: ${ncfErr.message}`)
-    docRow = (byNcf?.[0] as DocRow | undefined) ?? null
+    if ((byNcf?.length ?? 0) > 1) {
+      console.warn(`webhook: e-NCF ${encf} coincide con varios documentos sin id de Alanube; no se adopta`)
+    } else {
+      docRow = (byNcf?.[0] as DocRow | undefined) ?? null
+    }
   }
 
   if (!docRow) {
@@ -248,6 +254,23 @@ async function processWebhook(
     .eq('id', docRow.id)
 
   if (updErr) throw new Error(`update fiscal_documents failed: ${updErr.message}`)
+
+  // Migración 101: el webhook es la prueba de que Alanube lo tiene. Un envío
+  // que había quedado incierto queda conciliado.
+  if (previousStatus === 'uncertain') {
+    const { error: outboxErr } = await supabase
+      .from('ecf_emit_outbox')
+      .update({
+        status: 'done',
+        next_attempt_at: null,
+        error: null,
+        resolution: 'webhook_match',
+        resolved_at: new Date().toISOString(),
+      })
+      .eq('fiscal_document_id', docRow.id)
+      .eq('status', 'uncertain')
+    if (outboxErr) console.error(`webhook: no se pudo cerrar la outbox de ${docRow.id}:`, outboxErr.message)
+  }
 
   await supabase.from('fiscal_document_status_events').insert({
     fiscal_document_id: docRow.id,

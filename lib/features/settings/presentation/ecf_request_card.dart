@@ -384,15 +384,6 @@ class _SequenceDialogState extends ConsumerState<_SequenceDialog> {
   DateTime? _expiration;
   bool _saving = false;
 
-  /// Los tipos que el alta soporta, con lo que significa cada uno.
-  static const _types = <String, String>{
-    'E31': 'E31 — Crédito fiscal (cliente con RNC)',
-    'E32': 'E32 — Consumo (consumidor final)',
-    'E34': 'E34 — Nota de crédito',
-    'E44': 'E44 — Régimen especial',
-    'E45': 'E45 — Gubernamental',
-  };
-
   /// E31, E44 y E45 exigen la fecha de vencimiento: sin ella la DGII rechaza
   /// con el código 145.
   bool get _needsExpiration => const ['E31', 'E44', 'E45'].contains(_ncfType);
@@ -440,11 +431,11 @@ class _SequenceDialogState extends ConsumerState<_SequenceDialog> {
                   decoration: const InputDecoration(
                     labelText: 'Tipo de comprobante',
                   ),
-                  items: _types.entries
+                  items: ecfTypeLabels.entries
                       .map(
                         (e) => DropdownMenuItem(
                           value: e.key,
-                          child: Text(e.value),
+                          child: Text('${e.key} — ${e.value}'),
                         ),
                       )
                       .toList(growable: false),

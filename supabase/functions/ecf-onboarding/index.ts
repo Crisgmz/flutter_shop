@@ -6,9 +6,12 @@
 //
 // Acciones:
 //   request_status    → en qué va la facturación electrónica de la empresa
-//   submit_request    { data, certificate, contact_name, contact_phone,
+//   submit_request    { data, details, certificate, contact_name, contact_phone,
 //                       already_authorized, accept_terms }
 //                     → guarda la solicitud y registra la empresa en Alanube
+//                     `details` (teléfono, representante legal, sucursales,
+//                     tipos de e-CF, usuario OFV) es opcional para no romper
+//                     builds viejos de la app; si viene, se exige completo.
 //   save_sequence     { branch_id, sequence } — la autorización e-NCF de la DGII
 //   set_ecf_enabled   { enabled } — enciende/apaga la modalidad e-CF
 //
@@ -28,7 +31,10 @@
 //   ecf_onboarding(business_id)    ecf_onboarding(company_id)
 //
 // El certificado (.p12) y su contraseña viajan a Alanube en la misma petición
-// y NO se guardan ni se registran en ningún lado.
+// y NO se guardan ni se registran en ningún lado. La clave de la Oficina
+// Virtual tampoco se pide: la certificación ante la DGII es manual (decisión
+// del 28 oct 2026) y el operador se la pide al cliente por otra vía. En
+// mangospos, en cambio, se guardan cifradas para firmar desde el panel.
 //
 // Auth: JWT del usuario. La empresa se valida con la RLS del propio caller
 // sobre `companies` (misma vía que `register-company`), y además se exige rol
@@ -44,16 +50,22 @@ import {
   companiesMatchingRnc,
   ExistingSequence,
   hasUsableEcfSequence,
+  missingForClientRequest,
   ONBOARDING_SEQUENCE_TYPES,
   parseAssociatedPage,
   planSequenceWrite,
+  Branch,
+  RequestDetailsInput,
   requestStage,
+  suggestEcfTypes,
   summarizeCompany,
   TaxpayerData,
   validateCertificate,
   validateRequestContact,
+  validateRequestDetails,
   validateTaxpayer,
 } from '../_shared/ecf-onboarding.ts'
+import { EMITTABLE_ECF_TYPES, normalizeRnc } from '../_shared/ecf-onboarding-deps.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -109,6 +121,7 @@ interface RequestBody {
   company_id?: string
   branch_id?: string
   data?: Record<string, unknown>
+  details?: RequestDetailsInput
   sequence?: Record<string, unknown>
   certificate?: Record<string, unknown>
   contact_name?: string
@@ -137,6 +150,11 @@ interface OnboardingRow extends TaxpayerData {
   contact_name: string | null
   contact_phone: string | null
   already_authorized: boolean | null
+  phone: string | null
+  legal_rep_name: string | null
+  branches: Branch[] | null
+  ecf_types: string[] | null
+  ofv_user: string | null
   notified_at: string | null
 }
 
@@ -207,7 +225,7 @@ interface ShopSequenceRow {
 async function loadEcfSequences(service: SupabaseClient, companyId: string) {
   const { data: branches, error: branchErr } = await service
     .from('branches')
-    .select('id, name')
+    .select('id, name, address, is_active')
     .eq('company_id', companyId)
   if (branchErr) {
     throw new HttpError(500, 'db_error', 'No se pudieron leer las sucursales', branchErr.message)
@@ -430,6 +448,11 @@ async function notifyPanel(
         contact_name: row.contact_name,
         contact_phone: row.contact_phone,
         already_authorized: row.already_authorized,
+        phone: row.phone,
+        legal_rep_name: row.legal_rep_name,
+        branches: row.branches,
+        ecf_types: row.ecf_types,
+        ofv_user: row.ofv_user,
         alanube_company_id: row.alanube_company_id,
         company_registered: companyRegistered,
         requested_at: row.requested_at,
@@ -472,6 +495,39 @@ async function prefillFromSettings(
   }
 }
 
+/**
+ * Lo que el formulario muestra en "Requisitos" mientras no haya solicitud: el
+ * teléfono de la empresa, sus sucursales con dirección y los tipos e-CF
+ * equivalentes a la serie B que ya usa. Solo se sugieren los que este POS
+ * emite (sin E34: aquí todavía no hay notas de crédito electrónicas).
+ */
+async function prefillDetails(
+  service: SupabaseClient,
+  companyId: string,
+  branches: Array<{ id: string; name: string; address: string | null }>,
+) {
+  const { data: settings } = await service
+    .from('app_settings')
+    .select('company_phone')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  const { data: paper } = branches.length === 0
+    ? { data: [] }
+    : await service
+      .from('ncf_sequences')
+      .select('prefix, is_active')
+      .in('branch_id', branches.map((b) => b.id))
+  const sequences = ((paper ?? []) as Array<{ prefix: string | null; is_active: boolean | null }>)
+    .map((r) => ({ ncf_type: r.prefix, is_active: r.is_active }))
+
+  return {
+    phone: (settings as { company_phone: string | null } | null)?.company_phone ?? null,
+    branches: branches.map((b) => ({ name: b.name, address: b.address ?? '' })),
+    ecf_types: suggestEcfTypes(sequences).filter((t) => EMITTABLE_ECF_TYPES.includes(t)),
+  }
+}
+
 async function actionRequestStatus(ctx: Ctx): Promise<Response> {
   const { service, companyId } = ctx
 
@@ -503,6 +559,13 @@ async function actionRequestStatus(ctx: Ctx): Promise<Response> {
     ecfEnabled: (settings?.mode ?? 'physical') !== 'physical',
   })
 
+  const branchRows = branches as Array<
+    { id: string; name: string; address: string | null; is_active: boolean | null }
+  >
+  const suggested = current?.ecf_types && current?.branches
+    ? null
+    : await prefillDetails(service, companyId, branchRows.filter((b) => b.is_active !== false))
+
   // Sin solicitud todavía, el formulario arranca con lo que la app ya sabe de
   // la empresa en vez de en blanco.
   const data: Partial<TaxpayerData> = current
@@ -524,6 +587,13 @@ async function actionRequestStatus(ctx: Ctx): Promise<Response> {
     contact_phone: current?.contact_phone ?? null,
     already_authorized: current?.already_authorized ?? null,
     data,
+    details: {
+      phone: current?.phone ?? suggested?.phone ?? null,
+      legal_rep_name: current?.legal_rep_name ?? null,
+      branches: current?.branches ?? suggested?.branches ?? [],
+      ecf_types: current?.ecf_types ?? suggested?.ecf_types ?? [],
+      ofv_user: current?.ofv_user ?? null,
+    },
     mode: settings?.mode ?? 'physical',
     environment: settings?.environment ?? 'sandbox',
     certification_status: settings?.certification_status ?? 'pending',
@@ -550,15 +620,24 @@ async function actionSubmitRequest(ctx: Ctx): Promise<Response> {
   const data = validateTaxpayer(body.data ?? {}, { forRegistration: true })
   const contact = validateRequestContact(body)
   const cert = validateCertificate(body.certificate ?? {})
+  // Builds viejos no mandan `details`: se les sigue aceptando la solicitud.
+  // `hasSavedOfvPassword: true` porque aquí la clave de la OFV no se pide (la
+  // certificación es manual); así validateRequestDetails no la exige. Si un
+  // cliente la manda igual, se descarta abajo: nunca se guarda.
+  const details = body.details
+    ? validateRequestDetails(body.details, { hasSavedOfvPassword: true })
+    : null
   const errors = [
     ...(data.ok ? [] : data.errors),
+    ...(data.ok && details ? missingForClientRequest(data.value) : []),
+    ...(details && !details.ok ? details.errors : []),
     ...(contact.ok ? [] : contact.errors),
     ...(cert.ok ? [] : cert.errors),
     ...(body.accept_terms === true
       ? []
       : ['Falta autorizar el registro de tu certificado con el proveedor.']),
   ]
-  if (errors.length > 0 || !data.ok || !contact.ok) {
+  if (errors.length > 0 || !data.ok || !contact.ok || (details && !details.ok)) {
     throw new HttpError(422, 'invalid_request', errors.join(' '), errors)
   }
 
@@ -583,10 +662,20 @@ async function actionSubmitRequest(ctx: Ctx): Promise<Response> {
   // La solicitud queda guardada aunque el alta con el proveedor falle: así se
   // le puede dar seguimiento en vez de perderla.
   const now = new Date().toISOString()
+  const d = details?.ok ? details.value : null
   const saved = await upsertOnboarding(service, companyId, userId, current, {
     ...data.value,
     ...contact.value,
     already_authorized: body.already_authorized === true,
+    ...(d
+      ? {
+        phone: d.phone,
+        legal_rep_name: d.legal_rep_name,
+        branches: d.branches,
+        ecf_types: d.ecf_types,
+        ofv_user: d.ofv_user,
+      }
+      : {}),
     // Un reintento (contraseña equivocada, por ejemplo) no cambia quién ni
     // cuándo lo pidió.
     ...(current?.requested_at ? {} : { requested_at: now, requested_by: userId }),
@@ -615,6 +704,21 @@ async function actionSubmitRequest(ctx: Ctx): Promise<Response> {
         company_registered: false,
         stage: 'company',
         message: 'Tu RNC ya estaba registrado con nuestro proveedor. Lo revisamos y te contactamos.',
+      })
+    }
+
+    if (e.code === 'config_error') {
+      // Este servidor todavía no tiene la cuenta del proveedor (ALANUBE_*).
+      // No es algo que el cliente pueda arreglar: la solicitud ya quedó
+      // guardada, el panel se entera y el operador hace el registro a mano
+      // (la certificación es manual). El certificado no se guardó: se le pide.
+      console.error('ecf-onboarding: alta sin proveedor configurado:', e.message)
+      await notifyPanel(service, saved, companyName, false)
+      return json({
+        ok: true,
+        company_registered: false,
+        stage: 'company',
+        message: 'Recibimos tu solicitud. Te vamos a contactar para terminar el registro.',
       })
     }
 
@@ -728,6 +832,63 @@ async function actionSaveSequence(ctx: Ctx): Promise<Response> {
  * emitiendo serie E que nadie puede firmar: se rechaza antes en vez de
  * fallar en la primera venta.
  */
+/**
+ * El RNC con el que salen las facturas (`app_settings.company_tax_id`, el que
+ * manda emit-document) tiene que ser el de la empresa vinculada en Alanube.
+ * Si el ULID quedó apuntando a otro contribuyente (vinculado a mano, por
+ * ejemplo), los comprobantes se firmarían con el certificado ajeno. Mismo
+ * chequeo que `provision-ecf` en mangospos.
+ */
+async function assertSameRnc(
+  service: SupabaseClient,
+  companyId: string,
+  alanubeCompanyId: string,
+): Promise<void> {
+  const { data: appSettings, error } = await service
+    .from('app_settings')
+    .select('company_tax_id')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) throw new HttpError(500, 'db_error', 'No se pudo leer el RNC de la empresa', error.message)
+  const rncInvoices = normalizeRnc((appSettings as { company_tax_id: string | null } | null)?.company_tax_id)
+  if (!rncInvoices) {
+    throw new HttpError(
+      409,
+      'missing_rnc',
+      'Tu empresa no tiene RNC en Configuración → Información de la Compañía. Sin él no se puede emitir.',
+    )
+  }
+
+  let company: AssociatedCompany
+  try {
+    // OJO: /companies/{id}. `GET /companies` a secas devuelve siempre la
+    // empresa principal de la cuenta.
+    company = unwrapCompany(await alanubeOrThrow().request<unknown>({
+      method: 'GET',
+      path: `/companies/${encodeURIComponent(alanubeCompanyId)}`,
+    }))
+  } catch (e) {
+    if (e instanceof HttpError) throw e
+    throw new HttpError(
+      502,
+      'alanube_error',
+      'No se pudo confirmar tu empresa con el proveedor. Intenta de nuevo.',
+      e instanceof AlanubeError ? e.body : String(e),
+    )
+  }
+
+  const rncProvider = normalizeRnc(company.identification)
+  if (rncProvider !== rncInvoices) {
+    throw new HttpError(
+      409,
+      'rnc_mismatch',
+      `El RNC de tus facturas (${rncInvoices}) no es el de la empresa registrada con el proveedor ` +
+        `(${rncProvider || 'sin RNC'}). Escríbenos antes de encender la facturación electrónica.`,
+      { rnc_facturas: rncInvoices, rnc_proveedor: rncProvider, empresa: company.name ?? null },
+    )
+  }
+}
+
 async function actionSetEcfEnabled(ctx: Ctx): Promise<Response> {
   const { service, companyId, userId, body } = ctx
   if (typeof body.enabled !== 'boolean') {
@@ -759,6 +920,7 @@ async function actionSetEcfEnabled(ctx: Ctx): Promise<Response> {
         'No hay una secuencia e-NCF activa, vigente y con números: la primera venta fallaría.',
       )
     }
+    await assertSameRnc(service, companyId, settings.alanube_company_id)
   }
 
   // 'hybrid' y no 'electronic': el respaldo en papel es lo que salva la venta

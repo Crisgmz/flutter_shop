@@ -38,6 +38,7 @@ import '../data/reports_repository.dart'
 import '../domain/report_category.dart';
 import '../export/report_export_models.dart';
 import '../export/report_export_service.dart';
+import 'date_range_preset_bar.dart';
 import 'reports_providers.dart';
 
 class ReportsPage extends ConsumerWidget {
@@ -345,66 +346,16 @@ class _FilterBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final range = ref.watch(reportDateRangeProvider);
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
         padding: const EdgeInsets.all(AppTokens.s12),
-        child: Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: AppTokens.s8,
-          runSpacing: AppTokens.s8,
-          children: [
-            for (final preset in ReportDateRangePreset.values)
-              if (preset != ReportDateRangePreset.customRange)
-                ChoiceChip(
-                  label: Text(preset.label),
-                  selected: range.preset == preset,
-                  onSelected: (_) {
-                    ref.read(reportDateRangeProvider.notifier).state =
-                        ReportDateRange.fromPreset(preset);
-                  },
-                ),
-            OutlinedButton.icon(
-              onPressed: () => _pickCustomRange(context, ref, range),
-              icon: const Icon(Icons.calendar_today_outlined, size: 16),
-              label: Text(
-                range.preset == ReportDateRangePreset.customRange
-                    ? '${formatDate(range.from)} → ${formatDate(range.to)}'
-                    : 'Personalizado',
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            const SizedBox(width: AppTokens.s8),
-            Text(
-              'Rango actual: ${formatDate(range.from)} → ${formatDate(range.to)}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppTokens.mutedForeground,
-                  ),
-            ),
-          ],
+        child: DateRangePresetBar(
+          range: ref.watch(reportDateRangeProvider),
+          onChanged: (range) =>
+              ref.read(reportDateRangeProvider.notifier).state = range,
         ),
       ),
-    );
-  }
-
-  Future<void> _pickCustomRange(
-    BuildContext context,
-    WidgetRef ref,
-    ReportDateRange current,
-  ) async {
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
-      initialDateRange: DateTimeRange(start: current.from, end: current.to),
-    );
-    if (picked == null) return;
-    ref.read(reportDateRangeProvider.notifier).state =
-        ReportDateRange.fromPreset(
-      ReportDateRangePreset.customRange,
-      customFrom: picked.start,
-      customTo: picked.end,
     );
   }
 }

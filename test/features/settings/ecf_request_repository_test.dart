@@ -1,5 +1,6 @@
 import 'package:flutter_app/features/settings/data/ecf_request_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show FunctionException;
 
 void main() {
   group('etapa de la solicitud', () {
@@ -64,6 +65,30 @@ void main() {
       expect(status.sequences, isEmpty);
       expect(status.data.rnc, isNull);
       expect(status.requestedAt, isNull);
+      expect(status.details.branches, isEmpty);
+      expect(status.details.ecfTypes, isEmpty);
+    });
+
+    test('lee los requisitos que precargan el formulario', () {
+      final status = EcfRequestStatus.fromJson({
+        'stage': 'none',
+        'details': {
+          'phone': '8095550000',
+          'legal_rep_name': 'Ana Pérez',
+          'branches': [
+            {'name': 'Principal', 'address': 'Calle Central 17B'},
+            'basura que no es un mapa',
+          ],
+          'ecf_types': ['E31', 'E32'],
+          'ofv_user': '131974602',
+        },
+      });
+
+      expect(status.details.phone, '8095550000');
+      expect(status.details.legalRepName, 'Ana Pérez');
+      expect(status.details.branches.single.address, 'Calle Central 17B');
+      expect(status.details.ecfTypes, ['E31', 'E32']);
+      expect(status.details.ofvUser, '131974602');
     });
 
     test('modo híbrido cuenta como electrónica encendida', () {
@@ -73,6 +98,50 @@ void main() {
         EcfRequestStatus.fromJson({'stage': 'active', 'mode': 'hybrid'})
             .electronicEnabled,
         isTrue,
+      );
+    });
+  });
+
+  group('errores de la función', () {
+    String describe(int status, Object? details) =>
+        EcfRequestRepository.describeFunctionError(
+          FunctionException(status: status, details: details),
+        ).message;
+
+    test('sin publicar en el Supabase propio no sale el mensaje genérico', () {
+      // Lo que responde el router `main` de supabase.busiposweb.com cuando la
+      // carpeta de la función no existe (28 oct 2026).
+      expect(
+        describe(500, {
+          'msg': 'InvalidWorkerCreation: worker boot error: failed to '
+              'bootstrap runtime: could not find an appropriate entrypoint',
+        }),
+        'El servidor todavía no tiene esta función disponible.',
+      );
+      expect(
+        describe(404, {'message': ''}),
+        'El servidor todavía no tiene esta función disponible.',
+      );
+    });
+
+    test('el mensaje propio de la función manda', () {
+      expect(
+        describe(409, {'error': 'rnc_mismatch', 'message': 'El RNC no es.'}),
+        'El RNC no es.',
+      );
+      expect(
+        describe(422, {
+          'message': 'x',
+          'detail': ['Falta el RNC.', 'Falta el correo.'],
+        }),
+        'Falta el RNC. Falta el correo.',
+      );
+    });
+
+    test('otro error del router sigue siendo genérico', () {
+      expect(
+        describe(401, {'msg': 'Invalid JWT'}),
+        'No se pudo completar la solicitud. Intenta de nuevo.',
       );
     });
   });
@@ -119,6 +188,27 @@ void main() {
         'municipality',
         'email',
       ]);
+    });
+
+    test('los requisitos viajan sin clave de la Oficina Virtual', () {
+      // La certificación es manual: la clave se pide aparte, nunca por aquí.
+      const details = EcfRequestDetails(
+        phone: '8095550000',
+        legalRepName: 'Ana Pérez',
+        branches: [EcfRequestBranch(name: 'Principal', address: 'Calle 1')],
+        ecfTypes: ['E32'],
+        ofvUser: '131974602',
+      );
+
+      expect(details.toJson(), {
+        'phone': '8095550000',
+        'legal_rep_name': 'Ana Pérez',
+        'branches': [
+          {'name': 'Principal', 'address': 'Calle 1'},
+        ],
+        'ecf_types': ['E32'],
+        'ofv_user': '131974602',
+      });
     });
   });
 }

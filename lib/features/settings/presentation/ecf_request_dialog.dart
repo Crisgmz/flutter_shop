@@ -10,13 +10,17 @@ import 'settings_providers.dart';
 
 /// Formulario con el que el dueño solicita la facturación electrónica.
 ///
-/// Portado de mangospos (`ecf_request_dialog.dart`). Pide exactamente lo que
-/// el proveedor necesita para dar de alta la empresa ante la DGII: los datos
-/// del contribuyente tal como están en el RNC, con quién coordinar, y el
-/// certificado de firma digital con su contraseña.
+/// Portado de mangospos (`ecf_request_dialog.dart`). Pide lo que el proveedor
+/// necesita para dar de alta la empresa ante la DGII (los datos del
+/// contribuyente tal como están en el RNC y el certificado de firma digital
+/// con su contraseña) y lo que necesita quien hace la certificación: teléfono,
+/// representante legal, sucursales, tipos de comprobante y usuario de la
+/// Oficina Virtual.
 ///
 /// El certificado no se guarda: viaja al proveedor en la misma petición y se
-/// descarta. Eso se le dice al usuario en la pantalla, no solo en el código.
+/// descarta. La clave de la Oficina Virtual no se pide: la certificación es
+/// manual y se coordina aparte. Eso se le dice al usuario en la pantalla, no
+/// solo en el código.
 class EcfRequestDialog extends ConsumerStatefulWidget {
   const EcfRequestDialog({super.key, required this.status});
 
@@ -46,7 +50,12 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
   late final TextEditingController _email;
   late final TextEditingController _contactName;
   late final TextEditingController _contactPhone;
+  late final TextEditingController _phone;
+  late final TextEditingController _legalRep;
+  late final TextEditingController _ofvUser;
   final _certPassword = TextEditingController();
+  late final List<_BranchFields> _branches;
+  late final Set<String> _types;
 
   bool _alreadyAuthorized = false;
   bool _acceptTerms = false;
@@ -71,6 +80,16 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
       text: widget.status.contactPhone ?? '',
     );
     _alreadyAuthorized = widget.status.alreadyAuthorized ?? false;
+    final x = widget.status.details;
+    _phone = TextEditingController(text: x.phone ?? '');
+    _legalRep = TextEditingController(text: x.legalRepName ?? '');
+    // El usuario de la OFV casi siempre es el RNC: se sugiere, no se impone.
+    _ofvUser = TextEditingController(text: x.ofvUser ?? d.rnc ?? '');
+    _branches = [
+      for (final b in x.branches)
+        _BranchFields(name: b.name, address: b.address),
+    ];
+    _types = x.ecfTypes.where(emittableEcfTypes.contains).toSet();
   }
 
   @override
@@ -85,9 +104,15 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
       _email,
       _contactName,
       _contactPhone,
+      _phone,
+      _legalRep,
+      _ofvUser,
       _certPassword,
     ]) {
       c.dispose();
+    }
+    for (final b in _branches) {
+      b.dispose();
     }
     super.dispose();
   }
@@ -184,8 +209,96 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                     return null;
                   },
                 ),
+                _field(
+                  controller: _phone,
+                  label: 'Teléfono de la empresa',
+                  hint: '809-555-1234',
+                  keyboardType: TextInputType.phone,
+                  validator: (v) {
+                    final digits = (v ?? '').replaceAll(RegExp(r'\D'), '');
+                    if (digits.isEmpty) {
+                      return 'Falta el teléfono de la empresa.';
+                    }
+                    if (digits.length < 10 || digits.length > 15) {
+                      return 'Incluye el código de área.';
+                    }
+                    return null;
+                  },
+                ),
+                _field(
+                  controller: _legalRep,
+                  label: 'Representante legal',
+                  hint: 'Nombre completo, como ante la DGII',
+                  maxLength: 120,
+                  validator: _required('Falta el representante legal.'),
+                ),
 
                 const SizedBox(height: AppTokens.s8),
+                _section('Sucursales'),
+                const Text(
+                  'Cada local donde vas a facturar, con su dirección.',
+                  style: TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: AppTokens.s8),
+                for (final b in _branches) _branchRow(b),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _sending
+                        ? null
+                        : () => setState(() => _branches.add(_BranchFields())),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Agregar sucursal'),
+                  ),
+                ),
+
+                const SizedBox(height: AppTokens.s8),
+                _section('Comprobantes que vas a usar'),
+                Wrap(
+                  spacing: AppTokens.s8,
+                  runSpacing: AppTokens.s8,
+                  children: [
+                    for (final t in emittableEcfTypes)
+                      FilterChip(
+                        label: Text('$t · ${ecfTypeLabels[t]}'),
+                        selected: _types.contains(t),
+                        onSelected: _sending
+                            ? null
+                            : (v) => setState(() {
+                                if (v) {
+                                  _types.add(t);
+                                } else {
+                                  _types.remove(t);
+                                }
+                              }),
+                      ),
+                  ],
+                ),
+
+                const SizedBox(height: AppTokens.s16),
+                _section('Oficina Virtual de la DGII'),
+                _field(
+                  controller: _ofvUser,
+                  label: 'Usuario',
+                  hint: 'Casi siempre es tu RNC o cédula',
+                  maxLength: 60,
+                  validator: _required(
+                    'Falta el usuario de la Oficina Virtual.',
+                  ),
+                ),
+                const Text(
+                  'La clave no se escribe aquí: quien te acompaña en el '
+                  'trámite te la pide aparte.',
+                  style: TextStyle(
+                    color: AppTokens.mutedForeground,
+                    fontSize: 12,
+                  ),
+                ),
+
+                const SizedBox(height: AppTokens.s16),
                 _section('Con quién coordinamos'),
                 _field(
                   controller: _contactName,
@@ -363,6 +476,45 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
   String? Function(String?) _required(String message) =>
       (v) => (v ?? '').trim().isEmpty ? message : null;
 
+  Widget _branchRow(_BranchFields b) {
+    return Row(
+      key: ObjectKey(b),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          flex: 2,
+          child: _field(controller: b.name, label: 'Nombre', maxLength: 80),
+        ),
+        const SizedBox(width: AppTokens.s12),
+        Expanded(
+          flex: 3,
+          child: _field(
+            controller: b.address,
+            label: 'Dirección',
+            maxLength: 150,
+            // Una fila con nombre y sin dirección no le sirve a la DGII; una
+            // fila vacía se ignora.
+            validator: (v) =>
+                (v ?? '').trim().isEmpty && b.name.text.trim().isNotEmpty
+                    ? 'Falta la dirección.'
+                    : null,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Quitar sucursal',
+          onPressed: _sending ? null : () => _removeBranch(b),
+          icon: const Icon(Icons.close, size: 18),
+        ),
+      ],
+    );
+  }
+
+  void _removeBranch(_BranchFields b) {
+    setState(() => _branches.remove(b));
+    // Sus campos siguen montados hasta el próximo frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) => b.dispose());
+  }
+
   Future<void> _pickCertificate() async {
     final picked = await FileIoHelper.pickCertificateFile();
     if (picked == null || !mounted) return;
@@ -382,6 +534,10 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_types.isEmpty) {
+      AppSnackBar.error(context, 'Elige al menos un tipo de comprobante.');
+      return;
+    }
     if (_certificate == null) {
       AppSnackBar.error(context, 'Falta elegir el certificado .p12.');
       return;
@@ -409,6 +565,23 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                 municipality: _municipality.text.trim(),
                 email: _email.text.trim(),
               ),
+              details: EcfRequestDetails(
+                phone: _phone.text.trim(),
+                legalRepName: _legalRep.text.trim(),
+                branches: [
+                  for (final b in _branches)
+                    if (b.address.text.trim().isNotEmpty)
+                      EcfRequestBranch(
+                        name: b.name.text.trim().isEmpty
+                            ? null
+                            : b.name.text.trim(),
+                        address: b.address.text.trim(),
+                      ),
+                ],
+                // En el orden del catálogo, no en el que se tocaron.
+                ecfTypes: emittableEcfTypes.where(_types.contains).toList(),
+                ofvUser: _ofvUser.text.trim(),
+              ),
               contactName: _contactName.text.trim(),
               contactPhone: _contactPhone.text.trim(),
               alreadyAuthorized: _alreadyAuthorized,
@@ -433,5 +606,19 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+}
+
+class _BranchFields {
+  _BranchFields({String? name, String? address})
+    : name = TextEditingController(text: name ?? ''),
+      address = TextEditingController(text: address ?? '');
+
+  final TextEditingController name;
+  final TextEditingController address;
+
+  void dispose() {
+    name.dispose();
+    address.dispose();
   }
 }

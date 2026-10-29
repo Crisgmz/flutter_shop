@@ -1,18 +1,33 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Solicitud de facturación electrónica que hace el dueño desde Configuración.
 ///
 /// Todo pasa por la Edge Function `ecf-onboarding`, que valida que quien pide
 /// sea administrador de la empresa. El certificado viaja a Alanube en la misma
-/// petición y no se guarda en la base.
+/// petición y no se guarda en la base. La clave de la Oficina Virtual tampoco
+/// se pide: la certificación ante la DGII la hace el operador a mano.
 ///
 /// Portado de mangospos (`lib/data/repositories/ecf_request_repository.dart`),
 /// que es donde este flujo ya está probado. Cambia la llave —acá la
 /// facturación es de la EMPRESA (`company_id`), no de la sucursal— y el
 /// formato de error, que sigue el del resto de funciones de esta app.
+
+/// Tipos de e-CF que maneja el alta, con lo que significa cada uno.
+const ecfTypeLabels = <String, String>{
+  'E31': 'Crédito fiscal (cliente con RNC)',
+  'E32': 'Consumo (consumidor final)',
+  'E34': 'Nota de crédito',
+  'E44': 'Régimen especial',
+  'E45': 'Gubernamental',
+};
+
+/// Los que este POS emite hoy: sin E34, porque todavía no hay notas de crédito
+/// electrónicas. Igual que `EMITTABLE_ECF_TYPES` en el servidor.
+const emittableEcfTypes = ['E31', 'E32', 'E44', 'E45'];
 
 /// En qué va la facturación electrónica de la empresa (lo deriva el servidor).
 enum EcfRequestStage {
@@ -81,6 +96,72 @@ class EcfRequestData {
   };
 }
 
+/// Sucursal que declara el cliente en la solicitud (con su dirección).
+class EcfRequestBranch {
+  const EcfRequestBranch({this.name, required this.address});
+
+  final String? name;
+  final String address;
+
+  factory EcfRequestBranch.fromJson(Map<String, dynamic> json) =>
+      EcfRequestBranch(
+        name: json['name'] as String?,
+        address: (json['address'] ?? '').toString(),
+      );
+
+  Map<String, dynamic> toJson() => {'name': name, 'address': address};
+}
+
+/// Requisitos de la solicitud que no viajan al proveedor: son para quien hace
+/// la certificación ante la DGII.
+class EcfRequestDetails {
+  const EcfRequestDetails({
+    this.phone,
+    this.legalRepName,
+    this.branches = const [],
+    this.ecfTypes = const [],
+    this.ofvUser,
+  });
+
+  /// Teléfono de la empresa (el de quien coordina es el de contacto).
+  final String? phone;
+  final String? legalRepName;
+  final List<EcfRequestBranch> branches;
+
+  /// E31, E32...
+  final List<String> ecfTypes;
+
+  /// Usuario de la Oficina Virtual de la DGII. La clave no se pide.
+  final String? ofvUser;
+
+  factory EcfRequestDetails.fromJson(Map<String, dynamic> json) {
+    final branches = json['branches'];
+    final types = json['ecf_types'];
+    return EcfRequestDetails(
+      phone: json['phone'] as String?,
+      legalRepName: json['legal_rep_name'] as String?,
+      branches: branches is List
+          ? [
+              for (final b in branches)
+                if (b is Map)
+                  EcfRequestBranch.fromJson(Map<String, dynamic>.from(b)),
+            ]
+          : const [],
+      ecfTypes:
+          types is List ? types.map((t) => t.toString()).toList() : const [],
+      ofvUser: json['ofv_user'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'phone': phone,
+    'legal_rep_name': legalRepName,
+    'branches': branches.map((b) => b.toJson()).toList(),
+    'ecf_types': ecfTypes,
+    'ofv_user': ofvUser,
+  };
+}
+
 /// Sucursal de la empresa, para decir dónde se usa una secuencia e-NCF.
 class EcfBranch {
   const EcfBranch({required this.id, required this.name});
@@ -140,6 +221,7 @@ class EcfRequestStatus {
     this.certificationStatus = 'pending',
     this.alanubeCompanyId,
     this.data = const EcfRequestData(),
+    this.details = const EcfRequestDetails(),
     this.branches = const [],
     this.sequences = const [],
   });
@@ -158,6 +240,7 @@ class EcfRequestStatus {
 
   /// Lo último que mandó (o lo que la app ya sabía): precarga el formulario.
   final EcfRequestData data;
+  final EcfRequestDetails details;
 
   final List<EcfBranch> branches;
   final List<EcfSequence> sequences;
@@ -166,6 +249,7 @@ class EcfRequestStatus {
 
   factory EcfRequestStatus.fromJson(Map<String, dynamic> json) {
     final data = json['data'];
+    final details = json['details'];
     return EcfRequestStatus(
       stage: EcfRequestStage.parse(json['stage'] as String?),
       requestedAt: DateTime.tryParse(json['requested_at']?.toString() ?? ''),
@@ -179,6 +263,9 @@ class EcfRequestStatus {
       data: data is Map
           ? EcfRequestData.fromJson(Map<String, dynamic>.from(data))
           : const EcfRequestData(),
+      details: details is Map
+          ? EcfRequestDetails.fromJson(Map<String, dynamic>.from(details))
+          : const EcfRequestDetails(),
       branches: (json['branches'] as List? ?? const [])
           .map((e) => EcfBranch.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList(growable: false),
@@ -193,6 +280,7 @@ class EcfRequestStatus {
 class EcfRequestSubmission {
   const EcfRequestSubmission({
     required this.data,
+    required this.details,
     required this.contactName,
     required this.contactPhone,
     required this.alreadyAuthorized,
@@ -202,6 +290,7 @@ class EcfRequestSubmission {
   });
 
   final EcfRequestData data;
+  final EcfRequestDetails details;
   final String contactName;
   final String contactPhone;
   final bool alreadyAuthorized;
@@ -288,6 +377,7 @@ class EcfRequestRepository {
     final data = await _invoke({
       'action': 'submit_request',
       'data': s.data.toJson(),
+      'details': s.details.toJson(),
       'contact_name': s.contactName,
       'contact_phone': s.contactPhone,
       'already_authorized': s.alreadyAuthorized,
@@ -329,14 +419,20 @@ class EcfRequestRepository {
       if (data is Map) return Map<String, dynamic>.from(data);
       throw const EcfRequestException('Respuesta inesperada del servidor.');
     } on FunctionException catch (e) {
-      throw _describe(e);
+      throw describeFunctionError(e);
     }
   }
 
   /// La función devuelve `{ error, message, detail }`. Cuando el detalle trae
   /// la lista de lo que falta, se muestra eso: es más útil que un mensaje
   /// genérico frente a un formulario con ocho campos.
-  EcfRequestException _describe(FunctionException e) {
+  ///
+  /// Si la función no está publicada, Supabase cloud responde 404, pero el
+  /// Supabase propio (Coolify) responde 500 desde su router `main` con
+  /// `{ msg: "InvalidWorkerCreation: … could not find an appropriate
+  /// entrypoint" }`. Las dos cosas significan lo mismo para el usuario.
+  @visibleForTesting
+  static EcfRequestException describeFunctionError(FunctionException e) {
     final details = e.details;
     if (details is Map) {
       final map = Map<String, dynamic>.from(details);
@@ -352,10 +448,14 @@ class EcfRequestRepository {
         return EcfRequestException(message, code: map['error']?.toString());
       }
     }
+    final routerMsg = details is Map ? details['msg']?.toString() ?? '' : '';
+    final notDeployed = e.status == 404 ||
+        routerMsg.contains('could not find an appropriate entrypoint');
     return EcfRequestException(
-      e.status == 404
+      notDeployed
           ? 'El servidor todavía no tiene esta función disponible.'
           : 'No se pudo completar la solicitud. Intenta de nuevo.',
+      code: notDeployed ? 'not_deployed' : null,
     );
   }
 }

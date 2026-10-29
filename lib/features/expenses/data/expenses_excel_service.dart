@@ -47,10 +47,11 @@ class ExpensesExcelService {
 
   void _writeExpenseRow(Sheet sheet, int row, ExpenseEntity e) {
     final values = <String, String>{
-      'fecha': '${e.expenseDate.year}-${e.expenseDate.month.toString().padLeft(2, '0')}-${e.expenseDate.day.toString().padLeft(2, '0')}',
+      'fecha':
+          '${e.expenseDate.year}-${e.expenseDate.month.toString().padLeft(2, '0')}-${e.expenseDate.day.toString().padLeft(2, '0')}',
       'categoria': e.category,
       'proveedor': e.supplierName ?? '-',
-      'metodo_pago': _pretty(e.paymentMethod),
+      'metodo_pago': expenseMethodLabel(e.paymentMethod),
       'descripcion': e.description ?? '',
       'monto': e.amount.toStringAsFixed(2),
     };
@@ -60,13 +61,5 @@ class ExpensesExcelService {
       );
       cell.value = TextCellValue(values[_expenseHeaders[i]] ?? '');
     }
-  }
-
-  String _pretty(String value) {
-    if (value.isEmpty) return '-';
-    return value
-        .split('_')
-        .map((part) => part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}')
-        .join(' ');
   }
 }

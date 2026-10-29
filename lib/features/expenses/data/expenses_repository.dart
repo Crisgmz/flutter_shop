@@ -101,7 +101,14 @@ class ExpensesRepository {
         .toList(growable: false);
   }
 
-  Future<List<ExpenseEntity>> fetchExpenses() async {
+  /// Gastos de la sucursal entre [from] y [to] (días completos, inclusive).
+  ///
+  /// Trae TODAS las filas del rango en bloques: PostgREST corta cada respuesta
+  /// (max_rows) y los totales/exportación deben cubrir el rango completo.
+  Future<List<ExpenseEntity>> fetchExpenses({
+    required DateTime from,
+    required DateTime to,
+  }) async {
     final branchId = await _currentBranchId();
     if (branchId == null) return const [];
 
@@ -110,14 +117,23 @@ class ExpensesRepository {
       for (final supplier in suppliers) supplier.id: supplier.name,
     };
 
-    final rows = await _client
-        .from('expenses')
-        .select(
-          'id, supplier_id, category, description, payment_method, amount, expense_date',
-        )
-        .eq('branch_id', branchId)
-        .order('expense_date', ascending: false)
-        .limit(100);
+    const chunkSize = 1000;
+    final rows = <dynamic>[];
+    for (var start = 0; ; start += chunkSize) {
+      final chunk = await _client
+          .from('expenses')
+          .select(
+            'id, supplier_id, category, description, payment_method, amount, expense_date',
+          )
+          .eq('branch_id', branchId)
+          .gte('expense_date', _isoDate(from))
+          .lte('expense_date', _isoDate(to))
+          .order('expense_date', ascending: false)
+          .order('id')
+          .range(start, start + chunkSize - 1);
+      rows.addAll(chunk);
+      if (chunk.length < chunkSize) break;
+    }
 
     return rows
         .map(
@@ -127,6 +143,29 @@ class ExpensesRepository {
           ),
         )
         .toList(growable: false);
+  }
+
+  /// Categorías ya usadas en la sucursal (las más recientes primero, sin
+  /// repetir mayúsculas/minúsculas). Alimenta el autocompletado del formulario.
+  Future<List<String>> fetchCategories() async {
+    final branchId = await _currentBranchId();
+    if (branchId == null) return const [];
+
+    final rows = await _client
+        .from('expenses')
+        .select('category')
+        .eq('branch_id', branchId)
+        .order('expense_date', ascending: false)
+        .limit(1000);
+
+    final seen = <String>{};
+    final categories = <String>[];
+    for (final row in rows) {
+      final category = ((row as Map)['category'] ?? '').toString().trim();
+      if (category.isEmpty) continue;
+      if (seen.add(category.toLowerCase())) categories.add(category);
+    }
+    return categories;
   }
 
   /// [cashSessionId]: la caja ACTIVA del POS (activeCashSessionIdProvider).
@@ -145,7 +184,8 @@ class ExpensesRepository {
       throw Exception('El monto debe ser mayor que 0.');
     }
 
-    final resolvedSessionId = (cashSessionId != null && cashSessionId.isNotEmpty)
+    final resolvedSessionId =
+        (cashSessionId != null && cashSessionId.isNotEmpty)
         ? cashSessionId
         : await _currentOpenCashSessionId(branchId);
 
@@ -157,7 +197,7 @@ class ExpensesRepository {
       'description': _nullIfEmpty(input.description),
       'payment_method': input.paymentMethod,
       'amount': _round2(input.amount),
-      'expense_date': input.expenseDate.toIso8601String().split('T').first,
+      'expense_date': _isoDate(input.expenseDate),
     });
   }
 
@@ -180,7 +220,7 @@ class ExpensesRepository {
           'description': _nullIfEmpty(input.description),
           'payment_method': input.paymentMethod,
           'amount': _round2(input.amount),
-          'expense_date': input.expenseDate.toIso8601String().split('T').first,
+          'expense_date': _isoDate(input.expenseDate),
         })
         .eq('id', id)
         .eq('branch_id', branchId)
@@ -302,7 +342,8 @@ class ExpensesRepository {
       showTax: false,
       showBarcode: settings['receipt_hide_barcode'] != true,
       logoOnLeft:
-          settings['invoice_logo_position']?.toString().toLowerCase() != 'right',
+          settings['invoice_logo_position']?.toString().toLowerCase() !=
+          'right',
       footerMessage: 'Comprobante de egreso',
       notes: noteParts.isEmpty ? null : noteParts.join(' · '),
       items: [
@@ -316,10 +357,7 @@ class ExpensesRepository {
         ),
       ],
       payments: [
-        PrintPaymentLine(
-          method: _expenseMethodLabel(method),
-          amount: amount,
-        ),
+        PrintPaymentLine(method: expenseMethodLabel(method), amount: amount),
       ],
       totals: PrintTotals(
         subtotal: amount,
@@ -374,6 +412,9 @@ class ExpensesRepository {
   }
 }
 
+/// `yyyy-MM-dd` de la fecha local (columna `date`, sin zona horaria).
+String _isoDate(DateTime d) => d.toIso8601String().split('T').first;
+
 String? _nullIfEmpty(String? value) {
   if (value == null) return null;
   final trimmed = value.trim();
@@ -389,8 +430,8 @@ String? _expenseFirstNonEmpty(List<dynamic> values) {
   return null;
 }
 
-/// Método de pago en español para el comprobante de gasto.
-String _expenseMethodLabel(String value) {
+/// Método de pago en español (tabla, exportación y comprobante de gasto).
+String expenseMethodLabel(String value) {
   switch (value) {
     case 'cash':
       return 'Efectivo';

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show AuthState;
 
@@ -99,6 +100,10 @@ class ShopPlusApp extends ConsumerWidget {
       theme: AppTheme.light,
       debugShowCheckedModeBanner: false,
       routerConfig: router,
+      // Calendarios, diálogos y textos estándar de Material en español.
+      locale: const Locale('es'),
+      supportedLocales: const [Locale('es')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
     );
   }
 }

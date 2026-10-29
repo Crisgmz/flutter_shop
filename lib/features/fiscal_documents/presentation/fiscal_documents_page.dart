@@ -33,6 +33,7 @@ const _ecfStatusLabels = <String, String>{
   'sent': 'e-CF en proceso',
   'accepted': 'e-CF aceptado',
   'rejected': 'e-CF rechazado',
+  'uncertain': 'e-CF sin confirmar',
 };
 
 const _ecfStatusColors = <String, Color>{
@@ -40,6 +41,7 @@ const _ecfStatusColors = <String, Color>{
   'sent': Color(0xFF3B82F6),
   'accepted': Color(0xFF22C55E),
   'rejected': Color(0xFFEF4444),
+  'uncertain': AppTokens.warning,
 };
 
 const _receiptTypes = <String>[
@@ -634,6 +636,7 @@ class _FiscalDocDetailDialogState
     extends ConsumerState<_FiscalDocDetailDialog> {
   bool _voiding = false;
   bool _emitting = false;
+  bool _resolving = false;
 
   /// Re-dispara la emisión del e-CF (Edge Function `emit-document`). Útil
   /// cuando quedó pendiente (proveedor caído, empresa sin registrar) o para
@@ -658,6 +661,103 @@ class _FiscalDocDetailDialogState
       );
     } finally {
       if (mounted) setState(() => _emitting = false);
+    }
+  }
+
+  /// Un envío incierto (migración 101) pudo llegar a Alanube: no se reenvía
+  /// solo. Quien administra comprobantes lo busca en Alanube por su e-NCF y
+  /// dice si está (con su id) o no (se reenvía con el mismo e-NCF).
+  Future<void> _onResolveUncertain() async {
+    final idController = TextEditingController();
+    final noteController = TextEditingController();
+
+    final found = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Resolver envío sin confirmar'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'No se sabe si Alanube recibió el ${widget.doc.ncf}. Búscalo en '
+                'el portal de Alanube por ese e-NCF antes de decidir: '
+                'reenviarlo si ya está lo duplicaría ante la DGII.',
+                style: const TextStyle(color: AppTokens.mutedForeground),
+              ),
+              const SizedBox(height: AppTokens.s12),
+              TextField(
+                controller: idController,
+                decoration: const InputDecoration(
+                  labelText: 'ID del documento en Alanube',
+                  helperText: 'Solo si lo encontraste.',
+                ),
+              ),
+              const SizedBox(height: AppTokens.s12),
+              TextField(
+                controller: noteController,
+                decoration: const InputDecoration(
+                  labelText: 'Nota (opcional)',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('No está: reenviar'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (idController.text.trim().isEmpty) return;
+              Navigator.of(dialogContext).pop(true);
+            },
+            child: const Text('Sí está en Alanube'),
+          ),
+        ],
+      ),
+    );
+
+    if (found == null || !mounted) return;
+    final alanubeId = idController.text.trim();
+    final note = noteController.text.trim();
+
+    setState(() => _resolving = true);
+    try {
+      final repo = ref.read(fiscalDocumentsRepositoryProvider);
+      await repo.resolveUncertainEmission(
+        fiscalDocumentId: widget.doc.id,
+        foundInAlanube: found,
+        alanubeDocumentId: found ? alanubeId : null,
+        note: note.isEmpty ? null : note,
+      );
+      // Confirmado que no está: se reenvía ya, no al próximo cron.
+      if (!found) await repo.emitElectronicDocument(widget.doc.id);
+      if (!mounted) return;
+      widget.listRef.invalidate(fiscalDocumentsProvider);
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            found
+                ? 'Comprobante conciliado con Alanube.'
+                : 'Comprobante reenviado con el mismo e-NCF.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _resolving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo resolver: $error')),
+      );
     }
   }
 
@@ -740,8 +840,15 @@ class _FiscalDocDetailDialogState
     final statusLabel = fiscalStatusLabel(doc);
     final receiptLabel = fiscalReceiptLabel(doc.receiptType);
     final access = ref.watch(roleAccessProvider);
-    final canVoid =
-        !doc.isVoided && doc.fiscalStatus != 'voided' && access.canVoidSale;
+    // Incierto: podría existir ante la DGII; la base tampoco deja anularlo.
+    final canVoid = !doc.isVoided &&
+        doc.fiscalStatus != 'voided' &&
+        doc.ecfStatus != 'uncertain' &&
+        access.canVoidSale;
+    final canResolve = doc.isElectronic &&
+        !doc.isVoided &&
+        doc.ecfStatus == 'uncertain' &&
+        ref.watch(canManageNcfProvider);
 
     return AlertDialog(
       title: Row(
@@ -899,6 +1006,18 @@ class _FiscalDocDetailDialogState
                   )
                 : const Icon(Icons.send_outlined, size: 16),
             label: const Text('Emitir a DGII'),
+          ),
+        if (canResolve)
+          TextButton.icon(
+            onPressed: _resolving ? null : _onResolveUncertain,
+            icon: _resolving
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.help_outline, size: 16),
+            label: const Text('Resolver envío'),
           ),
         if (canVoid)
           TextButton.icon(

@@ -6,6 +6,7 @@ import '../../../core/theme/tokens.dart';
 import '../../../shared/formatters/formatters.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
+import '../../../shared/widgets/pagination_bar.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
@@ -182,10 +183,14 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                         ),
                 ),
                 const SizedBox(height: AppTokens.s12),
-                _PaginationBar(
+                PaginationBar(
                   pageIndex: pageIndex,
+                  pageSize: SalesHistoryRepository.pageSize,
                   hasMore: page.hasMore,
                   rowsInPage: page.rows.length,
+                  onPageChanged: (index) => ref
+                      .read(salesHistoryPageIndexProvider.notifier)
+                      .state = index,
                 ),
               ],
             ),
@@ -383,59 +388,6 @@ class _StatusFilter extends StatelessWidget {
           },
         );
       }).toList(growable: false),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Paginación
-// ─────────────────────────────────────────────────────────────────────────
-
-class _PaginationBar extends ConsumerWidget {
-  const _PaginationBar({
-    required this.pageIndex,
-    required this.hasMore,
-    required this.rowsInPage,
-  });
-
-  final int pageIndex;
-  final bool hasMore;
-  final int rowsInPage;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final first = pageIndex * SalesHistoryRepository.pageSize + 1;
-    final last = first + rowsInPage - 1;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        Text(
-          rowsInPage == 0 ? 'Sin resultados' : 'Mostrando $first – $last',
-          style: const TextStyle(
-            fontSize: 12,
-            color: AppTokens.mutedForeground,
-          ),
-        ),
-        const SizedBox(width: AppTokens.s12),
-        IconButton(
-          tooltip: 'Página anterior',
-          onPressed: pageIndex == 0
-              ? null
-              : () => ref
-                  .read(salesHistoryPageIndexProvider.notifier)
-                  .state = pageIndex - 1,
-          icon: const Icon(Icons.chevron_left, size: 20),
-        ),
-        IconButton(
-          tooltip: 'Página siguiente',
-          onPressed: hasMore
-              ? () => ref
-                  .read(salesHistoryPageIndexProvider.notifier)
-                  .state = pageIndex + 1
-              : null,
-          icon: const Icon(Icons.chevron_right, size: 20),
-        ),
-      ],
     );
   }
 }
