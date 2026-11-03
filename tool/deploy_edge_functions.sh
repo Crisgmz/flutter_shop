@@ -14,16 +14,18 @@
 #
 # Uso:
 #   tool/deploy_edge_functions.sh
-#       → solo arma build/edge-functions.tar.gz y dice cómo subirlo a mano:
-#           scp build/edge-functions.tar.gz root@2.24.119.32:
-#           ssh root@2.24.119.32
-#           cd ~ && rm -rf edge-functions && tar xzf edge-functions.tar.gz \
-#             && bash edge-functions/install_on_server.sh
-#   tool/deploy_edge_functions.sh --subir [usuario@host]
+#       → solo arma build/edge-functions.tar.gz y dice cómo subirlo a mano.
+#   tool/deploy_edge_functions.sh --subir [usuario@host] [carpeta-de-funciones]
 #       → además lo sube e instala (pide la clave del servidor una sola vez).
 #
+# En el servidor hay DOS stacks de Supabase (31 oct 2026). El de
+# supabase.busiposweb.com es el de la carpeta FUNCTIONS_DIR de abajo (ahí se
+# instaló el 29 oct y el dominio empezó a servir ecf-onboarding).
+#
 # ANTES de instalar: las migraciones 101 (la piden emit-document y
-# alanube-webhook) y 102 (la pide ecf-onboarding) tienen que estar corridas.
+# alanube-webhook), 102 y 105 (las pide ecf-onboarding) tienen que estar
+# corridas. Sin la 105, ecf-onboarding falla hasta en la tarjeta de
+# Configuración ("Falta correr la migración 105").
 #
 # Variables del servicio de Edge Functions en Coolify:
 #   SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY (las pone el
@@ -31,6 +33,9 @@
 #   ALANUBE_BASE_URL=https://sandbox.alanube.co/dom/v1
 #   ALANUBE_JWT=<jwt del proveedor>
 #   ALANUBE_WEBHOOK_SECRET=<secreto que configures en Alanube>
+#   ECF_CREDENTIALS_KEY=<32 bytes en base64: openssl rand -base64 32> — cifra
+#   el certificado, la clave OFV y el token de la DGII de la certificación.
+#   NO se cambia después: lo ya guardado dejaría de descifrarse.
 #   ECF_PANEL_NOTIFY_URL / ECF_PANEL_NOTIFY_SECRET (opcionales: avisar al
 #   panel de MangoPOS cuando entra una solicitud)
 # ============================================================================
@@ -47,9 +52,11 @@ FUNCTIONS=(_shared register-company emit-document alanube-webhook alanube-health
 
 PUSH=false
 HOST="root@2.24.119.32"
+FUNCTIONS_DIR="/data/coolify/services/x8y0lsyo0tdmk3rwvhbicwh5/volumes/functions"
 if [[ "${1:-}" == "--subir" ]]; then
   PUSH=true
   HOST="${2:-$HOST}"
+  FUNCTIONS_DIR="${3:-$FUNCTIONS_DIR}"
 elif [[ -n "${1:-}" ]]; then
   echo "Uso: $0 [--subir [usuario@host]]"
   exit 1
@@ -84,7 +91,7 @@ if ! $PUSH; then
 Para instalarlo:
   scp "$PACKAGE" $HOST:
   ssh $HOST
-  cd ~ && rm -rf edge-functions && tar xzf edge-functions.tar.gz && bash edge-functions/install_on_server.sh
+  cd ~ && rm -rf edge-functions && tar xzf edge-functions.tar.gz && bash edge-functions/install_on_server.sh $FUNCTIONS_DIR
 EOF
   exit 0
 fi
@@ -95,4 +102,4 @@ echo "→ Subiendo a $HOST…"
 scp "${SSH_OPTS[@]}" "$PACKAGE" "$HOST:"
 echo "→ Instalando…"
 ssh "${SSH_OPTS[@]}" "$HOST" \
-  'cd ~ && rm -rf edge-functions && tar xzf edge-functions.tar.gz && bash edge-functions/install_on_server.sh'
+  "cd ~ && rm -rf edge-functions && tar xzf edge-functions.tar.gz && bash edge-functions/install_on_server.sh '$FUNCTIONS_DIR'"

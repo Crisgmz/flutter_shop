@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/extensions/iterable_extensions.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
 import '../../../shared/widgets/ui_custom.dart';
@@ -588,9 +589,7 @@ class _BranchesPageState extends ConsumerState<BranchesPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo actualizar asignación: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo actualizar asignación', error);
     }
   }
 }

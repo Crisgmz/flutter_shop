@@ -17,10 +17,11 @@ import 'settings_providers.dart';
 /// representante legal, sucursales, tipos de comprobante y usuario de la
 /// Oficina Virtual.
 ///
-/// El certificado no se guarda: viaja al proveedor en la misma petición y se
-/// descarta. La clave de la Oficina Virtual no se pide: la certificación es
-/// manual y se coordina aparte. Eso se le dice al usuario en la pantalla, no
-/// solo en el código.
+/// El certificado viaja al proveedor en la misma petición. Si el cliente lo
+/// autoriza, además se guarda CIFRADO para firmar las pruebas de la DGII desde
+/// Configuración → Facturación electrónica; si no, se descarta. La clave de la
+/// Oficina Virtual es opcional y también se guarda cifrada. Eso se le dice al
+/// usuario en la pantalla, no solo en el código.
 class EcfRequestDialog extends ConsumerStatefulWidget {
   const EcfRequestDialog({super.key, required this.status});
 
@@ -54,13 +55,16 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
   late final TextEditingController _legalRep;
   late final TextEditingController _ofvUser;
   final _certPassword = TextEditingController();
+  final _ofvPassword = TextEditingController();
   late final List<_BranchFields> _branches;
   late final Set<String> _types;
 
   bool _alreadyAuthorized = false;
   bool _acceptTerms = false;
+  bool _storeCertificate = false;
   bool _sending = false;
   bool _showPassword = false;
+  bool _showOfvPassword = false;
 
   ({Uint8List bytes, String name})? _certificate;
 
@@ -108,6 +112,7 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
       _legalRep,
       _ofvUser,
       _certPassword,
+      _ofvPassword,
     ]) {
       c.dispose();
     }
@@ -289,12 +294,29 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                     'Falta el usuario de la Oficina Virtual.',
                   ),
                 ),
-                const Text(
-                  'La clave no se escribe aquí: quien te acompaña en el '
-                  'trámite te la pide aparte.',
-                  style: TextStyle(
-                    color: AppTokens.mutedForeground,
-                    fontSize: 12,
+                TextFormField(
+                  controller: _ofvPassword,
+                  obscureText: !_showOfvPassword,
+                  decoration: InputDecoration(
+                    labelText: widget.status.details.ofvPasswordSaved
+                        ? 'Clave de la Oficina Virtual (ya guardada)'
+                        : 'Clave de la Oficina Virtual (opcional)',
+                    helperText: widget.status.details.ofvPasswordSaved
+                        ? 'Déjala en blanco para conservar la que guardaste.'
+                        : 'Se guarda cifrada. Solo un administrador de tu '
+                              'empresa la puede volver a ver.',
+                    helperMaxLines: 2,
+                    suffixIcon: IconButton(
+                      onPressed: () => setState(
+                        () => _showOfvPassword = !_showOfvPassword,
+                      ),
+                      icon: Icon(
+                        _showOfvPassword
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        size: 18,
+                      ),
+                    ),
                   ),
                 ),
 
@@ -327,7 +349,7 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                 const Text(
                   'Es el archivo .p12 que te entregó la entidad certificadora '
                   '(Avansi, Camarasoft…). Se envía al proveedor para firmar '
-                  'tus comprobantes y no se guarda en el sistema.',
+                  'tus comprobantes.',
                   style: TextStyle(
                     color: AppTokens.mutedForeground,
                     fontSize: 12,
@@ -409,6 +431,23 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                   title: const Text(
                     'Autorizo a registrar mi certificado con el proveedor de '
                     'facturación electrónica',
+                  ),
+                ),
+                CheckboxListTile(
+                  value: _storeCertificate,
+                  onChanged: _sending
+                      ? null
+                      : (v) => setState(() => _storeCertificate = v ?? false),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    'Autorizo guardar mi certificado cifrado para firmar las '
+                    'pruebas de la DGII',
+                  ),
+                  subtitle: const Text(
+                    'Lo necesitas si vas a hacer la certificación desde aquí. '
+                    'Si no lo autorizas, se te pedirá cada vez que firmes.',
+                    style: TextStyle(fontSize: 12),
                   ),
                 ),
               ],
@@ -581,6 +620,9 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
                 // En el orden del catálogo, no en el que se tocaron.
                 ecfTypes: emittableEcfTypes.where(_types.contains).toList(),
                 ofvUser: _ofvUser.text.trim(),
+                ofvPassword: _ofvPassword.text.isEmpty
+                    ? null
+                    : _ofvPassword.text,
               ),
               contactName: _contactName.text.trim(),
               contactPhone: _contactPhone.text.trim(),
@@ -588,6 +630,7 @@ class _EcfRequestDialogState extends ConsumerState<EcfRequestDialog> {
               certificateFilename: _certificate!.name,
               certificateBytes: _certificate!.bytes,
               certificatePassword: _certPassword.text,
+              acceptCertificateStorage: _storeCertificate,
             ),
           );
       if (!mounted) return;

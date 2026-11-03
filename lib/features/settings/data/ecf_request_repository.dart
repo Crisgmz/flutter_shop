@@ -8,8 +8,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 ///
 /// Todo pasa por la Edge Function `ecf-onboarding`, que valida que quien pide
 /// sea administrador de la empresa. El certificado viaja a Alanube en la misma
-/// petición y no se guarda en la base. La clave de la Oficina Virtual tampoco
-/// se pide: la certificación ante la DGII la hace el operador a mano.
+/// petición; si el cliente lo autoriza, además se guarda CIFRADO en el
+/// servidor para firmar las pruebas de la DGII desde el trámite paso a paso
+/// (`ecf_onboarding_repository.dart`). La clave de la Oficina Virtual es
+/// opcional y también se guarda cifrada.
 ///
 /// Portado de mangospos (`lib/data/repositories/ecf_request_repository.dart`),
 /// que es donde este flujo ya está probado. Cambia la llave —acá la
@@ -121,6 +123,8 @@ class EcfRequestDetails {
     this.branches = const [],
     this.ecfTypes = const [],
     this.ofvUser,
+    this.ofvPassword,
+    this.ofvPasswordSaved = false,
   });
 
   /// Teléfono de la empresa (el de quien coordina es el de contacto).
@@ -131,8 +135,15 @@ class EcfRequestDetails {
   /// E31, E32...
   final List<String> ecfTypes;
 
-  /// Usuario de la Oficina Virtual de la DGII. La clave no se pide.
+  /// Usuario de la Oficina Virtual de la DGII.
   final String? ofvUser;
+
+  /// Clave de la Oficina Virtual, solo al ENVIAR (opcional; el servidor la
+  /// guarda cifrada). Nunca vuelve del servidor.
+  final String? ofvPassword;
+
+  /// El servidor ya tiene una clave guardada (lo dice `request_status`).
+  final bool ofvPasswordSaved;
 
   factory EcfRequestDetails.fromJson(Map<String, dynamic> json) {
     final branches = json['branches'];
@@ -150,6 +161,7 @@ class EcfRequestDetails {
       ecfTypes:
           types is List ? types.map((t) => t.toString()).toList() : const [],
       ofvUser: json['ofv_user'] as String?,
+      ofvPasswordSaved: json['ofv_password_saved'] == true,
     );
   }
 
@@ -159,6 +171,9 @@ class EcfRequestDetails {
     'branches': branches.map((b) => b.toJson()).toList(),
     'ecf_types': ecfTypes,
     'ofv_user': ofvUser,
+    // Vacía no se manda: el servidor conserva la que tenga guardada.
+    if (ofvPassword != null && ofvPassword!.isNotEmpty)
+      'ofv_password': ofvPassword,
   };
 }
 
@@ -197,6 +212,24 @@ class EcfSequence {
 
   /// Números que quedan por consumir de la autorización.
   int get remaining => rangeEnd - currentNumber;
+
+  /// Tipos donde la DGII valida la fecha de vencimiento (código 145 si falta).
+  static const typesRequiringExpiration = {'E31', 'E44', 'E45'};
+
+  bool get missingExpiration =>
+      typesRequiringExpiration.contains(ncfType) && expirationDate == null;
+
+  bool get isExpired {
+    final exp = DateTime.tryParse(expirationDate ?? '');
+    if (exp == null) return false;
+    final now = DateTime.now();
+    return exp.isBefore(DateTime(now.year, now.month, now.day));
+  }
+
+  /// Sirve para emitir: activa, con números y sin trabas de vencimiento. Mismo
+  /// criterio que `hasUsableEcfSequence` en el servidor.
+  bool get isUsable =>
+      isActive && remaining > 0 && !missingExpiration && !isExpired;
 
   factory EcfSequence.fromJson(Map<String, dynamic> json) => EcfSequence(
     id: (json['id'] ?? '').toString(),
@@ -287,6 +320,7 @@ class EcfRequestSubmission {
     required this.certificateFilename,
     required this.certificateBytes,
     required this.certificatePassword,
+    this.acceptCertificateStorage = false,
   });
 
   final EcfRequestData data;
@@ -297,6 +331,11 @@ class EcfRequestSubmission {
   final String certificateFilename;
   final Uint8List certificateBytes;
   final String certificatePassword;
+
+  /// Autoriza guardar el certificado cifrado para firmar las pruebas de la
+  /// DGII desde Configuración → Facturación electrónica. Sin esto, el
+  /// certificado solo viaja al proveedor y se descarta.
+  final bool acceptCertificateStorage;
 }
 
 /// Autorización e-NCF que la DGII entrega en PDF.
@@ -369,12 +408,12 @@ class EcfRequestRepository {
   }
 
   Future<EcfRequestStatus> status() async {
-    final data = await _invoke({'action': 'request_status'});
+    final data = await invoke({'action': 'request_status'});
     return EcfRequestStatus.fromJson(data);
   }
 
   Future<EcfRequestResult> submit(EcfRequestSubmission s) async {
-    final data = await _invoke({
+    final data = await invoke({
       'action': 'submit_request',
       'data': s.data.toJson(),
       'details': s.details.toJson(),
@@ -382,6 +421,7 @@ class EcfRequestRepository {
       'contact_phone': s.contactPhone,
       'already_authorized': s.alreadyAuthorized,
       'accept_terms': true,
+      if (s.acceptCertificateStorage) 'accept_certificate_storage': true,
       'certificate': {
         'filename': s.certificateFilename,
         'content_base64': base64Encode(s.certificateBytes),
@@ -395,7 +435,7 @@ class EcfRequestRepository {
   }
 
   Future<void> saveSequence(EcfSequenceSubmission s) async {
-    await _invoke({
+    await invoke({
       'action': 'save_sequence',
       'branch_id': s.branchId,
       'sequence': s.toJson(),
@@ -405,10 +445,13 @@ class EcfRequestRepository {
   /// Enciende o apaga la modalidad e-CF. El servidor rechaza encenderla sin
   /// empresa registrada o sin una secuencia usable.
   Future<void> setEnabled(bool enabled) async {
-    await _invoke({'action': 'set_ecf_enabled', 'enabled': enabled});
+    await invoke({'action': 'set_ecf_enabled', 'enabled': enabled});
   }
 
-  Future<Map<String, dynamic>> _invoke(Map<String, dynamic> body) async {
+  /// Llama a `ecf-onboarding` con la empresa actual. La usa también
+  /// `EcfOnboardingRepository` (el trámite paso a paso): una sola vía para el
+  /// company_id y para traducir los errores.
+  Future<Map<String, dynamic>> invoke(Map<String, dynamic> body) async {
     final companyId = await _companyId();
     try {
       final res = await _client.functions.invoke(

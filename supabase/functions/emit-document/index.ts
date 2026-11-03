@@ -140,6 +140,7 @@ interface AlanubeSubmitResponse {
   securityCode?: string
   signedAt?: string
   status?: string
+  documentStampUrl?: string
   publicUrl?: string
   xmlUrl?: string
   pdfUrl?: string
@@ -563,7 +564,9 @@ async function sendAndPersist(
       ecf_signed_at: resp.signedAt ?? null,
       ecf_status: mappedStatus,
       submitted_at: new Date().toISOString(),
-      public_url: resp.publicUrl ?? null,
+      // Alanube la manda como `documentStampUrl` (igual que el webhook). Con
+      // solo `publicUrl` quedaba null y el ticket armaba el QR a mano.
+      public_url: resp.documentStampUrl ?? resp.publicUrl ?? null,
       xml_url: resp.xmlUrl ?? null,
       pdf_url: resp.pdfUrl ?? null,
       last_error: null,

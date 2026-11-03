@@ -636,9 +636,7 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo actualizar estado: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo actualizar estado', error);
     }
   }
 
@@ -740,9 +738,7 @@ class _UsersPageState extends ConsumerState<UsersPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo actualizar asignación: $error')),
-      );
+      AppSnackBar.error(context, 'No se pudo actualizar asignación', error);
     }
   }
 }

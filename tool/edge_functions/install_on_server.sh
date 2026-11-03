@@ -36,17 +36,30 @@ CHECK_KEY="${SUPABASE_ANON_KEY:-eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ
 [[ -f "$HERE/VERSION" ]] && echo "Paquete: $(cat "$HERE/VERSION")"
 
 # ── 1. Contenedor y carpeta ────────────────────────────────────────────────
+# Puede haber VARIOS stacks de Supabase en el servidor (en 2.24.119.32 hay dos,
+# 31 oct 2026). Con más de uno no se adivina: hay que decir la carpeta.
+CANDIDATES=()
 if command -v docker >/dev/null 2>&1; then
   for c in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
     src=$(docker inspect "$c" \
       --format '{{range .Mounts}}{{if eq .Destination "/home/deno/functions"}}{{.Source}}{{end}}{{end}}' \
       2>/dev/null || true)
-    if [[ -n "$src" ]]; then
-      CONTAINER="$c"
-      [[ -z "$DEST" ]] && DEST="$src"
-      break
-    fi
+    [[ -n "$src" ]] && CANDIDATES+=("$c|$src")
   done
+fi
+
+if [[ -n "$DEST" ]]; then
+  for cand in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
+    [[ "${cand#*|}" == "$DEST" ]] && CONTAINER="${cand%%|*}"
+  done
+elif ((${#CANDIDATES[@]} == 1)); then
+  CONTAINER="${CANDIDATES[0]%%|*}"
+  DEST="${CANDIDATES[0]#*|}"
+elif ((${#CANDIDATES[@]} > 1)); then
+  echo "✗ Hay ${#CANDIDATES[@]} stacks de Supabase con Edge Functions en este servidor:"
+  for cand in "${CANDIDATES[@]}"; do echo "    ${cand%%|*}  →  ${cand#*|}"; done
+  echo "  Di cuál con su carpeta:  bash $0 /data/coolify/services/<id>/volumes/functions"
+  exit 1
 fi
 
 if [[ -z "$DEST" ]]; then
@@ -106,13 +119,15 @@ echo "→ Variables que necesitan las funciones (solo se muestra si están, no s
 docker exec "$CONTAINER" sh -c '
   for v in SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY \
            ALANUBE_BASE_URL ALANUBE_JWT ALANUBE_WEBHOOK_SECRET \
-           ECF_PANEL_NOTIFY_URL ECF_PANEL_NOTIFY_SECRET; do
+           ECF_CREDENTIALS_KEY ECF_PANEL_NOTIFY_URL ECF_PANEL_NOTIFY_SECRET; do
     if [ -n "$(printenv "$v")" ]; then echo "  ✓ $v"; else echo "  ✗ $v"; fi
   done
   echo "  VERIFY_JWT=$(printenv VERIFY_JWT)"
 ' 2>/dev/null || echo "  (no pude leerlas dentro del contenedor)"
 echo "  Las SUPABASE_* son obligatorias. Sin ALANUBE_* la solicitud igual se recibe,"
 echo "  pero la empresa no se registra sola con el proveedor ni se emite e-CF."
+echo "  Sin ECF_CREDENTIALS_KEY no se puede guardar el certificado ni firmar la"
+echo "  certificación DGII desde la app."
 echo "  Con VERIFY_JWT=true, el webhook de Alanube (que no manda JWT) recibe 401."
 
 echo "→ Comprobando ecf-onboarding…"

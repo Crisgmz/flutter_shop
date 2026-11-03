@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../auth/presentation/auth_providers.dart';
+import '../data/ecf_onboarding_models.dart';
+import '../data/ecf_onboarding_repository.dart';
 import '../data/ecf_request_repository.dart';
 import '../data/settings_repository.dart';
 
@@ -43,4 +45,21 @@ final ecfRequestRepositoryProvider = Provider<EcfRequestRepository>((ref) {
 final ecfRequestStatusProvider = FutureProvider<EcfRequestStatus>((ref) async {
   final repository = ref.watch(ecfRequestRepositoryProvider);
   return repository.status();
+});
+
+/// El trámite paso a paso (Configuración → Facturación electrónica). Misma
+/// Edge Function que la solicitud.
+final ecfOnboardingRepositoryProvider = Provider<EcfOnboardingRepository>((
+  ref,
+) {
+  return EcfOnboardingRepository(ref.watch(ecfRequestRepositoryProvider));
+});
+
+/// Todo lo que pinta la página del trámite. Sin secretos: el certificado, la
+/// clave de la Oficina Virtual y la sesión con la DGII nunca vienen aquí.
+/// autoDispose: al volver a la página se lee de nuevo (lo que se hizo desde
+/// la tarjeta, o la DGII respondiendo, no queda viejo en caché).
+final ecfOnboardingStatusProvider =
+    FutureProvider.autoDispose<EcfOnboardingStatus>((ref) async {
+  return ref.watch(ecfOnboardingRepositoryProvider).status();
 });

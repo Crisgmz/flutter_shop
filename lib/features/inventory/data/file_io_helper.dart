@@ -131,6 +131,24 @@ class FileIoHelper {
     return (bytes: bytes, name: file.name);
   }
 
+  /// Picker de un XML de la DGII (postulación, declaración jurada, roles) para
+  /// que el proveedor de facturación electrónica lo firme.
+  static Future<({Uint8List bytes, String name})?> pickXmlFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['xml'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.first;
+    var bytes = file.bytes;
+    if (bytes == null && file.path != null) {
+      bytes = await File(file.path!).readAsBytes();
+    }
+    if (bytes == null) return null;
+    return (bytes: bytes, name: file.name);
+  }
+
   /// MIME type aproximado a partir de la extensión sin punto. Usado por la
   /// descarga web; el resto de plataformas no lo necesitan.
   static String _mimeFor(String extension) {
@@ -145,6 +163,8 @@ class FileIoHelper {
         return 'text/plain';
       case 'json':
         return 'application/json';
+      case 'xml':
+        return 'application/xml';
       case 'png':
         return 'image/png';
       case 'jpg':
