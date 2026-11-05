@@ -192,11 +192,12 @@ class FiscalDocument implements FiscalSummarySource {
         return 'En proceso DGII (esperando confirmación)';
       case 'uncertain':
         return 'Envío a DGII sin confirmar';
+      // Va impreso en el recibo del cliente: nada de errores técnicos (el
+      // detalle queda en Comprobantes → "Último error"). Tampoco "rechazado
+      // por la DGII": casi siempre lo frena el proveedor al validar, antes de
+      // llegar a ella, y se reenvía con el mismo e-NCF una vez corregido.
       case 'rejected':
-        final err = lastError ?? '';
-        return err.isNotEmpty
-            ? 'Rechazado DGII: ${err.substring(0, err.length.clamp(0, 80))}'
-            : 'Rechazado por DGII';
+        return 'e-CF no validado aún por la DGII';
       default:
         return null;
     }

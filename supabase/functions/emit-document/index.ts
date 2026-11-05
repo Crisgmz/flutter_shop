@@ -14,6 +14,22 @@
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { createAlanubeClient, AlanubeClient, AlanubeError } from '../_shared/alanube-client.ts'
 import { classifyAlanubeFailure } from '../_shared/emission-outcome.ts'
+// El armado del e-CF es COPIA VERBATIM de mangospos (`_shared/ecf-payload.ts`
+// + dgii-rounding.ts + ecf-tax-lines.ts, con sus pruebas): ahí están los
+// arreglos que salieron de rechazos reales de Alanube y la DGII (largo de
+// `branchOffice`, `company.id` en el cuerpo, vencimiento de la autorización,
+// `taxAmountIndicator`, líneas en cero...). Aquí solo se adaptan las tablas.
+import {
+  alanubeEndpointForNcfType,
+  buildAlanubePayload,
+  cancelledBeforeSendError,
+  EcfTaxBreakdown,
+  FiscalDocument as PayloadDocument,
+  isCreditNoteType,
+  OrderItem,
+  Sender,
+  TYPES_WITH_SEQUENCE_DUE_DATE,
+} from '../_shared/ecf-payload.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -77,21 +93,15 @@ interface FiscalDocument {
   alanube_document_id: string | null
   issued_at: string | null
   idempotency_key: string | null
+  ncf_sequence_id: string | null
+  fiscal_status: string | null
+  voided_at: string | null
 }
 
 interface Settings {
   alanube_company_id: string | null
   environment: string
   mode: string
-}
-
-interface Sender {
-  rnc: string
-  companyName: string
-  tradename?: string
-  address: string
-  branchOffice?: string
-  mail?: string
 }
 
 interface SaleItem {
@@ -104,34 +114,6 @@ interface SaleItem {
   line_subtotal: number | null
   line_tax: number | null
   line_total: number | null
-}
-
-interface EcfTaxBreakdown {
-  itbisAmount: number
-  taxableAmount: number
-  effectiveRatePct: number
-}
-
-// El código e-CF se deriva del propio NCF: E31/E32/E44/E45/E46 = ncf.slice(0,3).
-function getEndpointForNcfType(ncfType: string): string | null {
-  switch (ncfType) {
-    case 'E31': return '/fiscal-invoices'
-    case 'E32': return '/invoices'
-    case 'E44': return '/special-regimes'
-    case 'E45': return '/gubernamentals'
-    default: return null
-  }
-}
-
-// billingIndicator DGII por tasa ITBIS: 18%→1, 16%→2, gravado 0%→3, exento→4.
-// En flutter_shop+ sale_items.tax_rate es porcentaje (18.00) y NO existe flag
-// para distinguir "gravado a tasa 0" (indicador 3) de "exento": tratamos
-// tax_rate=0 como exento (indicador 4). Simplificación documentada.
-function billingIndicatorFromTaxRate(rate: number | null | undefined): 1 | 2 | 3 | 4 {
-  const pct = Number(rate ?? 0)
-  if (pct >= 17 && pct <= 19) return 1
-  if (pct >= 15 && pct < 17) return 2
-  return 4
 }
 
 interface AlanubeSubmitResponse {
@@ -168,6 +150,9 @@ function computeEcfBreakdown(items: SaleItem[]): EcfTaxBreakdown | null {
   let taxableAmount = 0
   let weightedRateNum = 0
   let weightedRateDen = 0
+  // Tasa e-CF por línea: alimenta el billingIndicator de cada ítem. Una línea
+  // sin ITBIS no entra al mapa y el armador cae a su tax_rate (0 → exento).
+  const ratePctByItem = new Map<string, number>()
 
   for (const it of items) {
     const tax = Number(it.line_tax ?? 0)
@@ -178,6 +163,7 @@ function computeEcfBreakdown(items: SaleItem[]): EcfTaxBreakdown | null {
     taxableAmount += base
     weightedRateNum += rate * tax
     weightedRateDen += tax
+    ratePctByItem.set(it.id, rate)
   }
 
   if (itbisAmount <= 0) return null
@@ -190,117 +176,79 @@ function computeEcfBreakdown(items: SaleItem[]): EcfTaxBreakdown | null {
     itbisAmount: Number(itbisAmount.toFixed(2)),
     taxableAmount: Number(taxableAmount.toFixed(2)),
     effectiveRatePct,
+    ratePctByItem,
   }
 }
 
-function buildAlanubePayload(
+// ── fiscal_documents / sale_items → los tipos del armador de mangospos ──────
+
+function toPayloadDocument(doc: FiscalDocument, companyId: string): PayloadDocument {
+  return {
+    id: doc.id,
+    business_id: companyId,
+    order_id: doc.sale_id,
+    ncf_type: doc.ncf.slice(0, 3),
+    ncf_number: doc.ncf,
+    customer_rnc: doc.customer_document_number,
+    customer_name: doc.customer_name || 'Consumidor Final',
+    customer_address: doc.customer_address,
+    subtotal: doc.subtotal,
+    discount: doc.discount_amount,
+    tax_exempt: doc.exempt_amount,
+    taxable_amount: doc.taxable_amount,
+    itbis_amount: doc.tax_amount,
+    service_fee: null,
+    tip: null,
+    total: doc.total_amount,
+    is_electronic: doc.is_electronic,
+    // Anulado antes de llegar a la DGII: el armador lo reconoce como
+    // 'cancelled' y no se envía nunca.
+    status: doc.fiscal_status === 'voided' || doc.voided_at ? 'cancelled' : 'active',
+    alanube_document_id: doc.alanube_document_id,
+    issued_at: doc.issued_at,
+    idempotency_key: doc.idempotency_key,
+  }
+}
+
+function toOrderItems(items: SaleItem[]): OrderItem[] {
+  return items.map((it) => ({
+    id: it.id,
+    product_id: null,
+    product_name: it.description,
+    sku: null,
+    quantity: Number(it.quantity ?? 1),
+    unit_price: Number(it.unit_price ?? 0),
+    // Porcentaje (18.00): billingIndicatorFromTaxRate acepta 18 o 0.18.
+    tax_rate: Number(it.tax_rate ?? 0),
+    tax: it.line_tax,
+    // `line_subtotal` YA viene neto de descuento (migraciones 76 y 77): es la
+    // base de la línea, que es lo que el armador declara como itemAmount.
+    subtotal: it.line_subtotal,
+    discounts: it.discount_amount,
+  }))
+}
+
+/**
+ * Vencimiento de la secuencia que dio el e-NCF, tal como lo autorizó la DGII.
+ * Sale de la secuencia exacta del documento (`ncf_sequence_id`); si no está,
+ * de la del mismo prefijo en la sucursal. La DGII lo valida contra la
+ * autorización y rechaza con el código 145 si no cuadra: no se inventa.
+ */
+async function loadSequenceDueDate(
+  supabase: SupabaseClient,
   doc: FiscalDocument,
-  sender: Sender,
-  items: SaleItem[],
-  ecfBreakdown: EcfTaxBreakdown | null,
-): Record<string, unknown> {
-  const ncfType = doc.ncf.slice(0, 3)
-  const stampDate = (doc.issued_at ?? new Date().toISOString()).slice(0, 10)
-  const isE31OrCreditDoc = ncfType === 'E31'
-  const totalAbove250k = Number(doc.total_amount ?? 0) >= 250_000
-  const buyerRequired = isE31OrCreditDoc || (ncfType === 'E32' && totalAbove250k)
-
-  const idDoc: Record<string, unknown> = {
-    encf: doc.ncf,
-    paymentType: 1,
-    incomeType: 1,
+): Promise<string | null> {
+  const query = supabase.from('ncf_sequences').select('expires_on, is_active')
+  const { data, error } = doc.ncf_sequence_id
+    ? await query.eq('id', doc.ncf_sequence_id)
+    : await query.eq('branch_id', doc.branch_id).eq('prefix', doc.ncf.slice(0, 3))
+  if (error) {
+    console.error(`load ncf_sequences failed for doc ${doc.id}:`, error)
+    return null
   }
-  if (ncfType !== 'E32') {
-    const oneYearAhead = new Date()
-    oneYearAhead.setFullYear(oneYearAhead.getFullYear() + 1)
-    idDoc.sequenceDueDate = oneYearAhead.toISOString().slice(0, 10)
-  }
-
-  const senderPayload: Record<string, unknown> = {
-    rnc: sender.rnc,
-    companyName: sender.companyName,
-    address: sender.address,
-    stampDate,
-  }
-  if (sender.tradename) senderPayload.tradename = sender.tradename
-  if (sender.branchOffice) senderPayload.branchOffice = sender.branchOffice
-  if (sender.mail) senderPayload.mail = sender.mail
-
-  // Datos del comprador YA vienen snapshoteados en fiscal_documents
-  // (customer_name, customer_document_number = RNC/cédula, customer_address).
-  let buyer: Record<string, unknown> | undefined
-  const hasNamedCustomer = doc.customer_name != null &&
-    doc.customer_name !== '' &&
-    doc.customer_name !== 'Consumidor Final'
-  if (buyerRequired || doc.customer_document_number || hasNamedCustomer) {
-    buyer = { companyName: doc.customer_name || 'Consumidor Final' }
-    if (doc.customer_document_number) buyer.rnc = doc.customer_document_number
-    if (doc.customer_address) buyer.address = doc.customer_address
-  }
-
-  const itemDetails = items.length > 0
-    ? items.map((it, idx) => {
-        const qty = Number(it.quantity ?? 1)
-        const unitPrice = Number(it.unit_price ?? 0)
-        // itemAmount = base neta de descuento, para que la suma de líneas
-        // cuadre con totalTaxedAmount/exemptAmount del breakdown. `line_subtotal`
-        // YA viene neto (el RPC descuenta antes de calcularlo): no se resta
-        // discount_amount otra vez.
-        const itemAmount = Math.max(
-          0,
-          Number(it.line_subtotal ?? qty * unitPrice - Number(it.discount_amount ?? 0)),
-        )
-        return {
-          lineNumber: idx + 1,
-          billingIndicator: billingIndicatorFromTaxRate(it.tax_rate),
-          itemName: (it.description ?? 'Producto').slice(0, 80),
-          goodServiceIndicator: 1,
-          quantityItem: qty,
-          unitPriceItem: unitPrice,
-          itemAmount,
-        }
-      })
-    : [{
-        lineNumber: 1,
-        billingIndicator: billingIndicatorFromTaxRate(18),
-        itemName: 'Venta general',
-        goodServiceIndicator: 1,
-        quantityItem: 1,
-        unitPriceItem: Number(doc.total_amount ?? 0),
-        itemAmount: Number(doc.total_amount ?? 0),
-      }]
-
-  // Fallback a los montos snapshoteados del documento si no hay breakdown.
-  const itbis = ecfBreakdown?.itbisAmount ?? Number(doc.tax_amount ?? 0)
-  const taxable = ecfBreakdown?.taxableAmount ?? Number(doc.taxable_amount ?? 0)
-  const exempt = Number(doc.exempt_amount ?? 0)
-  const itbisRate = Math.round(ecfBreakdown?.effectiveRatePct ?? 18)
-
-  const declaredTotal = ecfBreakdown != null
-    ? Number((taxable + itbis + exempt).toFixed(2))
-    : Number(doc.total_amount ?? 0)
-
-  const totals: Record<string, unknown> = {
-    totalAmount: declaredTotal,
-  }
-  if (taxable > 0) {
-    totals.totalTaxedAmount = taxable
-    totals.i1AmountTaxed = taxable
-    totals.itbisS1 = itbisRate
-    totals.itbis1Total = itbis
-    totals.itbisTotal = itbis
-  }
-  if (exempt > 0) totals.exemptAmount = exempt
-
-  const payload: Record<string, unknown> = {
-    idDoc,
-    sender: senderPayload,
-    totals,
-    itemDetails,
-  }
-  if (buyer) payload.buyer = buyer
-
-  return payload
+  const rows = (data ?? []) as Array<{ expires_on: string | null; is_active: boolean | null }>
+  const row = rows.find((r) => r.is_active === true) ?? rows[0]
+  return row?.expires_on ? String(row.expires_on).slice(0, 10) : null
 }
 
 async function claimBatch(supabase: SupabaseClient): Promise<OutboxRow[]> {
@@ -354,7 +302,7 @@ async function loadContext(
     supabase
       .from('fiscal_documents')
       .select(
-        'id, branch_id, sale_id, receipt_type, ncf, ecf_status, customer_name, customer_document_number, customer_address, subtotal, discount_amount, exempt_amount, taxable_amount, tax_amount, total_amount, is_electronic, alanube_document_id, issued_at, idempotency_key',
+        'id, branch_id, sale_id, receipt_type, ncf, ecf_status, customer_name, customer_document_number, customer_address, subtotal, discount_amount, exempt_amount, taxable_amount, tax_amount, total_amount, is_electronic, alanube_document_id, issued_at, idempotency_key, ncf_sequence_id, fiscal_status, voided_at',
       )
       .eq('id', outbox.fiscal_document_id)
       .single(),
@@ -483,18 +431,50 @@ async function submitOne(
     }
   }
 
-  const ncfType = doc.ncf.slice(0, 3)
-  const path = getEndpointForNcfType(ncfType)
+  const payloadDoc = toPayloadDocument(doc, outbox.company_id)
+
+  // Anulado sin haber llegado a la DGII: para ella nunca existió. Mandarlo lo
+  // dejaría aceptado y habría que reversarlo con una nota de crédito.
+  const cancelledError = cancelledBeforeSendError(payloadDoc)
+  if (cancelledError) {
+    return { ok: false, outcome: 'dead', error: cancelledError }
+  }
+
+  const ncfType = payloadDoc.ncf_type
+  // Este POS todavía no arma notas de crédito electrónicas (E34 necesita el
+  // comprobante que modifica): mandarla sin él es un rechazo seguro.
+  const path = isCreditNoteType(ncfType) ? null : alanubeEndpointForNcfType(ncfType)
   if (!path) {
     return {
       ok: false,
       outcome: 'dead',
-      error: `tipo ${ncfType} sin endpoint Alanube mapeado (receipt_type=${doc.receipt_type})`,
+      error: `tipo ${ncfType} sin emisión e-CF en este POS (receipt_type=${doc.receipt_type})`,
     }
   }
 
-  const ecfBreakdown = computeEcfBreakdown(items)
-  const payload = buildAlanubePayload(doc, sender, items, ecfBreakdown)
+  // La DGII exige el vencimiento de la autorización en E31/E44/E45. Sin él
+  // el comprobante vuelve rechazado (código 145) y el e-NCF se quema: se para
+  // aquí. Reintentable: se arregla cargando la fecha en la secuencia.
+  const sequenceDueDate = await loadSequenceDueDate(supabase, doc)
+  if (TYPES_WITH_SEQUENCE_DUE_DATE.includes(ncfType) && !sequenceDueDate) {
+    return {
+      ok: false,
+      outcome: 'retry',
+      error:
+        `La secuencia ${ncfType} no tiene fecha de vencimiento cargada. La DGII la valida ` +
+        `contra la autorización del rango (código 145). Cárgala en Configuración → ` +
+        `Secuencias NCF y reintenta.`,
+    }
+  }
+
+  const payload = buildAlanubePayload(
+    payloadDoc,
+    sender,
+    toOrderItems(items),
+    computeEcfBreakdown(items),
+    settings.alanube_company_id,
+    sequenceDueDate,
+  )
   const idemKey = doc.idempotency_key ?? doc.id
 
   // Se guarda ANTES del POST. Si este proceso muere después, el reclamo
