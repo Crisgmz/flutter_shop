@@ -603,10 +603,16 @@ class FiscalDocumentsRepository {
   }
 
   Future<FiscalDocument?> fetchDocumentBySaleId(String saleId) async {
+    // La nota de crédito (E34 al anular, B04 de una devolución) cuelga de la
+    // MISMA venta: sin este filtro, al ser la más reciente, se tomaba la nota
+    // en vez de la factura. Por prefijo y no por receipt_type, para no
+    // depender de que el tipo 'credit_note' exista en la base.
     final rows = await _client
         .from('fiscal_documents')
         .select()
         .eq('sale_id', saleId)
+        .not('ncf', 'like', 'E34%')
+        .not('ncf', 'like', 'B04%')
         .order('created_at', ascending: false)
         .limit(1);
 

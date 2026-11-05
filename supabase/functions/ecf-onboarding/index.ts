@@ -414,13 +414,14 @@ function todayInSantoDomingo(): string {
 // sucursales compartiendo el mismo rango emitirían el mismo e-NCF dos veces.
 // Si el negocio tiene varias, reparte el rango entre ellas.
 
-// Sin E34: con la nota de crédito guardada como `fiscal_credit`,
-// `assign_next_ncf` la elegía para facturas de crédito fiscal (empata con la
-// E31 en el número 1). Y como `credit_note` tampoco sirve todavía: la
-// devolución de shop-plus la tomaría en vez de la B04 y nadie la emite.
+// La E34 va como 'credit_note', NUNCA como 'fiscal_credit': así guardada,
+// `assign_next_ncf` la elegía para facturas de crédito fiscal (empataba con la
+// E31). Como 'credit_note' solo la entrega fn_issue_credit_note al anular una
+// e-CF (migración 107; assign_next_ncf ya no da serie E a notas de crédito).
 const RECEIPT_TYPE_BY_ECF: Record<string, string> = {
   E31: 'fiscal_credit',
   E32: 'consumer_final',
+  E34: 'credit_note',
   E44: 'special',
   E45: 'governmental',
 }
@@ -1109,13 +1110,11 @@ async function actionSaveSequence(ctx: Ctx): Promise<Response> {
   if (!branch) throw new HttpError(404, 'branch_not_found', 'Esa sucursal no es de tu empresa.')
 
   const ncfType = ((body.sequence?.ncf_type ?? '') as string).trim().toUpperCase()
-  if (!EMITTABLE_ECF_TYPES.includes(ncfType)) {
+  if (!RECEIPT_TYPE_BY_ECF[ncfType]) {
     throw new HttpError(
       422,
       'invalid_sequence',
-      ncfType === 'E34'
-        ? 'La nota de crédito electrónica (E34) todavía no se emite desde aquí: no cargues esa secuencia.'
-        : `Tipo de comprobante no admitido: ${ncfType || '(vacío)'}. Usa E31, E32, E44 o E45.`,
+      `Tipo de comprobante no admitido: ${ncfType || '(vacío)'}. Usa E31, E32, E34, E44 o E45.`,
     )
   }
 
@@ -1153,6 +1152,9 @@ async function actionSaveSequence(ctx: Ctx): Promise<Response> {
       .from('ncf_sequences')
       .update({
         max_number: patch.range_end,
+        // assign_next_ncf corta en sequence_end, no en max_number: sin él
+        // seguía dando números después del final del rango autorizado.
+        sequence_end: patch.range_end,
         expires_on: patch.expiration_date,
         is_active: true,
         // Solo si la DGII reporta un consumo mayor al que lleva el POS.
@@ -1173,6 +1175,7 @@ async function actionSaveSequence(ctx: Ctx): Promise<Response> {
     prefix: row.prefix,
     current_number: row.current_number,
     max_number: row.range_end,
+    sequence_end: row.range_end,
     expires_on: row.expiration_date,
     is_active: true,
     created_by: userId,

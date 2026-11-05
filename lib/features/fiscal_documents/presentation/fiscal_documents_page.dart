@@ -50,6 +50,7 @@ const _receiptTypes = <String>[
   'governmental',
   'special',
   'export',
+  'credit_note',
 ];
 
 const _statusOptions = <String>[

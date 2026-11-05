@@ -25,7 +25,9 @@
 # ANTES de instalar: las migraciones 101 (la piden emit-document y
 # alanube-webhook), 102 y 105 (las pide ecf-onboarding) tienen que estar
 # corridas. Sin la 105, ecf-onboarding falla hasta en la tarjeta de
-# Configuración ("Falta correr la migración 105").
+# Configuración ("Falta correr la migración 105"). La 107 (notas de crédito
+# E34 al anular) va antes de esta versión de emit-document; la 108 programa
+# la cola cada minuto.
 #
 # Variables del servicio de Edge Functions en Coolify:
 #   SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY (las pone el
@@ -98,7 +100,9 @@ fi
 
 # ── Subir e instalar (una sola conexión: la clave se pide una vez) ─────────
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=/tmp/busipos-%C" -o ControlPersist=120)
-echo "→ Subiendo a $HOST…"
+# ${HOST} con llaves: el bash 3.2 de macOS toma el "…" pegado como parte del
+# nombre de la variable ("HOST?: unbound variable").
+echo "→ Subiendo a ${HOST}…"
 scp "${SSH_OPTS[@]}" "$PACKAGE" "$HOST:"
 echo "→ Instalando…"
 ssh "${SSH_OPTS[@]}" "$HOST" \

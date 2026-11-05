@@ -112,7 +112,7 @@ if [[ -z "$CONTAINER" ]]; then
   exit 0
 fi
 
-echo "→ Reiniciando $CONTAINER…"
+echo "→ Reiniciando ${CONTAINER}…"
 docker restart "$CONTAINER" >/dev/null
 
 echo "→ Variables que necesitan las funciones (solo se muestra si están, no su valor):"

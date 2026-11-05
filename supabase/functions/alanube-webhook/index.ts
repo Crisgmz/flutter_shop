@@ -123,6 +123,65 @@ interface DocRow {
   alanube_document_id: string | null
 }
 
+const onlyDigits = (v: unknown): string => (typeof v === 'string' ? v.replace(/\D/g, '') : '')
+
+/**
+ * El aviso no trae un id de Alanube conocido: la respuesta del envío se perdió
+ * (doc 'uncertain', o todavía en vuelo). Se busca por e-NCF, pero cada empresa
+ * numera su propia serie E desde el 1, así que el mismo e-NCF existe en varias
+ * (y en otras apps que comparten la cuenta de Alanube: el 5 nov 2026 los
+ * avisos de una empresa de aquí llegaban al webhook de MangoPOS).
+ *
+ * Solo se adopta UN documento:
+ *   - sin id de Alanube y que no esté rechazado ni aceptado (un rechazado por
+ *     la validación de Alanube nunca le llegó: un aviso con su número es de
+ *     otro emisor);
+ *   - de la empresa cuyo RNC es el del aviso (`companyIdentification`), si el
+ *     aviso lo trae.
+ * Ambiguo o sin coincidencia → no se toca (se resuelve a mano en Comprobantes).
+ */
+async function adoptByEncf(
+  supabase: SupabaseClient,
+  encf: string,
+  companyIdentification: unknown,
+): Promise<DocRow | null> {
+  const { data: rows, error } = await supabase
+    .from('fiscal_documents')
+    .select('id, branch_id, ecf_status, alanube_document_id, branches(company_id)')
+    .eq('ncf', encf)
+    .is('alanube_document_id', null)
+    .not('ecf_status', 'in', '(rejected,accepted)')
+    .limit(20)
+  if (error) throw new Error(`db error finding doc by ncf: ${error.message}`)
+
+  let candidates = (rows ?? []) as unknown as Array<DocRow & { branches: { company_id: string } | null }>
+
+  const rnc = onlyDigits(companyIdentification)
+  if (rnc && candidates.length > 0) {
+    const companyIds = [...new Set(candidates.map((c) => c.branches?.company_id).filter(Boolean))] as string[]
+    const { data: settings, error: setErr } = await supabase
+      .from('app_settings')
+      .select('company_id, company_tax_id')
+      .in('company_id', companyIds)
+    if (setErr) throw new Error(`db error reading company RNC: ${setErr.message}`)
+    const sameRnc = new Set(
+      ((settings ?? []) as Array<{ company_id: string; company_tax_id: string | null }>)
+        .filter((s) => onlyDigits(s.company_tax_id) === rnc)
+        .map((s) => s.company_id),
+    )
+    candidates = candidates.filter((c) => c.branches && sameRnc.has(c.branches.company_id))
+  }
+
+  if (candidates.length !== 1) {
+    if (candidates.length > 1) {
+      console.warn(`webhook: e-NCF ${encf} coincide con varios documentos sin id de Alanube; no se adopta`)
+    }
+    return null
+  }
+  const { id, branch_id, ecf_status, alanube_document_id } = candidates[0]
+  return { id, branch_id, ecf_status, alanube_document_id }
+}
+
 async function processWebhook(
   supabase: SupabaseClient,
   eventType: string,
@@ -166,23 +225,7 @@ async function processWebhook(
   }
 
   if (!docRow && encf && typeof encf === 'string') {
-    // La respuesta del envío se perdió (doc 'uncertain', o todavía en vuelo) y
-    // no tenemos su id de Alanube. Cada empresa numera su propia serie E, así
-    // que el mismo e-NCF existe en varias: solo se adopta si coincide con UN
-    // solo documento sin id de Alanube. Ambiguo → no se toca (se resuelve a
-    // mano en Comprobantes).
-    const { data: byNcf, error: ncfErr } = await supabase
-      .from('fiscal_documents')
-      .select('id, branch_id, ecf_status, alanube_document_id')
-      .eq('ncf', encf)
-      .is('alanube_document_id', null)
-      .limit(2)
-    if (ncfErr) throw new Error(`db error finding doc by ncf: ${ncfErr.message}`)
-    if ((byNcf?.length ?? 0) > 1) {
-      console.warn(`webhook: e-NCF ${encf} coincide con varios documentos sin id de Alanube; no se adopta`)
-    } else {
-      docRow = (byNcf?.[0] as DocRow | undefined) ?? null
-    }
+    docRow = await adoptByEncf(supabase, encf, data.companyIdentification)
   }
 
   if (!docRow) {

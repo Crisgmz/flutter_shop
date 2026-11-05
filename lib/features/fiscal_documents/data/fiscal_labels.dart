@@ -7,6 +7,8 @@ const fiscalReceiptLabels = <String, String>{
   'governmental': 'Gubernamental',
   'special': 'Especial',
   'export': 'Exportación',
+  // E34: la emite sola la base al anular una e-CF aceptada (migración 107).
+  'credit_note': 'Nota de Crédito',
 };
 
 const fiscalStatusLabels = <String, String>{

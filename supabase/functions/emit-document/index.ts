@@ -26,6 +26,7 @@ import {
   EcfTaxBreakdown,
   FiscalDocument as PayloadDocument,
   isCreditNoteType,
+  ModifiedDocumentRef,
   OrderItem,
   Sender,
   TYPES_WITH_SEQUENCE_DUE_DATE,
@@ -96,6 +97,11 @@ interface FiscalDocument {
   ncf_sequence_id: string | null
   fiscal_status: string | null
   voided_at: string | null
+  // Solo en notas de crédito (E34, migración 107). Se leen aparte: una
+  // factura normal no los pide y así no dependen de esa migración.
+  related_document_id?: string | null
+  modification_code?: number | null
+  modification_reason?: string | null
 }
 
 interface Settings {
@@ -207,6 +213,9 @@ function toPayloadDocument(doc: FiscalDocument, companyId: string): PayloadDocum
     alanube_document_id: doc.alanube_document_id,
     issued_at: doc.issued_at,
     idempotency_key: doc.idempotency_key,
+    related_document_id: doc.related_document_id ?? null,
+    modification_code: doc.modification_code ?? null,
+    modification_reason: doc.modification_reason ?? null,
   }
 }
 
@@ -296,7 +305,9 @@ async function claimBatch(supabase: SupabaseClient): Promise<OutboxRow[]> {
 async function loadContext(
   supabase: SupabaseClient,
   outbox: OutboxRow,
-): Promise<{ doc: FiscalDocument; settings: Settings; sender: Sender; items: SaleItem[] } | null> {
+): Promise<
+  { doc: FiscalDocument; settings: Settings; sender: Sender; items: SaleItem[]; modifiedDoc: ModifiedDocumentRef | null } | null
+> {
   // Sin settings_id en el outbox: los settings e-CF se resuelven por company_id.
   const [docRes, settingsRes, appSettingsRes, branchRes] = await Promise.all([
     supabase
@@ -398,7 +409,44 @@ async function loadContext(
     items = (itemRows ?? []) as SaleItem[]
   }
 
-  return { doc, settings: settingsRes.data as Settings, sender, items }
+  // Nota de crédito: sus campos y el comprobante que anula (su e-NCF y su
+  // fecha van dentro de la nota, en informationReference). Las líneas son las
+  // de la venta original (la nota cuelga de la misma sale_id): declara lo
+  // mismo que declaró la factura que anula.
+  let modifiedDoc: ModifiedDocumentRef | null = null
+  if (isCreditNoteType(doc.ncf.slice(0, 3))) {
+    const { data: noteRow, error: noteErr } = await supabase
+      .from('fiscal_documents')
+      .select('related_document_id, modification_code, modification_reason')
+      .eq('id', doc.id)
+      .maybeSingle()
+    if (noteErr) {
+      console.error('load credit note fields failed:', noteErr)
+      return null
+    }
+    const note = (noteRow ?? {}) as Pick<FiscalDocument, 'related_document_id' | 'modification_code' | 'modification_reason'>
+    doc.related_document_id = note.related_document_id ?? null
+    doc.modification_code = note.modification_code ?? null
+    doc.modification_reason = note.modification_reason ?? null
+
+    if (doc.related_document_id) {
+      const { data: refRow, error: refErr } = await supabase
+        .from('fiscal_documents')
+        .select('ncf, issued_at')
+        .eq('id', doc.related_document_id)
+        .maybeSingle()
+      if (refErr) {
+        console.error('load referenced document failed:', refErr)
+        return null
+      }
+      if (refRow) {
+        const ref = refRow as { ncf: string; issued_at: string | null }
+        modifiedDoc = { ncf_number: ref.ncf, issued_at: ref.issued_at }
+      }
+    }
+  }
+
+  return { doc, settings: settingsRes.data as Settings, sender, items, modifiedDoc }
 }
 
 async function submitOne(
@@ -410,7 +458,7 @@ async function submitOne(
   if (!ctx) {
     return { ok: false, outcome: 'dead', error: 'context load failed' }
   }
-  const { doc, settings, sender, items } = ctx
+  const { doc, settings, sender, items, modifiedDoc } = ctx
 
   if (doc.alanube_document_id) {
     console.log(`doc ${doc.id} already submitted (alanube_id=${doc.alanube_document_id})`)
@@ -420,9 +468,11 @@ async function submitOne(
   if (!doc.is_electronic) {
     return { ok: false, outcome: 'dead', error: 'doc is not electronic' }
   }
-  if (settings.mode === 'physical') {
-    return { ok: false, outcome: 'dead', error: 'settings.mode=physical, should not be in queue' }
-  }
+  // `mode` NO se mira aquí (en mangospos sí: allá 'physical' es "empresa sin
+  // activar"). En este POS es el interruptor de Configuración y solo decide si
+  // las ventas NUEVAS salen con serie E (`assign_next_ncf`). Un comprobante que
+  // ya tiene e-NCF se le entregó así al cliente y tiene que llegar a la DGII
+  // aunque después se apague: si no, apagar dejaba e-CF sin enviar para siempre.
   if (!settings.alanube_company_id) {
     return {
       ok: false,
@@ -441,14 +491,23 @@ async function submitOne(
   }
 
   const ncfType = payloadDoc.ncf_type
-  // Este POS todavía no arma notas de crédito electrónicas (E34 necesita el
-  // comprobante que modifica): mandarla sin él es un rechazo seguro.
-  const path = isCreditNoteType(ncfType) ? null : alanubeEndpointForNcfType(ncfType)
+  const path = alanubeEndpointForNcfType(ncfType)
   if (!path) {
     return {
       ok: false,
       outcome: 'dead',
       error: `tipo ${ncfType} sin emisión e-CF en este POS (receipt_type=${doc.receipt_type})`,
+    }
+  }
+
+  // Una E34 sin el comprobante que anula no es emitible: la DGII no sabría qué
+  // reversa. Reintentable: se arregla enlazándola (related_document_id), no
+  // reemitiendo. Las notas las crea fn_issue_credit_note (migración 107).
+  if (isCreditNoteType(ncfType) && !modifiedDoc) {
+    return {
+      ok: false,
+      outcome: 'retry',
+      error: 'La nota de crédito no tiene el comprobante que anula (fiscal_documents.related_document_id).',
     }
   }
 
@@ -474,6 +533,7 @@ async function submitOne(
     computeEcfBreakdown(items),
     settings.alanube_company_id,
     sequenceDueDate,
+    modifiedDoc,
   )
   const idemKey = doc.idempotency_key ?? doc.id
 

@@ -246,7 +246,7 @@ export function buildAlanubePayload(
     if (modifiedDoc) {
       informationReference = {
         ncfModified: modifiedDoc.ncf_number,
-        ncfModificationDate: modifiedDate,
+        ncfModifiedDate: modifiedDate,
         // 1 = anula el comprobante de referencia. Con este codigo la DGII
         // exige que el total de la nota sea IGUAL al del original.
         modificationCode: doc.modification_code ?? 1,

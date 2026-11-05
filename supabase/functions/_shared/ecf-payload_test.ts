@@ -261,7 +261,7 @@ Deno.test("E34 referencia el comprobante que anula", () => {
   );
   const ref = nota.informationReference as Record<string, unknown>;
   assertEquals(ref.ncfModified, "E320000000123");
-  assertEquals(ref.ncfModificationDate, "2026-08-29");
+  assertEquals(ref.ncfModifiedDate, "2026-08-29");
   assertEquals(ref.modificationCode, 1);
   assertEquals(ref.modificationReason, "Cliente devolvio el pedido");
 });
