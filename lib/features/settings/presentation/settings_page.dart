@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException;
 
 import '../../../core/theme/tokens.dart';
 import '../../../shared/responsive/responsive_layout.dart';
@@ -23,6 +24,15 @@ const _receiptTypeLabels = <String, String>{
   'export': 'Exportación',
 };
 
+/// Tipos para las SECUENCIAS: los de venta más la nota de crédito (E34, la
+/// nota automática al anular una e-CF, migración 107; y B04). No se vende con
+/// ella, así que no va en "Tipo de comprobante por defecto". Sin esta entrada,
+/// editar la E34 abría el cuadro con el tipo en blanco.
+const _sequenceReceiptTypeLabels = <String, String>{
+  ..._receiptTypeLabels,
+  'credit_note': 'Nota de crédito',
+};
+
 /// Prefijo NCF según DGII (RD): serie B + tipo de comprobante (2 dígitos). El
 /// NCF se forma como prefijo + 8 dígitos de secuencia (ej. B02 + 00000001 =
 /// B0200000001, 11 caracteres). Estos son los códigos oficiales por tipo.
@@ -32,6 +42,7 @@ const _dgiiNcfPrefixes = <String, String>{
   'governmental': 'B15', // Comprobante Gubernamental
   'special': 'B14', // Comprobante de Regímenes Especiales
   'export': 'B16', // Comprobante para Exportaciones
+  'credit_note': 'B04', // Nota de Crédito
 };
 
 /// Prefijos e-CF (facturación electrónica) por tipo. El e-NCF se forma como
@@ -43,13 +54,14 @@ const _dgiiEcfPrefixes = <String, String>{
   'governmental': 'E45', // Comprobante Gubernamental Electrónico
   'special': 'E44', // Regímenes Especiales Electrónico
   'export': 'E46', // Exportaciones Electrónico
+  'credit_note': 'E34', // Nota de Crédito Electrónica
 };
 
 /// Tipos cuyas secuencias NCF NO vencen, según DGII (Guía de Comprobantes
 /// Fiscales, sección 6): Facturas de Consumo (B02), Notas de Crédito (B04) y
 /// Registro Único de Ingresos (B12). El resto vence el 31 de diciembre del año
 /// siguiente al que fue autorizado. De estos, el POS solo emite B02.
-const _dgiiNonExpiringTypes = <String>{'consumer_final'};
+const _dgiiNonExpiringTypes = <String>{'consumer_final', 'credit_note'};
 
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
@@ -496,7 +508,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: FilledButton.icon(
-                    onPressed: data.currentBranch == null ? null : _onCreateNcf,
+                    onPressed: data.currentBranch == null
+                        ? null
+                        : () => _onCreateNcf(data.ncfSequences),
                     icon: const Icon(Icons.add, size: 18),
                     label: const Text('Nueva secuencia'),
                   ),
@@ -576,7 +590,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                   children: [
                                     IconButton(
                                       tooltip: 'Editar',
-                                      onPressed: () => _onEditNcf(item),
+                                      onPressed: () =>
+                                          _onEditNcf(item, data.ncfSequences),
                                       icon: const Icon(
                                         Icons.edit_outlined,
                                         size: AppTokens.iconSizeS,
@@ -823,19 +838,22 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
-  Future<void> _onCreateNcf() async {
+  Future<void> _onCreateNcf(List<SettingsNcfSequence> existing) async {
     final result = await showDialog<_NcfDialogResult>(
       context: context,
-      builder: (_) => const _NcfDialog(),
+      builder: (_) => _NcfDialog(existing: existing),
     );
     if (result == null || !mounted) return;
     await _saveNcf(result);
   }
 
-  Future<void> _onEditNcf(SettingsNcfSequence sequence) async {
+  Future<void> _onEditNcf(
+    SettingsNcfSequence sequence,
+    List<SettingsNcfSequence> existing,
+  ) async {
     final result = await showDialog<_NcfDialogResult>(
       context: context,
-      builder: (_) => _NcfDialog(sequence: sequence),
+      builder: (_) => _NcfDialog(sequence: sequence, existing: existing),
     );
     if (result == null || !mounted) return;
     await _saveNcf(result);
@@ -870,8 +888,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ref.invalidate(settingsDataProvider);
     } catch (error) {
       if (!mounted) return;
+      // Respaldo del aviso del cuadro, por si otra persona la creó mientras
+      // tanto: la base no deja dos con el mismo tipo y prefijo por sucursal.
+      final duplicated = error is PostgrestException && error.code == '23505';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo guardar secuencia: $error')),
+        SnackBar(
+          content: Text(
+            duplicated
+                ? _duplicateNcfMessage(input.prefix)
+                : 'No se pudo guardar secuencia: $error',
+          ),
+        ),
       );
     }
   }
@@ -2174,9 +2201,13 @@ class _NcfDialogResult {
 }
 
 class _NcfDialog extends StatefulWidget {
-  const _NcfDialog({this.sequence});
+  const _NcfDialog({this.sequence, this.existing = const []});
 
   final SettingsNcfSequence? sequence;
+
+  /// Secuencias de la sucursal, para avisar antes de guardar una que repite
+  /// tipo y prefijo (`ncf_sequences_branch_id_receipt_type_prefix_key`).
+  final List<SettingsNcfSequence> existing;
 
   @override
   State<_NcfDialog> createState() => _NcfDialogState();
@@ -2207,7 +2238,7 @@ class _NcfDialogState extends State<_NcfDialog> {
   void initState() {
     super.initState();
     final s = widget.sequence;
-    _receiptType = s?.receiptType ?? _receiptTypeLabels.keys.first;
+    _receiptType = s?.receiptType ?? _sequenceReceiptTypeLabels.keys.first;
     _status = s?.status ?? 'active';
     _electronic = (s?.prefix ?? '').startsWith('E');
     _prefixController = TextEditingController(
@@ -2276,7 +2307,7 @@ class _NcfDialogState extends State<_NcfDialog> {
                   decoration: const InputDecoration(
                     labelText: 'Tipo de comprobante',
                   ),
-                  items: _receiptTypeLabels.entries
+                  items: _sequenceReceiptTypeLabels.entries
                       .map((entry) {
                         final code = _prefixMap[entry.key];
                         return DropdownMenuItem<String>(
@@ -2332,12 +2363,23 @@ class _NcfDialogState extends State<_NcfDialog> {
                     Expanded(
                       child: TextFormField(
                         controller: _prefixController,
-                        decoration: const InputDecoration(labelText: 'Prefijo'),
+                        decoration: const InputDecoration(
+                          labelText: 'Prefijo',
+                          errorMaxLines: 3,
+                        ),
                         validator: (value) {
-                          if ((value ?? '').trim().isEmpty) {
+                          final prefix = (value ?? '').trim();
+                          if (prefix.isEmpty) {
                             return 'Este campo es requerido';
                           }
-                          return null;
+                          final taken = widget.existing.any(
+                            (s) =>
+                                s.id != widget.sequence?.id &&
+                                s.receiptType == _receiptType &&
+                                s.prefix.trim().toUpperCase() ==
+                                    prefix.toUpperCase(),
+                          );
+                          return taken ? _duplicateNcfMessage(prefix) : null;
                         },
                       ),
                     ),
@@ -2601,7 +2643,15 @@ String _roleLabel(String? role) {
   }
 }
 
-String _receiptTypeLabel(String type) => _receiptTypeLabels[type] ?? type;
+String _receiptTypeLabel(String type) =>
+    _sequenceReceiptTypeLabels[type] ?? type;
+
+/// Una sola secuencia por tipo y prefijo en cada sucursal: un rango nuevo de
+/// la DGII se carga ampliando la que ya existe, no creando otra.
+String _duplicateNcfMessage(String prefix) =>
+    'Ya existe la secuencia ${prefix.trim()} de este tipo en la sucursal '
+    '(puede estar inactiva). Edítala con el lápiz para cargar el rango nuevo: '
+    'sube el máximo y el vencimiento.';
 
 String _date(DateTime value) {
   final day = value.day.toString().padLeft(2, '0');
