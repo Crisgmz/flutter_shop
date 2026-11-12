@@ -28,4 +28,10 @@ class Env {
 
   static bool get isSupabaseConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
+
+  // Nombre de la plataforma en pantallas, PDF y Excel. Cada despliegue lo
+  // elige al compilar (--dart-define=APP_NAME=Shop+); sin definir → el de
+  // siempre. web/index.html y manifest.json los cambia el Dockerfile.
+  static const _rawAppName = String.fromEnvironment('APP_NAME');
+  static const appName = _rawAppName != '' ? _rawAppName : 'Busi Pos Web';
 }

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 
 import 'inventory_repository.dart';
+import '../../../core/config/env.dart';
 
 const _productSheet = 'Productos';
 const _categorySheet = 'Categorias';
@@ -44,7 +45,7 @@ const List<String> _productHeaders = [
 ];
 
 const List<String> _instructions = [
-  'Plantilla de inventario — Busi Pos Web',
+  'Plantilla de inventario — ${Env.appName}',
   '',
   '1. La hoja "Productos" es la única que el sistema lee al importar.',
   '2. La columna "nombre", "precio" y "costo" son obligatorias.',

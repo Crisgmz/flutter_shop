@@ -5,6 +5,7 @@ import 'package:pdf/widgets.dart' as pw;
 
 import '../../../shared/formatters/formatters.dart';
 import 'cash_register_repository.dart';
+import '../../../core/config/env.dart';
 
 /// Genera el PDF del cierre de caja en formato térmico (rollo continuo).
 /// Soporta dos anchos: 58mm y 80mm.
@@ -25,7 +26,7 @@ class CashClosurePdfBuilder {
   }) async {
     final doc = pw.Document(
       title: 'Cierre de caja ${session.id.substring(0, 8)}',
-      author: branchName ?? 'Busi Pos Web',
+      author: branchName ?? Env.appName,
     );
 
     final format = PdfPageFormat(
@@ -280,7 +281,7 @@ class CashClosurePdfBuilder {
   }) async {
     final doc = pw.Document(
       title: 'Efectivo contado',
-      author: branchName ?? 'Busi Pos Web',
+      author: branchName ?? Env.appName,
     );
 
     final isNarrow = widthMm <= 60;

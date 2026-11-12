@@ -18,6 +18,7 @@ import '../../inventory/data/file_io_helper.dart';
 import '../data/suppliers_excel_service.dart';
 import '../data/suppliers_repository.dart';
 import 'suppliers_providers.dart';
+import '../../../core/config/env.dart';
 
 class SuppliersPage extends ConsumerStatefulWidget {
   const SuppliersPage({super.key});
@@ -437,7 +438,7 @@ class _SuppliersPageState extends ConsumerState<SuppliersPage> {
             ),
             pw.SizedBox(height: 4),
             pw.Text(
-              'Busi Pos Web — Sistema de Gestión Comercial',
+              '${Env.appName} — Sistema de Gestión Comercial',
               style: pw.TextStyle(fontSize: 9, color: muted),
             ),
             pw.SizedBox(height: 12),
@@ -454,7 +455,7 @@ class _SuppliersPageState extends ConsumerState<SuppliersPage> {
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
                 pw.Text(
-                  'Busi Pos Web — Reporte generado automáticamente',
+                  '${Env.appName} — Reporte generado automáticamente',
                   style: pw.TextStyle(fontSize: 8, color: muted),
                 ),
                 pw.Text(

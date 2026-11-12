@@ -13,6 +13,7 @@ import '../features/settings/presentation/app_settings_providers.dart';
 import '../features/shell/presentation/shell_providers.dart';
 import '../shared/formatters/live_settings.dart';
 import 'router.dart';
+import '../core/config/env.dart';
 
 class ShopPlusApp extends ConsumerWidget {
   const ShopPlusApp({super.key});
@@ -41,7 +42,7 @@ class ShopPlusApp extends ConsumerWidget {
     // (document.title) lo maneja Flutter con `MaterialApp.title` más abajo.
     // Antes del login / empresa sin logo → ícono por defecto de la plataforma.
     final companyName = currentSettings?.companyName.trim() ?? '';
-    final appTitle = companyName.isEmpty ? 'Busi Pos Web' : companyName;
+    final appTitle = companyName.isEmpty ? Env.appName : companyName;
     setBrowserFavicon(currentSettings?.companyLogoUrl);
 
     // Realtime: cuando la sucursal default cambia (al loguearse, al hacer

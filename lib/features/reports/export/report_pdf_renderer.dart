@@ -18,12 +18,13 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
 import 'report_export_models.dart';
+import '../../../core/config/env.dart';
 
 class ReportPdfRenderer {
   Future<Uint8List> render(ReportExportData data) async {
     final pdf = pw.Document(
       title: data.title,
-      author: data.companyName ?? 'Busi Pos Web',
+      author: data.companyName ?? Env.appName,
       subject: data.subtitle ?? data.title,
     );
 
@@ -135,7 +136,7 @@ class ReportPdfRenderer {
       child: pw.Row(
         children: [
           pw.Text(
-            'Generado ${_fmtDateTime(now)} · Busi Pos Web',
+            'Generado ${_fmtDateTime(now)} · ${Env.appName}',
             style: pw.TextStyle(fontSize: 8, color: muted),
           ),
           pw.Spacer(),

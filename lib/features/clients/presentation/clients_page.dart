@@ -24,6 +24,7 @@ import '../data/clients_excel_service.dart';
 import '../data/clients_repository.dart';
 import 'client_form_dialog.dart';
 import 'clients_providers.dart';
+import '../../../core/config/env.dart';
 
 class ClientsPage extends ConsumerStatefulWidget {
   const ClientsPage({super.key});
@@ -641,7 +642,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
             ),
             pw.SizedBox(height: 4),
             pw.Text(
-              'Busi Pos Web — Sistema de Gestión Comercial',
+              '${Env.appName} — Sistema de Gestión Comercial',
               style: pw.TextStyle(fontSize: 9, color: muted),
             ),
             pw.SizedBox(height: 12),
@@ -658,7 +659,7 @@ class _ClientsPageState extends ConsumerState<ClientsPage> {
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
                 pw.Text(
-                  'Busi Pos Web — Reporte generado automáticamente',
+                  '${Env.appName} — Reporte generado automáticamente',
                   style: pw.TextStyle(fontSize: 8, color: muted),
                 ),
                 pw.Text(

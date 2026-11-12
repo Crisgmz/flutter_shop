@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/tokens.dart';
 import '../data/saved_login_emails.dart';
 import 'auth_providers.dart';
+import '../../../core/config/env.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
@@ -128,7 +129,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        'Busi Pos Web',
+                        Env.appName,
                         textAlign: TextAlign.center,
                         style: Theme.of(context)
                             .textTheme

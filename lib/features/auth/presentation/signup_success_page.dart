@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../../core/config/env.dart';
 
 class SignupSuccessPage extends StatelessWidget {
   const SignupSuccessPage({super.key, this.companyName});
@@ -61,7 +62,7 @@ class SignupSuccessPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Ahora iniciá sesión para empezar a usar Busi Pos Web.',
+                      'Ahora iniciá sesión para empezar a usar ${Env.appName}.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: const Color(0xFF64748B),

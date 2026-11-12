@@ -5,6 +5,7 @@ import 'package:pdf/widgets.dart' as pw;
 
 import '../../../shared/formatters/formatters.dart';
 import 'inventory_repository.dart';
+import '../../../core/config/env.dart';
 
 /// PDFs del historial de un producto: el listado de movimientos (carta) y el
 /// comprobante de un ajuste, merma o traslado (ticket 80mm, el papel por
@@ -34,7 +35,7 @@ class ProductHistoryPdfBuilder {
   }) async {
     final doc = pw.Document(
       title: 'Historial $productName',
-      author: branchName ?? 'Busi Pos Web',
+      author: branchName ?? Env.appName,
     );
 
     final totalIn = lines
@@ -246,7 +247,7 @@ class ProductHistoryPdfBuilder {
     final e = line.entry;
     final doc = pw.Document(
       title: 'Comprobante ${e.typeLabel}',
-      author: branchName ?? 'Busi Pos Web',
+      author: branchName ?? Env.appName,
     );
     final format = PdfPageFormat(
       80 * PdfPageFormat.mm,

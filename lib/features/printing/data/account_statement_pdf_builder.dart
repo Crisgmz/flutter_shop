@@ -6,6 +6,7 @@ import 'package:pdf/widgets.dart' as pw;
 import '../../../shared/formatters/formatters.dart';
 import 'account_statement.dart';
 import 'pdf_receipt_builder.dart' show shrinkImageForPdf;
+import '../../../core/config/env.dart';
 
 /// PDFs de Cuentas por cobrar y Cuentas por pagar:
 ///   - [buildStatement]: estado de cuenta de un cliente o proveedor, para
@@ -284,7 +285,7 @@ class AccountStatementPdfBuilder {
     final overdue = documents
         .where((d) => d.daysOverdue(now) > 0)
         .fold<double>(0, (s, d) => s + d.balance);
-    final doc = pw.Document(title: title, author: branchName ?? 'Busi Pos Web');
+    final doc = pw.Document(title: title, author: branchName ?? Env.appName);
 
     doc.addPage(
       pw.MultiPage(

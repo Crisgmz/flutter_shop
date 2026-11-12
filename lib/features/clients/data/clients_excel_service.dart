@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 
 import 'clients_repository.dart';
+import '../../../core/config/env.dart';
 
 const _clientsSheet = 'Clientes';
 const _instructionsSheet = 'Instrucciones';
@@ -39,7 +40,7 @@ const List<String> _clientHeaders = [
 ];
 
 const List<String> _instructions = [
-  'Plantilla de Clientes — Busi Pos Web',
+  'Plantilla de Clientes — ${Env.appName}',
   '',
   '1. La hoja "Clientes" es la única que el sistema lee al importar.',
   '2. La columna "nombre" es obligatoria.',

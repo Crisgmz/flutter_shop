@@ -21,6 +21,7 @@ import '../../reports/presentation/date_range_preset_bar.dart';
 import '../data/expenses_excel_service.dart';
 import '../data/expenses_repository.dart';
 import 'expenses_providers.dart';
+import '../../../core/config/env.dart';
 
 class ExpensesPage extends ConsumerStatefulWidget {
   const ExpensesPage({super.key});
@@ -641,7 +642,7 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
             ),
             pw.SizedBox(height: 4),
             pw.Text(
-              'Busi Pos Web — Sistema de Gestión Comercial',
+              '${Env.appName} — Sistema de Gestión Comercial',
               style: pw.TextStyle(fontSize: 9, color: muted),
             ),
             pw.SizedBox(height: 4),
@@ -660,7 +661,7 @@ class _ExpensesPageState extends ConsumerState<ExpensesPage> {
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
                 pw.Text(
-                  'Busi Pos Web — Reporte generado automáticamente',
+                  '${Env.appName} — Reporte generado automáticamente',
                   style: pw.TextStyle(fontSize: 8, color: muted),
                 ),
                 pw.Text(

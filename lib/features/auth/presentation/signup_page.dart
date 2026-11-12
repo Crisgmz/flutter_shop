@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'auth_providers.dart';
+import '../../../core/config/env.dart';
 
 class SignupPage extends ConsumerStatefulWidget {
   const SignupPage({super.key});
@@ -135,7 +136,7 @@ class _SignupPageState extends ConsumerState<SignupPage> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Empezá a usar Busi Pos Web — registrate y configurá tu '
+                          'Empezá a usar ${Env.appName} — registrate y configurá tu '
                           'empresa en un minuto.',
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),

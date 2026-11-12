@@ -28,6 +28,7 @@ import 'product_form_dialog.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import '../../../core/config/env.dart';
 
 class InventoryPage extends ConsumerStatefulWidget {
   const InventoryPage({super.key});
@@ -920,7 +921,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
   Future<Uint8List> _buildInventoryPdf(List<InventoryProduct> products) async {
     final pdf = pw.Document(
       title: 'Reporte de Inventario',
-      author: 'Busi Pos Web',
+      author: Env.appName,
     );
 
     final theme = pw.ThemeData.withFont(
@@ -958,7 +959,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text(
-                      'Busi Pos Web',
+                      Env.appName,
                       style: pw.TextStyle(
                         fontSize: 14,
                         fontWeight: pw.FontWeight.bold,
@@ -1003,7 +1004,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
             child: pw.Row(
               children: [
                 pw.Text(
-                  'Busi Pos Web · Reporte de Inventario',
+                  '${Env.appName} · Reporte de Inventario',
                   style: pw.TextStyle(fontSize: 8, color: muted),
                 ),
                 pw.Spacer(),

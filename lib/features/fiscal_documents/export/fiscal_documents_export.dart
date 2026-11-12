@@ -21,6 +21,7 @@ import '../../settings/data/app_settings.dart';
 import '../data/fiscal_consumo_summary.dart';
 import '../data/fiscal_documents_repository.dart';
 import '../data/fiscal_labels.dart';
+import '../../../core/config/env.dart';
 
 const _detailColumns = <String>[
   'NCF',
@@ -184,7 +185,7 @@ class FiscalDocumentsExport {
   Future<Uint8List> summaryPdf(FiscalConsumoSummary summary) async {
     final pdf = pw.Document(
       title: FiscalConsumoSummary.title,
-      author: _companyName ?? 'Busi Pos Web',
+      author: _companyName ?? Env.appName,
     );
     final theme = pw.ThemeData.withFont(
       base: await PdfGoogleFonts.robotoRegular(),
@@ -294,7 +295,7 @@ class FiscalDocumentsExport {
             ],
             pw.Spacer(),
             pw.Text(
-              'Generado ${formatDateTime(DateTime.now())} · Busi Pos Web',
+              'Generado ${formatDateTime(DateTime.now())} · ${Env.appName}',
               style: pw.TextStyle(fontSize: 8, color: muted),
             ),
           ],

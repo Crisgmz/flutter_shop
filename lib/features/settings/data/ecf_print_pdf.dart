@@ -6,6 +6,7 @@ import 'package:printing/printing.dart';
 
 import '../../../shared/formatters/formatters.dart';
 import 'ecf_onboarding_models.dart';
+import '../../../core/config/env.dart';
 
 /// Representación impresa (RI) de un e-CF de las pruebas de simulación de la
 /// DGII, con el orden y los datos que pide la DGII (Informe Técnico e-CF,
@@ -57,7 +58,7 @@ Future<Uint8List> buildEcfPrintPdf(
   final doc = pw.Document(
     title: '${m.typeName} ${m.encf}',
     author: m.issuer.legalName ?? m.issuer.rnc,
-    creator: 'Busi Pos Web',
+    creator: Env.appName,
     theme: pw.ThemeData.withFont(base: regular, bold: bold),
   );
 

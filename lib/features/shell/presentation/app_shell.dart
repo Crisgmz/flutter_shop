@@ -12,6 +12,7 @@ import '../../cobros/presentation/cobros_providers.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import 'shell_nav_items.dart';
 import 'shell_providers.dart';
+import '../../../core/config/env.dart';
 
 class AppShell extends ConsumerWidget {
   const AppShell({super.key, required this.child});
@@ -151,7 +152,7 @@ class AppShell extends ConsumerWidget {
           Expanded(
             child: Scaffold(
               appBar: _TopBar(
-                title: currentNavItem?.label ?? 'Busi Pos Web',
+                title: currentNavItem?.label ?? Env.appName,
                 currentPath: currentPath,
                 branchName: branchName,
                 branchOptions: branches,
@@ -564,7 +565,7 @@ class _DesktopSidebarState extends State<_DesktopSidebar> {
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerLeft,
               child: Text(
-                'Busi Pos Web',
+                Env.appName,
                 maxLines: 1,
                 softWrap: false,
                 style: TextStyle(
@@ -617,7 +618,7 @@ class _MobileMenuDrawer extends StatelessWidget {
                   children: [
                     const Flexible(
                       child: Text(
-                        'Busi Pos Web',
+                        Env.appName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
