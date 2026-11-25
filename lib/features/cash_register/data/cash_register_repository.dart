@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'cash_change.dart';
+
 /// Valor del filtro de caja que significa "no recortar por caja".
 const kAllCashRegisters = '__all__';
 
@@ -901,13 +903,12 @@ class CashRegisterRepository {
     var withdrawnForChange = 0.0;
     for (final item in salesRows) {
       final row = item as Map;
-      final change = _toDouble(row['change_amount']);
-      if (change <= 0) continue;
-      if (_toDouble(row['balance_due']) > 0) continue;
-      final nonCash = nonCashBySale[(row['id'] ?? '').toString()] ?? 0;
-      final excess = nonCash - _toDouble(row['total_amount']);
-      if (excess <= 0) continue;
-      withdrawnForChange += excess > change ? change : excess;
+      withdrawnForChange += changeWithdrawnFromDrawer(
+        total: _toDouble(row['total_amount']),
+        change: _toDouble(row['change_amount']),
+        nonCashPaid: nonCashBySale[(row['id'] ?? '').toString()] ?? 0,
+        balanceDue: _toDouble(row['balance_due']),
+      );
     }
     final cashWithdrawnForChange = _round2(withdrawnForChange);
 

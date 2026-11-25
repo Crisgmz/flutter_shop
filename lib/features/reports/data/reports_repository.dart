@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../cash_register/data/cash_change.dart';
+
 enum ReportPeriod { monthly, weekly }
 
 class ReportSalesPoint {
@@ -791,7 +793,8 @@ class ReportsRepository {
     return counts;
   }
 
-  /// Reusa el RPC del dashboard para liquidación operativa.
+  /// Reusa el RPC del dashboard para liquidación operativa, con el
+  /// "Efectivo cobrado" sin la devuelta.
   Future<Map<String, dynamic>> fetchOperationalCloseout({
     required DateTime date,
   }) async {
@@ -800,7 +803,11 @@ class ReportsRepository {
       params: {'p_date': _isoDate(date)},
     );
     if (result is Map) {
-      return Map<String, dynamic>.from(result);
+      return closeoutWithNetCash(
+        _client,
+        Map<String, dynamic>.from(result),
+        date,
+      );
     }
     return const {};
   }

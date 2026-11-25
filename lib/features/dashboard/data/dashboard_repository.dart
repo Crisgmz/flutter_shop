@@ -11,6 +11,8 @@
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../cash_register/data/cash_change.dart';
+
 enum DashboardChartRange { month, week }
 
 /// Hero KPIs (las 4 tarjetas de colores fuertes del Panel).
@@ -550,21 +552,40 @@ class DashboardRepository {
     final map = result is Map
         ? Map<String, dynamic>.from(result)
         : <String, dynamic>{};
-    return DashboardCloseout.fromMap(map);
+    return DashboardCloseout.fromMap(
+      await closeoutWithNetCash(_client, map, date),
+    );
   }
 
   /// Distribución de los cobros del día agrupada por método de pago.
   /// Lee directamente de `payments` filtrando por la sucursal del usuario
   /// y el rango [day 00:00, day+1 00:00) en hora local.
+  ///
+  /// El efectivo va SIN la devuelta: `payments.amount` guarda lo que el
+  /// cliente entregó (2,000 por una venta de 800).
   Future<DashboardPaymentBreakdown> fetchPaymentBreakdown(DateTime date) async {
     final start = DateTime(date.year, date.month, date.day);
     final end = start.add(const Duration(days: 1));
+    final branchId = await _currentBranchId();
+    if (branchId == null) {
+      return const DashboardPaymentBreakdown(entries: [], total: 0);
+    }
 
+    // Por sucursal (sin el filtro un admin veía las de todas) y en UTC (sin
+    // la zona el servidor leía la medianoche local como UTC y el día se
+    // corría 4 horas).
     final rows = await _client
         .from('payments')
         .select('payment_method, amount')
-        .gte('paid_at', start.toIso8601String())
-        .lt('paid_at', end.toIso8601String());
+        .eq('branch_id', branchId)
+        .gte('paid_at', start.toUtc().toIso8601String())
+        .lt('paid_at', end.toUtc().toIso8601String());
+    final changeFromCash = await fetchChangeFromCustomerCash(
+      _client,
+      branchId: branchId,
+      start: start,
+      end: end,
+    );
 
     final totals = <String, double>{};
     final counts = <String, int>{};
@@ -575,6 +596,9 @@ class DashboardRepository {
       final amount = _toDouble(map['amount']);
       totals[method] = (totals[method] ?? 0) + amount;
       counts[method] = (counts[method] ?? 0) + 1;
+    }
+    if (changeFromCash > 0 && totals.containsKey('cash')) {
+      totals['cash'] = totals['cash']! - changeFromCash;
     }
 
     final entries = totals.entries
