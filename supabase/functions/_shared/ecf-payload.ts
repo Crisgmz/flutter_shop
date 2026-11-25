@@ -87,7 +87,27 @@ export function isCreditNoteType(ncfType: string): boolean {
 
 /** Recorta un texto al largo maximo que admite su campo en el e-CF. */
 function clip(value: string, max: number): string {
-  return value.trim().slice(0, max).trim();
+  return cleanText(value).slice(0, max).trim();
+}
+
+/**
+ * Texto apto para el esquema e-CF: sin saltos de linea ni caracteres de control
+ * (un RNC o una razon social copiados de Excel traen un `\r` al final: EL
+ * RINCON DE ADDA y PEPPER'S SITE, 2026-11-11), y sin espacios repetidos.
+ */
+function cleanText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * RNC o cedula solo con numeros: Alanube los valida contra `^[0-9]+$` y
+ * rechaza el comprobante entero (400) si traen guiones o espacios. ECOBAR AND
+ * LOUNGE (2026-11-11): `fiscal_settings.rnc` = "132-96997-9" tumbo sus 95
+ * primeros e-CF. La app y el alta e-CF guardan el RNC tal como se escribe, asi
+ * que se limpia aqui, para el emisor y para el comprador.
+ */
+export function onlyDigits(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "");
 }
 
 /**
@@ -98,10 +118,10 @@ function clip(value: string, max: number): string {
  * Alanube rechace el comprobante.
  */
 export function branchOfficeFor(sender: Sender): string | undefined {
-  const branch = (sender.branchOffice ?? "").trim();
+  const branch = cleanText(sender.branchOffice ?? "");
   if (!branch) return undefined;
   const same = (other: string | undefined) =>
-    (other ?? "").trim().toLowerCase() === branch.toLowerCase();
+    cleanText(other ?? "").toLowerCase() === branch.toLowerCase();
   if (same(sender.companyName) || same(sender.tradename)) return undefined;
   return clip(branch, 20);
 }
@@ -262,7 +282,7 @@ export function buildAlanubePayload(
   // (2026-11-03): `businesses.branch_name` = "007 BAR & SNACK, S.R.L" (22) en
   // `branchOffice` (max 20) tumbo 27 comprobantes seguidos.
   const senderPayload: Record<string, unknown> = {
-    rnc: sender.rnc,
+    rnc: onlyDigits(sender.rnc),
     companyName: clip(sender.companyName, 150),
     address: clip(sender.address, 100),
     stampDate,
@@ -270,12 +290,14 @@ export function buildAlanubePayload(
   if (sender.tradename) senderPayload.tradename = clip(sender.tradename, 150);
   const branchOffice = branchOfficeFor(sender);
   if (branchOffice) senderPayload.branchOffice = branchOffice;
-  if (sender.mail) senderPayload.mail = sender.mail;
+  const mail = cleanText(sender.mail ?? "");
+  if (mail) senderPayload.mail = mail;
 
   let buyer: Record<string, unknown> | undefined;
   if (buyerRequired || doc.customer_rnc || (doc.customer_name && doc.customer_name !== "Consumidor Final")) {
     buyer = { companyName: clip(doc.customer_name || "Consumidor Final", 150) };
-    if (doc.customer_rnc) buyer.rnc = doc.customer_rnc;
+    const buyerRnc = onlyDigits(doc.customer_rnc);
+    if (buyerRnc) buyer.rnc = buyerRnc;
     if (doc.customer_address) buyer.address = clip(doc.customer_address, 100);
   }
 

@@ -670,3 +670,57 @@ Deno.test("direcciones y nombres largos se recortan al maximo del esquema", () =
   assertEquals((b.companyName as string).length, 150);
   assertEquals((b.address as string).length, 100);
 });
+
+// ── RNC y textos tal como se escribieron en la app (2026-11-11) ─────────
+// ECOBAR AND LOUNGE: fiscal_settings.rnc = "132-96997-9" -> Alanube 400
+// "instance.sender.rnc does not match pattern ^[0-9]+$" en sus 95 primeros
+// e-CF. EL RINCON DE ADDA y PEPPER'S SITE: RNC y razon social con un "\r" al
+// final (copiados de Excel).
+
+Deno.test("ECOBAR: el RNC del emisor con guiones sale solo con numeros", () => {
+  const s = senderOf(buildAlanubePayload(doc(), { ...sender, rnc: "132-96997-9" }, [itemLocal], null));
+  assertEquals(s.rnc, "132969979");
+});
+
+Deno.test("PEPPER'S: RNC y razon social con salto de linea al final salen limpios", () => {
+  const s = senderOf(
+    buildAlanubePayload(
+      doc(),
+      { ...sender, rnc: "132202945\r", companyName: "The Pepper S site Bar Grill SRL\r" },
+      [itemLocal],
+      null,
+    ),
+  );
+  assertEquals(s.rnc, "132202945");
+  assertEquals(s.companyName, "The Pepper S site Bar Grill SRL");
+});
+
+Deno.test("saltos de linea y espacios repetidos dentro de la direccion quedan en un espacio", () => {
+  const s = senderOf(
+    buildAlanubePayload(doc(), { ...sender, address: "Calle 1,\r\nEnsanche   Naco\t" }, [itemLocal], null),
+  );
+  assertEquals(s.address, "Calle 1, Ensanche Naco");
+});
+
+Deno.test("E31: el RNC del comprador con guiones o espacios sale solo con numeros", () => {
+  const payload = buildAlanubePayload(
+    doc({ ncf_type: "E31", customer_rnc: " 101-86939-9 ", customer_name: "ADMINISTRADORA AFP\r" }),
+    sender,
+    [itemLocal],
+    null,
+  );
+  const b = payload.buyer as Record<string, unknown>;
+  assertEquals(b.rnc, "101869399");
+  assertEquals(b.companyName, "ADMINISTRADORA AFP");
+});
+
+Deno.test("RNC del comprador sin ningun numero: no se manda el campo", () => {
+  const payload = buildAlanubePayload(
+    doc({ ncf_type: "E31", customer_rnc: "--", customer_name: "Cliente X" }),
+    sender,
+    [itemLocal],
+    null,
+  );
+  const b = payload.buyer as Record<string, unknown>;
+  assertEquals("rnc" in b, false);
+});
