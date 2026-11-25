@@ -9,7 +9,42 @@ const fiscalReceiptLabels = <String, String>{
   'export': 'Exportación',
   // E34: la emite sola la base al anular una e-CF aceptada (migración 107).
   'credit_note': 'Nota de Crédito',
+  // Venta sin NCF (migración 110); se puede convertir en comprobante.
+  'proforma': 'Proforma',
 };
+
+/// Comprobantes fiscales que se emiten al vender (y a los que se puede
+/// convertir una proforma), en el orden del selector del POS.
+const kSaleFiscalReceiptTypes = <String>[
+  'consumer_final',
+  'fiscal_credit',
+  'governmental',
+  'special',
+  'export',
+];
+
+const _kPhysicalReceiptCodes = <String, String>{
+  'consumer_final': 'B02',
+  'fiscal_credit': 'B01',
+  'governmental': 'B15',
+  'special': 'B14',
+  'export': 'B16',
+};
+
+const _kElectronicReceiptCodes = <String, String>{
+  'consumer_final': 'E32',
+  'fiscal_credit': 'E31',
+  'governmental': 'E45',
+  'special': 'E44',
+  'export': 'E46',
+};
+
+/// Código DGII del comprobante según la modalidad de la empresa: física →
+/// serie B (B02…), electrónica o híbrida → serie E (E32…), que es la que
+/// `assign_next_ncf` consume. Null si el tipo no es fiscal.
+String? fiscalReceiptCode(String receiptType, {required bool electronic}) =>
+    (electronic ? _kElectronicReceiptCodes : _kPhysicalReceiptCodes)[
+        receiptType];
 
 const fiscalStatusLabels = <String, String>{
   'pending': 'Pendiente',

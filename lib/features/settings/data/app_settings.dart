@@ -9,6 +9,8 @@
 
 import 'package:flutter/foundation.dart';
 
+import '../../../shared/tax/itbis_mode.dart';
+
 @immutable
 class AppSettings {
   const AppSettings(this._raw);
@@ -55,12 +57,31 @@ class AppSettings {
 
   bool get invoiceLogoOnLeft => invoiceLogoPosition == 'left';
 
+  /// Giro o lema que la factura A4 clásica imprime debajo del nombre
+  /// ("Diseño - Construcción - Consultoría de Obras Civiles"). Migración 109.
+  String? get companyTagline => _strOrNull('company_tagline');
+
+  /// Formato de la factura A4: `'standard'` (por defecto) o `'classic'`
+  /// (cuadros de Cliente/Proyecto, Concepto y forma de pago marcada).
+  /// Solo cambia la factura de venta; cotizaciones y demás siguen igual.
+  String get invoiceA4Style =>
+      _str('invoice_a4_style', 'standard') == 'classic' ? 'classic' : 'standard';
+
+  bool get invoiceA4Classic => invoiceA4Style == 'classic';
+
   /// URL del código QR para el pie de factura/cotización. Se descarga en
   /// runtime (como el logo), inmune al caché del bundle/service worker.
   String? get companyQrUrl => _strOrNull('company_qr_url');
 
   // ─── Sección 2: Inventario ───────────────────────────────────────────────
   bool get invDefaultIsService => _bool('inv_default_is_service', false);
+
+  /// Tipo de ITBIS con que arranca un producto nuevo: `'regular'` o
+  /// `'norma_07_2007'` (18% sobre el 10% del monto). La base lo aplica
+  /// también a los productos que entran sin decirlo (Excel, alta rápida).
+  String get invDefaultItbisMode => normalizeItbisMode(
+        _str('inv_default_itbis_mode', ItbisMode.regular),
+      );
   String get invBarcodeIdSource => _str('inv_barcode_id_source', 'item_id');
   bool get invDisallowBelowCost => _bool('inv_disallow_below_cost', false);
   bool get invImeiMode => _bool('inv_imei_mode', false);

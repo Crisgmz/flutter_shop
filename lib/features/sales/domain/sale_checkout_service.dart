@@ -150,7 +150,7 @@ class SaleCheckoutService {
       );
     }
 
-    if (receiptType != 'consumer_final' && input.clientId == null) {
+    if (receiptTypeNeedsFiscalClient(receiptType) && input.clientId == null) {
       throw const SaleCheckoutValidationException(
         'Debe seleccionar un cliente para este tipo de comprobante.',
       );
@@ -420,6 +420,9 @@ String normalizeReceiptType(String value) {
       .replaceAll(RegExp(r'^_|_$'), '');
 
   switch (normalized) {
+    case 'proforma':
+    case 'factura_proforma':
+      return 'proforma';
     case '':
     case 'consumer_final':
     case 'consumidor_final':
@@ -442,6 +445,16 @@ String normalizeReceiptType(String value) {
       );
   }
 }
+
+/// Factura proforma (migración 110): venta completa —ITBIS, cobro,
+/// inventario— pero sin NCF. El dueño la puede convertir después en
+/// comprobante fiscal.
+const kProformaReceiptType = 'proforma';
+
+/// Comprobantes que exigen un cliente con RNC/cédula: todos menos Consumidor
+/// Final y la proforma. Espeja `tg_sales_assert_fiscal_client`.
+bool receiptTypeNeedsFiscalClient(String receiptType) =>
+    receiptType != 'consumer_final' && receiptType != kProformaReceiptType;
 
 String? nullIfBlank(String? value) {
   if (value == null) return null;

@@ -621,6 +621,67 @@ class _ThermalItemCell extends StatelessWidget {
   }
 }
 
+// ── A4 preview desde el PDF ──────────────────────────────────────────────────
+//
+// Dibuja la primera página del mismo PDF que se imprime. Así la vista previa
+// nunca se separa del papel, sin mantener una copia del diseño en widgets.
+
+class _PdfPagePreview extends StatefulWidget {
+  const _PdfPagePreview({required this.document});
+
+  final PrintDocumentData document;
+
+  @override
+  State<_PdfPagePreview> createState() => _PdfPagePreviewState();
+}
+
+class _PdfPagePreviewState extends State<_PdfPagePreview> {
+  late Future<Uint8List?> _page = _render();
+
+  @override
+  void didUpdateWidget(covariant _PdfPagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.document, widget.document)) _page = _render();
+  }
+
+  Future<Uint8List?> _render() async {
+    final bytes = await const PdfReceiptBuilder().buildBytes(widget.document);
+    await for (final page in Printing.raster(bytes, pages: const [0], dpi: 120)) {
+      return page.toPng();
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: _kPaperBg,
+      child: FutureBuilder<Uint8List?>(
+        future: _page,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final png = snapshot.data;
+          if (snapshot.hasError || png == null) {
+            return const Center(
+              child: Text('No se pudo mostrar la vista previa.'),
+            );
+          }
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(8),
+            child: Image.memory(
+              png,
+              fit: BoxFit.fitWidth,
+              semanticLabel: 'Vista previa de la factura',
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 // ── A4 preview ───────────────────────────────────────────────────────────────
 //
 // Replica en pantalla lo que imprime `PdfReceiptBuilder.buildBytes`: bloque
@@ -636,6 +697,8 @@ class _A4Preview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // La factura clásica no tiene réplica en widgets: se muestra el PDF real.
+    if (usesClassicA4(document)) return _PdfPagePreview(document: document);
     final d = document;
     return Container(
       color: _kPaperBg,
@@ -670,6 +733,7 @@ class _A4Preview extends StatelessWidget {
                 Center(
                   child: Text(
                     d.footerMessage!,
+                    textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontSize: 10,
                       fontStyle: FontStyle.italic,

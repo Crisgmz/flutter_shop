@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../shared/tax/itbis_mode.dart';
 import 'inventory_import_matcher.dart';
 
 class InventoryCategory {
@@ -56,6 +57,7 @@ class InventoryProduct {
     this.isService = false,
     this.isTaxExempt = false,
     this.priceIncludesTax = false,
+    this.itbisMode = ItbisMode.regular,
     this.trackInventory = true,
     this.sizeLabel,
     this.variantName,
@@ -102,6 +104,12 @@ class InventoryProduct {
   /// Si true, el precio de venta YA incluye el ITBIS (se extrae al vender).
   /// Si false (histórico), el ITBIS se agrega encima del precio.
   final bool priceIncludesTax;
+
+  /// `products.itbis_mode`: [ItbisMode.regular] o [ItbisMode.norma0707]. En
+  /// norma, [taxRate] es la tasa efectiva (1.8).
+  final String itbisMode;
+
+  bool get isItbisNorma0707 => itbisMode == ItbisMode.norma0707;
 
   final bool trackInventory;
   final String? sizeLabel;
@@ -188,6 +196,7 @@ class InventoryProduct {
       isService: map['is_service'] == true,
       isTaxExempt: map['is_tax_exempt'] == true,
       priceIncludesTax: map['price_includes_tax'] == true,
+      itbisMode: normalizeItbisMode(map['itbis_mode']?.toString()),
       trackInventory: map['track_inventory'] != false,
       sizeLabel: map['size_label']?.toString(),
       variantName: map['variant_name']?.toString(),
@@ -238,6 +247,7 @@ class InventoryProductInput {
     this.isService = false,
     this.isTaxExempt = false,
     this.priceIncludesTax = false,
+    this.itbisMode,
     this.trackInventory = true,
     this.sizeLabel,
     this.variantName,
@@ -283,6 +293,11 @@ class InventoryProductInput {
 
   /// Espeja `products.price_includes_tax` (ITBIS incluido en el precio).
   final bool priceIncludesTax;
+
+  /// `products.itbis_mode`. Null = no se toca: al crear, la base pone el
+  /// default de la empresa (Excel, alta rápida); al editar, se queda el que
+  /// tenía.
+  final String? itbisMode;
 
   final bool trackInventory;
   final String? sizeLabel;
@@ -532,8 +547,8 @@ class InventoryRepository {
             'id, name, sku, barcode, category_id, unit, sale_unit, cost, price, '
             'tax_rate, stock, min_stock, is_active, '
             'internal_code, brand, model, image_url, notes, '
-            'is_service, is_tax_exempt, price_includes_tax, track_inventory, '
-            'size_label, variant_name, purchase_unit, '
+            'is_service, is_tax_exempt, price_includes_tax, itbis_mode, '
+            'track_inventory, size_label, variant_name, purchase_unit, '
             'reorder_level, max_stock, allow_negative_stock, '
             'price_tier_1, price_tier_2, price_tier_3, price_tier_4, '
             'price_tier_5, price_tier_6, price_tier_7, price_tier_8, '
@@ -906,6 +921,7 @@ class InventoryRepository {
       'is_service': input.isService,
       'is_tax_exempt': input.isTaxExempt,
       'price_includes_tax': input.priceIncludesTax,
+      if (input.itbisMode != null) 'itbis_mode': input.itbisMode,
       'track_inventory': input.trackInventory,
       'imeis': input.imeis,
       'imei_on_purchase': input.imeiOnPurchase,

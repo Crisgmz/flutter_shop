@@ -27,6 +27,7 @@ class SaleDraft {
     this.paymentMethod,
     this.clientId,
     this.notes = '',
+    this.invoiceDetails = const SaleInvoiceDetails(),
     this.heldSaleId,
     this.returnOriginalSaleId,
     this.returnOriginalSaleNumber,
@@ -37,6 +38,9 @@ class SaleDraft {
   final String? paymentMethod;
   final String? clientId;
   final String notes;
+
+  /// Proyecto, Localización y Concepto (factura A4 clásica).
+  final SaleInvoiceDetails invoiceDetails;
 
   /// Venta original cargada en modo devolución. Viaja en el draft para que el
   /// enlace no se pierda si el cajero navega a otra sección (sin él, el backend
@@ -82,6 +86,7 @@ void clearSaleDraftStore() => kvRemove(_saleDraftKey);
 void saveSaleDraftToStore(SaleDraft draft) {
   if (draft.items.isEmpty &&
       draft.notes.isEmpty &&
+      draft.invoiceDetails.isEmpty &&
       draft.clientId == null &&
       draft.paymentMethod == null &&
       draft.heldSaleId == null &&
@@ -97,6 +102,9 @@ String _encodeSaleDraft(SaleDraft d) => jsonEncode({
       'paymentMethod': d.paymentMethod,
       'clientId': d.clientId,
       'notes': d.notes,
+      'invoiceProject': d.invoiceDetails.project,
+      'invoiceLocation': d.invoiceDetails.location,
+      'invoiceConcept': d.invoiceDetails.concept,
       'heldSaleId': d.heldSaleId,
       'returnOriginalSaleId': d.returnOriginalSaleId,
       'returnOriginalSaleNumber': d.returnOriginalSaleNumber,
@@ -137,6 +145,11 @@ SaleDraft? _decodeSaleDraft(String? raw) {
       paymentMethod: map['paymentMethod']?.toString(),
       clientId: map['clientId']?.toString(),
       notes: map['notes']?.toString() ?? '',
+      invoiceDetails: SaleInvoiceDetails(
+        project: map['invoiceProject']?.toString() ?? '',
+        location: map['invoiceLocation']?.toString() ?? '',
+        concept: map['invoiceConcept']?.toString() ?? '',
+      ),
       heldSaleId: map['heldSaleId']?.toString(),
       returnOriginalSaleId: map['returnOriginalSaleId']?.toString(),
       returnOriginalSaleNumber: map['returnOriginalSaleNumber']?.toString(),
@@ -167,6 +180,8 @@ Map<String, dynamic> _salesProductToJson(SalesProduct p) => {
       // línea es un servicio y no se bloquee por falta de existencia.
       'is_service': p.isService,
       'track_inventory': p.trackInventory,
+      'itbis_mode': p.itbisMode,
+      'sale_unit': p.unitName,
       'price_tier_1': p.priceTier1,
       'price_tier_2': p.priceTier2,
       'price_tier_3': p.priceTier3,

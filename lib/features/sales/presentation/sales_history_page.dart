@@ -11,6 +11,9 @@ import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../../shared/widgets/ui_custom.dart';
 import '../../cash_register/presentation/cash_register_filter_chip.dart';
+import '../../fiscal_documents/data/fiscal_labels.dart';
+import '../../settings/presentation/settings_providers.dart'
+    show companyEcfSettingsProvider;
 import '../data/sales_history_repository.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
@@ -148,13 +151,24 @@ class _SalesHistoryPageState extends ConsumerState<SalesHistoryPage> {
                                     ),
                                     Text(row.clientName ?? 'Cliente General'),
                                     Text(
-                                      row.ncf ?? '-',
+                                      // La proforma no tiene NCF: se ve su
+                                      // número PRF.
+                                      row.ncf ?? row.proformaNumber ?? '-',
                                       style: const TextStyle(
                                         fontFamily: 'monospace',
                                         fontSize: 12,
                                       ),
                                     ),
-                                    _StatusChip(status: row.status),
+                                    row.isProforma
+                                        ? Wrap(
+                                            spacing: 4,
+                                            runSpacing: 4,
+                                            children: [
+                                              _StatusChip(status: row.status),
+                                              const _ProformaChip(),
+                                            ],
+                                          )
+                                        : _StatusChip(status: row.status),
                                     Text(row.cashRegisterName ?? '—'),
                                     _paymentMethodsCell(
                                         row.paymentMethod, row.status),
@@ -310,6 +324,12 @@ class _FiltersBar extends StatelessWidget {
           active: filter.statuses,
           onChanged: (s) => onChanged((f) => f.copyWith(statuses: s)),
         ),
+        FilterChip(
+          label: const Text('Proformas'),
+          tooltip: 'Solo facturas proforma sin comprobante fiscal',
+          selected: filter.proformaOnly,
+          onSelected: (v) => onChanged((f) => f.copyWith(proformaOnly: v)),
+        ),
         CashRegisterFilterChip(
           selectedId: filter.cashRegisterId,
           onChanged: (id) => onChanged(
@@ -429,6 +449,31 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
+/// Marca de factura proforma (venta sin NCF, migración 110).
+class _ProformaChip extends StatelessWidget {
+  const _ProformaChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.tertiary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        'Proforma',
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Acciones por fila
 // ─────────────────────────────────────────────────────────────────────────
@@ -516,6 +561,11 @@ class _RowActions extends ConsumerWidget {
     // Editar la venta completa ya lo bloqueaba el RPC (admin o supervisor);
     // el gate evita el error confuso de apretar y que no pase nada.
     final canEdit = ref.watch(roleAccessProvider).canVoidSale;
+    // Convertir la proforma en comprobante (migración 110): solo cobrada o a
+    // crédito, y con el permiso (de fábrica, el admin).
+    final canConvert = row.isProforma &&
+        (row.status == 'completed' || row.status == 'credit') &&
+        ref.watch(canConvertProformaProvider);
 
     return Wrap(
       spacing: 4,
@@ -558,8 +608,51 @@ class _RowActions extends ConsumerWidget {
             visualDensity: VisualDensity.compact,
             onPressed: () => _voidSale(context, ref, row),
           ),
+        if (canConvert)
+          IconButton(
+            tooltip: 'Convertir en comprobante fiscal',
+            icon: const Icon(Icons.receipt_long_outlined, size: 18),
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _convertProforma(context, ref, row),
+          ),
       ],
     );
+  }
+
+  /// Le pone comprobante fiscal a una proforma: elige el tipo, la base toma
+  /// el NCF siguiente y se ofrece reimprimirla ya como factura.
+  Future<void> _convertProforma(
+    BuildContext context,
+    WidgetRef ref,
+    SalesHistoryRow row,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final receiptType = await showDialog<String>(
+      context: context,
+      builder: (_) => _ConvertProformaDialog(row: row),
+    );
+    if (receiptType == null || !context.mounted) return;
+    try {
+      final ncf = await ref.read(salesRepositoryProvider).convertProformaToReceipt(
+            saleId: row.id,
+            receiptType: receiptType,
+          );
+      ref.invalidate(salesHistoryPageProvider);
+      // Sin botón "Imprimir" en el aviso: al refrescar la lista esta fila se
+      // reconstruye y su context ya no sirve para abrir la impresión.
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Proforma ${row.proformaNumber ?? row.saleNumber} convertida: '
+            'NCF $ncf. Reimprímela para entregarla como factura.',
+          ),
+        ),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('No se pudo convertir la proforma: $error')),
+      );
+    }
   }
 
   /// Reabre una cuenta guardada: carga sus productos al carrito del POS y
@@ -587,6 +680,7 @@ class _RowActions extends ConsumerWidget {
         receiptType: draft.receiptType,
         clientId: draft.clientId,
         notes: draft.notes,
+        invoiceDetails: draft.invoiceDetails,
         heldSaleId: row.id,
       );
       ref.read(saleDraftProvider.notifier).state = saleDraft;
@@ -1156,6 +1250,97 @@ class _MetadataEditDialogState
             );
           },
           child: const Text('Guardar'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Elige a qué comprobante fiscal se convierte una proforma. Devuelve el
+/// `receipt_type` elegido, o null si se cancela.
+class _ConvertProformaDialog extends ConsumerStatefulWidget {
+  const _ConvertProformaDialog({required this.row});
+
+  final SalesHistoryRow row;
+
+  @override
+  ConsumerState<_ConvertProformaDialog> createState() =>
+      _ConvertProformaDialogState();
+}
+
+class _ConvertProformaDialogState
+    extends ConsumerState<_ConvertProformaDialog> {
+  String _receiptType = kSaleFiscalReceiptTypes.first;
+
+  @override
+  Widget build(BuildContext context) {
+    final electronic = ref
+            .watch(companyEcfSettingsProvider)
+            .valueOrNull
+            ?.electronicEnabled ??
+        false;
+    final row = widget.row;
+    return AlertDialog(
+      title: const Text('Convertir en comprobante'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Proforma ${row.proformaNumber ?? row.saleNumber} · '
+                '${money(row.totalAmount)}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: AppTokens.s8),
+              const Text(
+                'Se le asigna el próximo NCF del comprobante que elijas, con '
+                'fecha de hoy. No se puede deshacer.',
+              ),
+              const SizedBox(height: AppTokens.s12),
+              RadioGroup<String>(
+                groupValue: _receiptType,
+                onChanged: (v) {
+                  if (v != null) setState(() => _receiptType = v);
+                },
+                child: Column(
+                  children: [
+                    for (final type in kSaleFiscalReceiptTypes)
+                      RadioListTile<String>(
+                        value: type,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '${fiscalReceiptLabel(type)} '
+                          '(${fiscalReceiptCode(type, electronic: electronic)})',
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (_receiptType != 'consumer_final')
+                Text(
+                  'Este comprobante exige que la venta tenga un cliente con '
+                  'RNC o cédula.',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_receiptType),
+          child: const Text('Convertir'),
         ),
       ],
     );

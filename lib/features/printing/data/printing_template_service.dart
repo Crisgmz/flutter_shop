@@ -17,7 +17,7 @@ class PrintingTemplateService {
       if (_notEmpty(document.branch.taxId))
         ThermalTicketRow(center: 'RNC: ${document.branch.taxId}'),
       const ThermalTicketRow(isDivider: true),
-      ThermalTicketRow(center: _thermalTitle(document.documentType), emphasized: true),
+      ThermalTicketRow(center: _thermalTitleFor(document), emphasized: true),
       ThermalTicketRow(left: 'Doc:', right: document.documentNumber),
       ThermalTicketRow(left: 'Fecha:', right: formatDateTime(document.issuedAt)),
       if (_notEmpty(document.receiptTypeLabel))
@@ -96,7 +96,7 @@ class PrintingTemplateService {
 
     return ThermalTicketTemplate(
       documentType: document.documentType,
-      title: _thermalTitle(document.documentType),
+      title: _thermalTitleFor(document),
       rows: rows,
       copies: copies,
     );
@@ -105,7 +105,7 @@ class PrintingTemplateService {
   A4DocumentTemplate buildA4Template(PrintDocumentData document) {
     return A4DocumentTemplate(
       documentType: document.documentType,
-      title: _a4Title(document.documentType),
+      title: _a4TitleFor(document),
       headerRows: [
         A4KeyValueRow(label: 'Documento', value: document.documentNumber),
         A4KeyValueRow(label: 'Fecha', value: formatDateTime(document.issuedAt)),
@@ -166,6 +166,16 @@ class PrintingTemplateService {
     );
   }
 }
+
+/// La proforma es un recibo de venta (sin NCF), pero el papel debe decir
+/// que es proforma (migración 110).
+String _thermalTitleFor(PrintDocumentData document) => document.isProforma
+    ? 'FACTURA PROFORMA'
+    : _thermalTitle(document.documentType);
+
+String _a4TitleFor(PrintDocumentData document) => document.isProforma
+    ? 'Factura proforma'
+    : _a4Title(document.documentType);
 
 String _thermalTitle(PrintDocumentType type) {
   switch (type) {

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/tokens.dart';
 import '../../../shared/pricing/margin.dart';
 import '../../../shared/responsive/responsive_layout.dart';
+import '../../../shared/tax/itbis_mode.dart';
 import '../../settings/presentation/app_settings_providers.dart';
 import '../data/file_io_helper.dart';
 import '../data/inventory_repository.dart';
@@ -60,6 +61,14 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
   /// Si el usuario ya eligió a mano "ITBIS incluido/aparte", el default
   /// global que llegue tarde no se lo pisa.
   bool _priceIncludesTaxTouched = false;
+
+  /// ITBIS regular o Norma 07-2007. Igual que "incluido/aparte": producto
+  /// nuevo arranca con el default de Configuración, que no pisa una elección
+  /// hecha a mano si llega tarde.
+  String _itbisMode = ItbisMode.regular;
+  bool _itbisModeTouched = false;
+
+  bool get _isNorma0707 => _itbisMode == ItbisMode.norma0707;
   bool _trackInventory = true;
   bool _uploadingImage = false;
 
@@ -97,8 +106,11 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
     _minStockController = TextEditingController(
       text: product == null ? '0' : product.minStock.toString(),
     );
+    // En norma la base guarda la tasa efectiva (1.8); aquí se ve la nominal.
     _taxController = TextEditingController(
-      text: product == null ? '18' : product.taxRate.toString(),
+      text: product == null || product.isItbisNorma0707
+          ? '18'
+          : product.taxRate.toString(),
     );
     _brandController = TextEditingController(text: product?.brand ?? '');
     _modelController = TextEditingController(text: product?.model ?? '');
@@ -128,12 +140,18 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
     _priceIncludesTax = product?.priceIncludesTax ??
         settings?.taxDefaultPriceIncludesTax ??
         true;
+    _itbisMode = product?.itbisMode ??
+        settings?.invDefaultItbisMode ??
+        ItbisMode.regular;
     if (product == null && settings == null) {
       ref.read(appSettingsProvider.future).then((loaded) {
-        if (!mounted || _priceIncludesTaxTouched) return;
-        setState(
-          () => _priceIncludesTax = loaded.taxDefaultPriceIncludesTax,
-        );
+        if (!mounted) return;
+        setState(() {
+          if (!_priceIncludesTaxTouched) {
+            _priceIncludesTax = loaded.taxDefaultPriceIncludesTax;
+          }
+          if (!_itbisModeTouched) _itbisMode = loaded.invDefaultItbisMode;
+        });
       }).catchError((_) {});
     }
     // Un servicio no lleva control de inventario.
@@ -523,13 +541,49 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                     ),
                   ]),
                 const SizedBox(height: 10),
+                // La key lo reconstruye si el default llega después de abrir
+                // el formulario (initialValue solo se lee una vez).
+                DropdownButtonFormField<String>(
+                  key: ValueKey(_itbisMode),
+                  initialValue: _itbisMode,
+                  decoration: const InputDecoration(
+                    labelText: 'Tipo de ITBIS',
+                    helperText: 'Norma 07-2007: servicios de construcción, '
+                        'el 18% se cobra sobre el 10% del monto.',
+                    helperMaxLines: 2,
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: ItbisMode.regular,
+                      child: Text('ITBIS regular'),
+                    ),
+                    DropdownMenuItem(
+                      value: ItbisMode.norma0707,
+                      child: Text('Norma 07-2007 (18% sobre el 10%)'),
+                    ),
+                  ],
+                  onChanged: (value) => setState(() {
+                    _itbisModeTouched = true;
+                    _itbisMode = normalizeItbisMode(value);
+                    // La tasa de la norma es fija: 18 sobre el 10%.
+                    if (_isNorma0707) _taxController.text = '18';
+                  }),
+                ),
+                const SizedBox(height: 10),
                 _formRow(isMobile, [
                   TextFormField(
                     controller: _taxController,
+                    enabled: !_isNorma0707,
                     keyboardType: const TextInputType.numberWithOptions(
                       decimal: true,
                     ),
-                    decoration: const InputDecoration(labelText: 'ITBIS %'),
+                    decoration: InputDecoration(
+                      labelText: 'ITBIS %',
+                      helperText: _isNorma0707
+                          ? 'Fijo: 18% sobre el 10% (1.8% efectivo).'
+                          : null,
+                      helperMaxLines: 2,
+                    ),
                     validator: (value) {
                       final parsed = double.tryParse(value ?? '');
                       if (parsed == null || parsed < 0 || parsed > 100) {
@@ -589,9 +643,12 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
                   subtitle: const Text('No lleva control de inventario físico'),
                   contentPadding: EdgeInsets.zero,
                 ),
+                // Un servicio en norma 07-2007 siempre lleva ITBIS.
                 SwitchListTile(
-                  value: _isTaxExempt,
-                  onChanged: (value) => setState(() => _isTaxExempt = value),
+                  value: _isTaxExempt && !_isNorma0707,
+                  onChanged: _isNorma0707
+                      ? null
+                      : (value) => setState(() => _isTaxExempt = value),
                   title: const Text('Exento de ITBIS'),
                   contentPadding: EdgeInsets.zero,
                 ),
@@ -652,7 +709,12 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
       unit: _unitController.text,
       cost: double.parse(_costController.text),
       price: double.parse(_priceController.text),
-      taxRate: double.parse(_taxController.text),
+      // En norma se guarda la tasa efectiva: las RPC de venta cobran con ella.
+      // La base la vuelve a forzar por si acaso (migración 109).
+      taxRate: _isNorma0707
+          ? ItbisMode.normaEffectiveRate
+          : double.parse(_taxController.text),
+      itbisMode: _itbisMode,
       // Un servicio nunca guarda stock: los campos están ocultos y se fuerza 0
       // para no reintroducir valores viejos al convertir un producto físico.
       stock: _isService ? 0 : double.parse(_stockController.text),
@@ -663,7 +725,7 @@ class _ProductFormDialogState extends ConsumerState<ProductFormDialog> {
       notes: _notesController.text,
       imageUrl: _imageUrlController.text,
       isService: _isService,
-      isTaxExempt: _isTaxExempt,
+      isTaxExempt: _isTaxExempt && !_isNorma0707,
       priceIncludesTax: _priceIncludesTax,
       trackInventory: _trackInventory,
       imeis: List<String>.from(_imeis),

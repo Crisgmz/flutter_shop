@@ -35,6 +35,14 @@ void main() {
       expect(normalizeReceiptType('exportación'), 'export');
     });
 
+    test('la proforma es su propio tipo y no pide cliente con RNC', () {
+      expect(normalizeReceiptType('proforma'), kProformaReceiptType);
+      expect(normalizeReceiptType('factura_proforma'), kProformaReceiptType);
+      expect(receiptTypeNeedsFiscalClient(kProformaReceiptType), isFalse);
+      expect(receiptTypeNeedsFiscalClient('consumer_final'), isFalse);
+      expect(receiptTypeNeedsFiscalClient('fiscal_credit'), isTrue);
+    });
+
     test('rechaza tipos no soportados', () {
       expect(
         () => normalizeReceiptType('otro'),
@@ -147,6 +155,23 @@ void main() {
         ),
         throwsA(isA<SaleCheckoutValidationException>()),
       );
+    });
+
+    test('la proforma se vende sin cliente y cobra ITBIS como una venta', () {
+      final result = service.normalize(
+        SaleCheckoutServiceInput(
+          items: [
+            SaleCheckoutSourceItem(product: buildProduct(), quantity: 1),
+          ],
+          receiptType: 'proforma',
+          asCredit: false,
+          paymentMethod: 'cash',
+        ),
+      );
+
+      expect(result.receiptType, kProformaReceiptType);
+      expect(result.taxAmount, 18);
+      expect(result.total, 118);
     });
 
     test('rechaza productos sin stock suficiente', () {

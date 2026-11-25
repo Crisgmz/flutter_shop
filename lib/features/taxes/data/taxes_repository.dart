@@ -301,11 +301,7 @@ class TaxesRepository {
     while (true) {
       final page = await _client
           .from('sales')
-          .select(
-            'id, sale_date, sale_number, status, receipt_type, ncf, '
-            'total_amount, tax_amount, dgii_status, '
-            'clients(full_name, document_number)',
-          )
+          .select(_saleColumns)
           .eq('branch_id', branchId)
           .neq('status', 'voided')
           .gte('sale_date', startIso)
@@ -316,6 +312,29 @@ class TaxesRepository {
       rows.addAll(page.map((e) => Map<String, dynamic>.from(e as Map)));
       if (page.length < pageSize) break;
       offset += page.length;
+    }
+
+    // Proformas: sin convertir no tienen NCF y no van al 607; la convertida
+    // va en el mes de la conversión (la fecha de su NCF), no en el de la venta.
+    rows.removeWhere((row) => row['receipt_type'] == 'proforma');
+    final converted = await _convertedProformas(branchId, startIso, endIso);
+    if (converted.isNotEmpty) {
+      final start = DateTime.parse(startIso);
+      final end = DateTime.parse(endIso);
+      final convertedIds = {for (final row in converted) row['id']};
+      rows.removeWhere((row) => convertedIds.contains(row['id']));
+      for (final row in converted) {
+        final convertedAt = DateTime.parse(
+          row['proforma_converted_at'].toString(),
+        );
+        if (convertedAt.isBefore(start) || !convertedAt.isBefore(end)) {
+          continue;
+        }
+        rows.add({...row, 'sale_date': row['proforma_converted_at']});
+      }
+      DateTime saleDate(Map<String, dynamic> row) =>
+          DateTime.parse(row['sale_date'].toString());
+      rows.sort((a, b) => saleDate(b).compareTo(saleDate(a)));
     }
 
     // Los pagos aparte y por id: unidos a esta consulta, con la RLS, la
@@ -331,6 +350,38 @@ class TaxesRepository {
           'payments': payments[row['id'].toString()] ?? const [],
         }),
     ];
+  }
+
+  static const _saleColumns =
+      'id, sale_date, sale_number, status, receipt_type, ncf, '
+      'total_amount, tax_amount, dgii_status, '
+      'clients(full_name, document_number)';
+
+  /// Proformas convertidas que tocan el período: vendidas en él o convertidas
+  /// en él. Consulta aparte: sin la migración 110 la columna no existe
+  /// (42703) y el 607 sale como siempre.
+  Future<List<Map<String, dynamic>>> _convertedProformas(
+    String branchId,
+    String startIso,
+    String endIso,
+  ) async {
+    try {
+      final rows = await _client
+          .from('sales')
+          .select('$_saleColumns, proforma_converted_at')
+          .eq('branch_id', branchId)
+          .neq('status', 'voided')
+          .not('proforma_converted_at', 'is', null)
+          .or(
+            'and(sale_date.gte."$startIso",sale_date.lt."$endIso"),'
+            'and(proforma_converted_at.gte."$startIso",'
+            'proforma_converted_at.lt."$endIso")',
+          );
+      return [for (final row in rows) Map<String, dynamic>.from(row as Map)];
+    } on PostgrestException catch (error) {
+      if (error.code == '42703') return const [];
+      rethrow;
+    }
   }
 
   Future<List<TaxPurchaseRecord>> _fetchPurchases(

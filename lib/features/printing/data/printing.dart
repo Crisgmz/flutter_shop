@@ -1,3 +1,4 @@
+export 'pdf_classic_invoice_layout.dart' show usesClassicA4;
 export 'pdf_receipt_builder.dart';
 export 'print_dispatch_payload_builder.dart';
 export 'printing_models.dart';

@@ -14,6 +14,8 @@ import '../domain/sale_checkout_service.dart'
     show fromCents, grossCents, taxCents, toCents;
 import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../cobros/presentation/cobros_providers.dart';
+import '../../settings/presentation/app_settings_providers.dart';
+import 'sale_invoice_details_fields.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
@@ -160,6 +162,16 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
 
   final List<_EditCartItem> _items = [];
   final _notesCtrl = TextEditingController();
+
+  // Factura A4 clásica: Proyecto, Localización y Concepto.
+  final _projectCtrl = TextEditingController();
+  final _locationCtrl = TextEditingController();
+  final _conceptCtrl = TextEditingController();
+  bool _invoiceDetailsLoaded = false;
+
+  bool get _classicA4 =>
+      ref.read(appSettingsProvider).valueOrNull?.invoiceA4Classic ?? false;
+
   String? _clientId;
   bool _initialized = false;
   bool _submitting = false;
@@ -176,6 +188,9 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
   @override
   void dispose() {
     _notesCtrl.dispose();
+    _projectCtrl.dispose();
+    _locationCtrl.dispose();
+    _conceptCtrl.dispose();
     for (final line in _payLines) {
       line.dispose();
     }
@@ -251,6 +266,23 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
   double get _tax => _items.fold<double>(0, (s, it) => s + it.lineTax);
   double get _total => _subtotal + _tax;
 
+  Future<void> _loadInvoiceDetails() async {
+    try {
+      final details = await ref
+          .read(salesRepositoryProvider)
+          .fetchSaleInvoiceDetails(widget.saleId);
+      if (!mounted) return;
+      setState(() {
+        _projectCtrl.text = details.project;
+        _locationCtrl.text = details.location;
+        _conceptCtrl.text = details.concept;
+        _invoiceDetailsLoaded = true;
+      });
+    } catch (e) {
+      debugPrint('No se cargaron Proyecto/Concepto: $e');
+    }
+  }
+
   /// Carga inicial de los items de la venta en el estado local.
   void _hydrate(SalesHistoryDetail detail, List<SalesProduct> products) {
     if (_initialized) return;
@@ -276,6 +308,7 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
     }
     _clientId = detail.sale.clientId;
     _notesCtrl.text = detail.sale.notes ?? '';
+    if (_classicA4) _loadInvoiceDetails();
 
     // Forma de cobro: una línea por cada fila real de `payments`. Una fila
     // vieja con método 'credit' se leía como 'other' (cobrado) y se sigue
@@ -399,6 +432,18 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
         clearNotes: _notesCtrl.text.trim().isEmpty,
       );
 
+      // Solo si se llegaron a cargar: guardar sin haberlos leído los borraría.
+      if (_classicA4 && _invoiceDetailsLoaded) {
+        await ref.read(salesRepositoryProvider).updateSaleInvoiceDetails(
+              widget.saleId,
+              SaleInvoiceDetails(
+                project: _projectCtrl.text,
+                location: _locationCtrl.text,
+                concept: _conceptCtrl.text,
+              ),
+            );
+      }
+
       // La forma de cobro va en una segunda llamada: `editSale` recalcula
       // items y totales, pero no sabe nada de cómo se cobró. Este RPC reescribe
       // los pagos y con ellos el estado, el balance y el saldo del cliente —
@@ -505,6 +550,14 @@ class _SalesEditPageState extends ConsumerState<SalesEditPage> {
                 items: _items,
                 clientId: _clientId,
                 notesCtrl: _notesCtrl,
+                invoiceDetails: _classicA4
+                    ? SaleInvoiceDetailsFields(
+                        project: _projectCtrl,
+                        location: _locationCtrl,
+                        concept: _conceptCtrl,
+                        enabled: _invoiceDetailsLoaded,
+                      )
+                    : null,
                 payLines: _payLines,
                 paid: _paid,
                 pending: _pending,
@@ -586,12 +639,16 @@ class _EditForm extends StatelessWidget {
     required this.onAddProduct,
     required this.onRemoveItem,
     required this.onItemChanged,
+    this.invoiceDetails,
   });
 
   final SalesHistoryDetail detail;
   final List<_EditCartItem> items;
   final String? clientId;
   final TextEditingController notesCtrl;
+
+  /// Concepto, Proyecto y Localización (solo con la factura A4 clásica).
+  final Widget? invoiceDetails;
 
   /// Líneas de cobro (pago mixto). Vacío = la venta queda entera a crédito.
   final List<_PayLine> payLines;
@@ -695,6 +752,10 @@ class _EditForm extends StatelessWidget {
             border: OutlineInputBorder(),
           ),
         ),
+        if (invoiceDetails != null) ...[
+          const SizedBox(height: AppTokens.s16),
+          invoiceDetails!,
+        ],
         const SizedBox(height: AppTokens.s16),
         _Totals(
           subtotal: subtotal,

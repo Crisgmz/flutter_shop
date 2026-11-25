@@ -47,7 +47,22 @@ class SalePrintSource {
     this.ecf,
     this.isCreditNote = false,
     this.isDraftPreview = false,
+    this.proformaNumber,
+    this.classicA4 = false,
+    this.companyTagline,
+    this.stampBytes,
+    this.invoiceProject,
+    this.invoiceLocation,
+    this.invoiceConcept,
   });
+
+  /// Factura A4 clásica (`app_settings.invoice_a4_style`) y sus datos.
+  final bool classicA4;
+  final String? companyTagline;
+  final List<int>? stampBytes;
+  final String? invoiceProject;
+  final String? invoiceLocation;
+  final String? invoiceConcept;
 
   final String saleId;
   final String branchId;
@@ -124,6 +139,9 @@ class SalePrintSource {
   /// Borrador del carrito antes de cobrar (ver
   /// [PrintDocumentData.isDraftPreview]).
   final bool isDraftPreview;
+
+  /// `sales.proforma_number` (PRF-000001). Solo en proformas.
+  final String? proformaNumber;
 }
 
 class SalePrintItemSource {
@@ -140,11 +158,15 @@ class SalePrintItemSource {
     this.lineDiscount = 0,
     this.isService,
     this.imeis = const <String>[],
+    this.isItbisNorma0707 = false,
   });
 
   final String description;
   final double quantity;
   final double unitPrice;
+
+  /// `sale_items.itbis_mode` = norma_07_2007.
+  final bool isItbisNorma0707;
   final double lineSubtotal;
   final double lineTax;
   final double lineTotal;
@@ -181,6 +203,10 @@ class SalePrintDocumentAdapter {
     // Una cuenta guardada se imprime sin NCF y sin pagos, con balance 0: hay
     // que rotularla como tal para que no se confunda con una factura cobrada.
     final isPending = source.status.trim().toLowerCase() == 'pending';
+    // Proforma sin convertir: venta cobrada sin NCF. Ya convertida trae su
+    // tipo fiscal y su NCF, y se imprime como cualquier factura.
+    final isProforma =
+        source.receiptType == 'proforma' && !_hasText(source.ncf);
 
     // Descuento del documento. Se prefiere la SUMA de los descuentos de línea
     // (`sale_items.discount_amount`), que es el dato que siempre existe;
@@ -199,7 +225,10 @@ class SalePrintDocumentAdapter {
 
     return PrintDocumentData(
       documentType: _documentTypeForSale(source),
-      documentNumber: source.saleNumber,
+      // La proforma se identifica por su número PRF, no por el de la venta.
+      documentNumber: isProforma
+          ? (_nullIfBlank(source.proformaNumber) ?? source.saleNumber)
+          : source.saleNumber,
       issuedAt: source.saleDate,
       branch: PrintBranchIdentity(
         name: source.branchName,
@@ -211,10 +240,17 @@ class SalePrintDocumentAdapter {
         bankInfo: _nullIfBlank(source.bankInfo),
         signatoryName: _nullIfBlank(source.signatoryName),
         signatoryTitle: _nullIfBlank(source.signatoryTitle),
+        tagline: _nullIfBlank(source.companyTagline),
+        stampBytes: source.stampBytes,
       ),
+      classicA4: source.classicA4,
+      invoiceProject: _nullIfBlank(source.invoiceProject),
+      invoiceLocation: _nullIfBlank(source.invoiceLocation),
+      invoiceConcept: _nullIfBlank(source.invoiceConcept),
       customer: _customerForSale(source),
       isPendingAccount: isPending,
       isDraftPreview: source.isDraftPreview,
+      isProforma: isProforma,
       cashierName: _nullIfBlank(source.cashierName),
       cashRegisterName: _nullIfBlank(source.cashRegisterName),
       priceTierLabel: _nullIfBlank(source.priceTierLabel),
@@ -239,7 +275,11 @@ class SalePrintDocumentAdapter {
       legalFooterText: _nullIfBlank(source.invoiceFooterNote),
       footerMessage: isPending
           ? 'Documento no fiscal — cuenta pendiente de cobro'
-          : 'Gracias por su compra',
+          : isProforma
+              ? '* DOCUMENTO SIN VALIDEZ FISCAL *\n'
+                  'El comprobante fiscal se emite a solicitud del cliente.\n'
+                  'Gracias por su compra'
+              : 'Gracias por su compra',
       items: source.items
           .map(
             (item) => PrintDocumentItem(
@@ -255,6 +295,7 @@ class SalePrintDocumentAdapter {
               unitLabel: _nullIfBlank(item.unitLabel),
               notes: _nullIfBlank(item.notes),
               imeis: item.imeis,
+              isItbisNorma0707: item.isItbisNorma0707,
             ),
           )
           .toList(growable: false),
@@ -313,6 +354,8 @@ String _receiptTypeLabel(String value) {
   switch (value) {
     case 'none':
       return 'Sin comprobante';
+    case 'proforma':
+      return 'Factura proforma';
     case 'consumer_final':
       return 'Consumidor final';
     case 'fiscal_credit':

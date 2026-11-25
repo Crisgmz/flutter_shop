@@ -39,6 +39,10 @@ const kSalesPriceTierPermission = 'sales.price_tier';
 /// El mínimo es el más bajo entre el precio base y los niveles del producto.
 const kSalesBelowMinPricePermission = 'sales.below_min_price';
 
+/// Código del permiso "Convertir proforma en comprobante" (migración 110). De
+/// fábrica solo el admin; el dueño se lo puede dar a otro usuario.
+const kSalesConvertProformaPermission = 'sales.convert_proforma';
+
 /// Código del permiso "Administrar NCF" (`permissions.code`). Ningún rol lo
 /// trae en `role_permissions`: en la base pasa el admin (`is_admin()`) o quien
 /// tenga el override. Lo exige `resolve_uncertain_ecf_emission` (migración 101).
@@ -222,6 +226,16 @@ final canChooseSalePriceTierProvider = Provider<bool>((ref) {
   return access.hasPermission(
     kSalesPriceTierPermission,
     roleDefault: access.canEditPrices,
+  );
+});
+
+/// ¿Puede el usuario convertir una factura proforma en comprobante fiscal?
+/// Por rol: solo admin; override en `sales.convert_proforma`.
+final canConvertProformaProvider = Provider<bool>((ref) {
+  final access = ref.watch(roleAccessProvider);
+  return access.hasPermission(
+    kSalesConvertProformaPermission,
+    roleDefault: access.isAdmin,
   );
 });
 

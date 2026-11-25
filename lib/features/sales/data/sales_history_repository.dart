@@ -42,6 +42,7 @@ class SalesHistoryRow {
     this.paymentMethod,
     this.notes,
     this.dueDate,
+    this.proformaNumber,
   });
 
   final String id;
@@ -70,7 +71,14 @@ class SalesHistoryRow {
   final String? notes;
   final DateTime? dueDate;
 
+  /// Número PRF de la proforma (migración 110). Se queda aunque la proforma
+  /// ya se haya convertido en comprobante.
+  final String? proformaNumber;
+
   bool get isReturn => entryKind == 'return';
+
+  /// Proforma todavía sin comprobante fiscal: se puede convertir.
+  bool get isProforma => receiptType == 'proforma';
 
   factory SalesHistoryRow.fromMap(Map<String, dynamic> map) {
     final rawDue = map['due_date']?.toString();
@@ -103,6 +111,7 @@ class SalesHistoryRow {
       dueDate: rawDue == null || rawDue.isEmpty
           ? null
           : DateTime.tryParse(rawDue),
+      proformaNumber: _s(map['proforma_number']),
     );
   }
 }
@@ -124,12 +133,16 @@ class SalesHistoryFilter {
     this.search = '',
     this.statuses = const <String>[],
     this.cashRegisterId,
+    this.proformaOnly = false,
   });
 
   final DateTime? from;
   final DateTime? to;
   final String search;
   final List<String> statuses;
+
+  /// Solo las facturas proforma que todavía no tienen comprobante.
+  final bool proformaOnly;
 
   /// Caja (cash_register) cuyos documentos se quieren ver. `null` = todas.
   final String? cashRegisterId;
@@ -140,6 +153,7 @@ class SalesHistoryFilter {
     String? search,
     List<String>? statuses,
     String? cashRegisterId,
+    bool? proformaOnly,
     bool clearFrom = false,
     bool clearTo = false,
     bool clearCashRegister = false,
@@ -151,6 +165,7 @@ class SalesHistoryFilter {
       statuses: statuses ?? this.statuses,
       cashRegisterId:
           clearCashRegister ? null : (cashRegisterId ?? this.cashRegisterId),
+      proformaOnly: proformaOnly ?? this.proformaOnly,
     );
   }
 }
@@ -230,6 +245,11 @@ class SalesHistoryRepository {
       if (filter.statuses.isNotEmpty) {
         query = query.inFilter('status', filter.statuses);
       }
+      // `receipt_type` es texto en la vista: no falla aunque la migración
+      // 110 no haya corrido (simplemente no hay proformas).
+      if (filter.proformaOnly) {
+        query = query.eq('receipt_type', 'proforma');
+      }
       if (searchConditions != null) {
         query = query.or(searchConditions.join(','));
       }
@@ -248,6 +268,11 @@ class SalesHistoryRepository {
     List<dynamic> rows;
     if (search.isEmpty) {
       rows = await runQuery(null);
+    } else if (_proformaPattern.hasMatch(search)) {
+      // PRF-000001 no está en la vista: se busca la venta por su número de
+      // proforma y se trae por id.
+      final saleId = await _saleIdForProforma(branchId, search);
+      rows = saleId == null ? const [] : await runQuery(['id.eq.$saleId']);
     } else if (_exactDocPattern.hasMatch(search) ||
         _ncfPattern.hasMatch(search)) {
       final upper = search.toUpperCase();
@@ -305,6 +330,13 @@ class SalesHistoryRepository {
       ...await _loadCogs('return_items', 'return_id', branchId, returnIds),
     };
     final methodBySale = await _loadPaymentMethods(branchId, saleIds);
+    final proformaNumbers = await _loadProformaNumbers(
+      page
+          .where((m) => (m['receipt_type'] ?? '').toString() == 'proforma')
+          .map((m) => (m['id'] ?? '').toString())
+          .where((id) => id.isNotEmpty)
+          .toList(growable: false),
+    );
 
     final result = page.map((m) {
       final id = (m['id'] ?? '').toString();
@@ -337,6 +369,7 @@ class SalesHistoryRepository {
       // En una devolución el "cobro" es por dónde salió el reembolso.
       m['payment_method'] =
           isReturn ? _s(m['refund_method']) : methodBySale[id];
+      m['proforma_number'] = proformaNumbers[id];
       return SalesHistoryRow.fromMap(m);
     }).toList(growable: false);
 
@@ -391,6 +424,9 @@ class SalesHistoryRepository {
   /// GIN `sale_items_imeis_gin` / `return_items_imeis_gin`.
   /// Número de venta o devolución completo: `FA-014294`, `DV-00012`.
   static final _exactDocPattern = RegExp(r'^[A-Za-z0-9]{1,10}-\d{1,9}$');
+
+  /// Número de proforma: `PRF-000001` (también `prf 12`, `PRF12`).
+  static final _proformaPattern = RegExp(r'^[Pp][Rr][Ff][\s-]*(\d{1,9})$');
 
   /// NCF completo: `B0200001271`, `E320000000123`.
   static final _ncfPattern = RegExp(r'^[BbEe]\d{10,12}$');
@@ -767,6 +803,44 @@ class SalesHistoryRepository {
 
   /// Nombre de la caja (cash_register) por cada cash_session_id.
   /// sales.cash_session_id -> cash_sessions.cash_register_id -> cash_registers.name
+  /// Números PRF de las proformas de la página, aparte de la vista: la
+  /// columna nace con la migración 110 y pedirla en la vista rompería el
+  /// historial mientras no se corra.
+  Future<Map<String, String>> _loadProformaNumbers(List<String> saleIds) async {
+    if (saleIds.isEmpty) return const {};
+    try {
+      final rows = await _client
+          .from('sales')
+          .select('id, proforma_number')
+          .inFilter('id', saleIds);
+      return {
+        for (final raw in rows)
+          if ((raw as Map)['proforma_number'] != null)
+            raw['id'].toString(): raw['proforma_number'].toString(),
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// Id de la venta con ese número de proforma ("PRF-12" → PRF-000012).
+  Future<String?> _saleIdForProforma(String branchId, String search) async {
+    final digits = _proformaPattern.firstMatch(search)?.group(1);
+    if (digits == null) return null;
+    final number = 'PRF-${digits.padLeft(6, '0')}';
+    try {
+      final rows = await _client
+          .from('sales')
+          .select('id')
+          .eq('branch_id', branchId)
+          .eq('proforma_number', number)
+          .limit(1);
+      return rows.isEmpty ? null : (rows.first as Map)['id']?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Map<String, String>> _loadRegisterNames(
     List<String> sessionIds,
   ) async {

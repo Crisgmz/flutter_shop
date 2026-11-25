@@ -113,6 +113,8 @@ class PrintBranchIdentity {
     this.bankInfo,
     this.signatoryName,
     this.signatoryTitle,
+    this.tagline,
+    this.stampBytes,
   });
 
   final String name;
@@ -120,6 +122,13 @@ class PrintBranchIdentity {
   final String? phone;
   final String? email;
   final String? taxId;
+
+  /// Giro bajo el nombre (`app_settings.company_tagline`). Factura clásica.
+  final String? tagline;
+
+  /// Sello de la empresa (`app_settings.company_stamp_url`) para "Preparado
+  /// por" en la factura clásica.
+  final List<int>? stampBytes;
 
   /// Bytes del logo (PNG/JPG). Si está presente se muestra centrado al tope
   /// del recibo. El caller es responsable de descargarlo de
@@ -164,11 +173,15 @@ class PrintDocumentItem {
     this.lineDiscount = 0,
     this.isService,
     this.imeis = const <String>[],
+    this.isItbisNorma0707 = false,
   });
 
   final String description;
   final double quantity;
   final double unitPrice;
+
+  /// La línea cobra ITBIS por la Norma 07-2007 (`sale_items.itbis_mode`).
+  final bool isItbisNorma0707;
 
   /// Base imponible de la línea: precio × cantidad menos descuento, SIN ITBIS.
   /// Así `lineTotal = lineSubtotal + lineTax` cuadra exacto en el A4.
@@ -314,8 +327,22 @@ class PrintDocumentData {
     this.legalFooterText,
     this.isPendingAccount = false,
     this.isDraftPreview = false,
+    this.isProforma = false,
     this.logoOnLeft = true,
+    this.classicA4 = false,
+    this.invoiceProject,
+    this.invoiceLocation,
+    this.invoiceConcept,
   });
+
+  /// La factura de venta A4 sale en formato clásico
+  /// (`app_settings.invoice_a4_style = 'classic'`).
+  final bool classicA4;
+
+  /// Proyecto, Localización y Concepto de la factura clásica.
+  final String? invoiceProject;
+  final String? invoiceLocation;
+  final String? invoiceConcept;
 
   final PrintDocumentType documentType;
   final String documentNumber;
@@ -382,6 +409,11 @@ class PrintDocumentData {
   /// tiene número ni NCF. Solo se muestra en pantalla; lo que se imprime sale
   /// del documento real que devuelve el cobro.
   final bool isDraftPreview;
+
+  /// Factura proforma sin convertir (migración 110): venta cobrada sin NCF.
+  /// Sale titulada "FACTURA PROFORMA", con su número PRF y el aviso de que no
+  /// tiene validez fiscal.
+  final bool isProforma;
 
   /// Si true, en el A4 el logo va a la IZQUIERDA del encabezado; si false, a la
   /// derecha. Los datos de la empresa quedan centrados en ambos casos. Default

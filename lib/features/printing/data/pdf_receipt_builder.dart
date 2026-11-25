@@ -5,6 +5,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../../../shared/formatters/formatters.dart';
+import 'pdf_classic_invoice_layout.dart';
 import 'printing_models.dart';
 
 /// Reduce una imagen a `maxDim` px en su lado mayor ANTES de embeberla en el
@@ -125,6 +126,20 @@ class PdfReceiptBuilder {
     final qrBytes = await shrinkImageForPdf(data.qrBytes, maxDim: 420);
     final logoBytes = await shrinkImageForPdf(data.branch.logoBytes, maxDim: 320);
 
+    if (usesClassicA4(data)) {
+      final stampBytes =
+          await shrinkImageForPdf(data.branch.stampBytes, maxDim: 320);
+      doc.addPage(
+        const ClassicInvoiceLayout().page(
+          data,
+          pageFormat: pageFormat,
+          logoBytes: logoBytes,
+          stampBytes: stampBytes,
+        ),
+      );
+      return doc.save();
+    }
+
     doc.addPage(
       pw.Page(
         pageFormat: pageFormat,
@@ -242,6 +257,7 @@ class PdfReceiptBuilder {
           pw.Center(
             child: pw.Text(
               data.footerMessage!,
+              textAlign: pw.TextAlign.center,
               style: pw.TextStyle(
                 fontSize: 9.5,
                 color: PdfColors.grey600,
@@ -1436,6 +1452,7 @@ String printDocumentTitle(PrintDocumentData data) {
   // Cuenta guardada: la venta sigue pendiente, no consumió NCF y no puede
   // entregarse como factura. Manda sobre cualquier tipo de comprobante.
   if (data.isPendingAccount) return 'CUENTA GUARDADA - DOCUMENTO NO FISCAL';
+  if (data.isProforma) return 'FACTURA PROFORMA';
   if (data.documentType == PrintDocumentType.quote) return 'COTIZACIÓN';
   if (data.documentType == PrintDocumentType.paymentReceipt) {
     return 'RECIBO DE ABONO';
@@ -1513,9 +1530,11 @@ String printReceiptHeadline(PrintDocumentData data) {
 
 /// Aviso que reemplaza al NCF cuando el documento todavía no consumió una
 /// secuencia: la cotización lo hace al facturarse y la cuenta guardada al
-/// cobrarse. Devuelve null cuando no aplica (o cuando ya trae NCF real).
+/// cobrarse. La proforma no lleva NCF: se avisa que no tiene validez fiscal.
+/// Devuelve null cuando no aplica (o cuando ya trae NCF real).
 String? printPendingNcfNotice(PrintDocumentData data) {
   if (_hasText(data.ncf)) return null;
+  if (data.isProforma) return 'SIN VALIDEZ FISCAL';
   if (data.isPendingAccount || data.isDraftPreview) {
     return 'NCF: se asigna al cobrar';
   }

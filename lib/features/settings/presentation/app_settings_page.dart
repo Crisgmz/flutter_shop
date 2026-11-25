@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/tokens.dart';
+import '../../../shared/tax/itbis_mode.dart';
 import '../../../shared/widgets/app_snackbar.dart';
 import '../../../shared/widgets/empty_state.dart';
 import '../../../shared/widgets/module_page.dart';
@@ -918,6 +919,15 @@ class _CompanyInfoSection extends StatelessWidget {
           onSave: onSave,
         ),
         _TextRow(
+          label: 'Giro (debajo del nombre)',
+          value: settings.companyTagline,
+          column: 'company_tagline',
+          hint: 'Diseño - Construcción - Consultoría de Obras Civiles',
+          helper: 'Lo imprime la factura A4 clásica debajo del nombre.',
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        _TextRow(
           label: 'Razón social',
           value: settings.companyLegalName,
           column: 'company_legal_name',
@@ -1024,6 +1034,20 @@ class _CompanyInfoSection extends StatelessWidget {
               'empresa, la dirección, el correo, el teléfono y el RNC quedan '
               'centrados en cualquiera de las dos opciones. No afecta al '
               'ticket térmico.',
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        _EnumRow<String>(
+          label: 'Formato de la factura A4',
+          value: settings.invoiceA4Style,
+          options: const {
+            'standard': 'Estándar (por defecto)',
+            'classic': 'Clásica: Cliente, Proyecto, Concepto y forma de pago',
+          },
+          column: 'invoice_a4_style',
+          helper: 'La clásica pide Proyecto, Localización y Concepto al '
+              'cobrar. Solo cambia la factura de venta A4; cotizaciones y '
+              'ticket siguen igual.',
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),
@@ -1230,6 +1254,20 @@ class _InventorySection extends StatelessWidget {
           label: 'Marcar "es servicio" por defecto en artículos nuevos',
           column: 'inv_default_is_service',
           value: settings.invDefaultIsService,
+          isReadOnly: isReadOnly,
+          onSave: onSave,
+        ),
+        _EnumRow<String>(
+          label: 'Tipo de ITBIS en artículos nuevos',
+          column: 'inv_default_itbis_mode',
+          value: settings.invDefaultItbisMode,
+          options: const {
+            ItbisMode.regular: 'ITBIS regular',
+            ItbisMode.norma0707: 'Norma 07-2007 (18% sobre el 10% del monto)',
+          },
+          helper: 'Con qué tipo arranca cada producto o servicio nuevo, '
+              'también los que entran por Excel. Cada uno se puede cambiar '
+              'en su ficha.',
           isReadOnly: isReadOnly,
           onSave: onSave,
         ),

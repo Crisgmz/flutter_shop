@@ -3,6 +3,7 @@ import 'dart:io' show HttpClient;
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../shared/tax/itbis_mode.dart';
 import '../../fiscal_documents/data/fiscal_documents_repository.dart';
 import '../../printing/data/printing.dart';
 import '../domain/sale_checkout_service.dart';
@@ -36,7 +37,12 @@ class SalesProduct {
     this.trackInventory = true,
     this.isTaxExempt = false,
     this.imeis = const <String>[],
+    this.itbisMode = ItbisMode.regular,
+    this.unitName,
   });
+
+  /// Unidad de venta (`products.sale_unit`): columna "Unidad" de la factura.
+  final String? unitName;
 
   final String id;
   final String name;
@@ -46,7 +52,14 @@ class SalesProduct {
   final String? categoryName;
   final double price;
   final double cost;
+
+  /// En norma 07-2007 es la tasa efectiva (1.8): la que cobra el RPC.
   final double taxRate;
+
+  /// `products.itbis_mode`; solo para rotular la factura.
+  final String itbisMode;
+
+  bool get isItbisNorma0707 => itbisMode == ItbisMode.norma0707;
   final double stock;
   final bool isActive;
 
@@ -180,6 +193,8 @@ class SalesProduct {
       // Default true: si la columna no viene (o es null) el producto controla
       // existencias como siempre.
       trackInventory: map['track_inventory'] != false,
+      itbisMode: normalizeItbisMode(map['itbis_mode']?.toString()),
+      unitName: _nullIfEmpty((map['sale_unit'] ?? map['unit'])?.toString()),
       imeis: map['imeis'] is List
           ? (map['imeis'] as List)
               .map((e) => e.toString())
@@ -335,6 +350,45 @@ class SalePaymentLine {
   Map<String, dynamic> toJson() => {'method': method, 'amount': amount};
 }
 
+/// Proyecto, Localización y Concepto de la factura A4 clásica
+/// (`sales.invoice_project`, `invoice_location`, `invoice_concept`; migración
+/// 109). Se escriben aparte de la RPC de cobro, que es compartida con
+/// shop-plus y no los conoce.
+class SaleInvoiceDetails {
+  const SaleInvoiceDetails({
+    this.project = '',
+    this.location = '',
+    this.concept = '',
+  });
+
+  factory SaleInvoiceDetails.fromSaleRow(Map<String, dynamic> row) =>
+      SaleInvoiceDetails(
+        project: (row['invoice_project'] ?? '').toString(),
+        location: (row['invoice_location'] ?? '').toString(),
+        concept: (row['invoice_concept'] ?? '').toString(),
+      );
+
+  final String project;
+  final String location;
+  final String concept;
+
+  bool get isEmpty =>
+      project.trim().isEmpty &&
+      location.trim().isEmpty &&
+      concept.trim().isEmpty;
+
+  Map<String, dynamic> toSalesColumns() => {
+        'invoice_project': _blankToNull(project),
+        'invoice_location': _blankToNull(location),
+        'invoice_concept': _blankToNull(concept),
+      };
+
+  static String? _blankToNull(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+}
+
 class SaleCheckoutInput {
   SaleCheckoutInput({
     required this.items,
@@ -351,12 +405,16 @@ class SaleCheckoutInput {
     this.creditDueDays,
     this.cashSessionId,
     this.holdSaleIdToComplete,
+    this.invoiceDetails = const SaleInvoiceDetails(),
   });
 
   final List<SaleCartItem> items;
   final String receiptType;
   final bool asCredit;
   final String? paymentMethod;
+
+  /// Datos de la factura clásica. Vacíos = no se escribe nada.
+  final SaleInvoiceDetails invoiceDetails;
 
   /// Pago mixto: una o más líneas {método, monto}. Si está vacío, se usa
   /// `paymentMethod` por el total (flujo de pago único anterior).
@@ -482,7 +540,7 @@ class SalesRepository {
           .select(
             'id, name, sku, barcode, category_id, price, cost, tax_rate, stock, '
             'is_active, price_includes_tax, is_tax_exempt, is_service, '
-            'track_inventory, '
+            'track_inventory, itbis_mode, sale_unit, '
             'price_tier_1, price_tier_2, price_tier_3, '
             'price_tier_4, price_tier_5, price_tier_6, price_tier_7, '
             'price_tier_8, price_tier_9, price_tier_10, image_url, imeis',
@@ -637,6 +695,16 @@ class SalesRepository {
       throw Exception('No se pudo crear la venta.');
     }
 
+    // Antes de preparar el recibo, para que la factura ya los imprima. La
+    // venta quedó registrada: si esto falla se corrige en Editar venta.
+    if (!input.invoiceDetails.isEmpty) {
+      try {
+        await updateSaleInvoiceDetails(saleId, input.invoiceDetails);
+      } catch (e) {
+        debugPrint('No se guardaron Proyecto/Concepto de la venta: $e');
+      }
+    }
+
     PreparedPrintJobData? preparedPrintJob;
     final status = (payload['status'] ?? '').toString();
     // Tanto las ventas completadas como las que quedan a crédito deben generar
@@ -663,6 +731,30 @@ class SalesRepository {
       // extra). El checkout RPC no lo devuelve en su payload.
       ncf: _nullIfEmpty(preparedPrintJob?.document.ncf),
       preparedPrintJob: preparedPrintJob,
+    );
+  }
+
+  /// Proyecto, Localización y Concepto de la factura clásica. La RLS
+  /// `sales_update` deja hacerlo a quien opera el POS en esa sucursal.
+  Future<void> updateSaleInvoiceDetails(
+    String saleId,
+    SaleInvoiceDetails details,
+  ) async {
+    await _client
+        .from('sales')
+        .update(details.toSalesColumns())
+        .eq('id', saleId);
+  }
+
+  Future<SaleInvoiceDetails> fetchSaleInvoiceDetails(String saleId) async {
+    final rows = await _client
+        .from('sales')
+        .select('invoice_project, invoice_location, invoice_concept')
+        .eq('id', saleId)
+        .limit(1);
+    if (rows.isEmpty) return const SaleInvoiceDetails();
+    return SaleInvoiceDetails.fromSaleRow(
+      Map<String, dynamic>.from(rows.first as Map),
     );
   }
 
@@ -732,6 +824,14 @@ class SalesRepository {
     if (saleId.isEmpty) {
       throw Exception('No se pudo guardar la cuenta.');
     }
+    // Viajan con la cuenta para que al reabrirla sigan ahí.
+    if (!input.invoiceDetails.isEmpty) {
+      try {
+        await updateSaleInvoiceDetails(saleId, input.invoiceDetails);
+      } catch (e) {
+        debugPrint('No se guardaron Proyecto/Concepto de la cuenta: $e');
+      }
+    }
     return HeldSaleResult(
       saleId: saleId,
       saleNumber: (payload['sale_number'] ?? '').toString(),
@@ -756,7 +856,10 @@ class SalesRepository {
 
     final saleRows = await _client
         .from('sales')
-        .select('id, status, client_id, receipt_type, notes')
+        .select(
+          'id, status, client_id, receipt_type, notes, '
+          'invoice_project, invoice_location, invoice_concept',
+        )
         .eq('id', saleId)
         .eq('branch_id', branchId)
         .limit(1);
@@ -810,6 +913,7 @@ class SalesRepository {
       clientId: _nullIfEmpty(sale['client_id']?.toString()),
       receiptType: (sale['receipt_type'] ?? 'consumer_final').toString(),
       notes: sale['notes']?.toString() ?? '',
+      invoiceDetails: SaleInvoiceDetails.fromSaleRow(sale),
     );
   }
 
@@ -829,7 +933,8 @@ class SalesRepository {
           'id, branch_id, sale_number, sale_date, receipt_type, status, ncf, notes, '
           'subtotal, discount_amount, tax_amount, total_amount, paid_amount, balance_due, '
           'change_amount, service_charge_amount, taxable_amount, exempt_amount, '
-          'client_id, cashier_id, cash_session_id',
+          'client_id, cashier_id, cash_session_id, '
+          'invoice_project, invoice_location, invoice_concept',
         )
         .eq('id', saleId)
         .limit(1);
@@ -930,10 +1035,17 @@ class SalesRepository {
         .from('sale_items')
         .select(
           'product_id, description, quantity, unit_price, discount_amount, '
-          'line_subtotal, line_tax, line_total, sku_snapshot, unit_name, imeis',
+          'line_subtotal, line_tax, line_total, sku_snapshot, unit_name, imeis, '
+          'itbis_mode',
         )
         .eq('sale_id', saleId)
         .order('created_at');
+
+    // Factura A4 clásica: el sello va en "Preparado por".
+    final classicA4 = settings['invoice_a4_style']?.toString() == 'classic';
+    final stampBytes = classicA4
+        ? await _downloadBytes(settings['company_stamp_url']?.toString())
+        : null;
 
     // Nota del producto (products.notes) → se imprime debajo de la línea, y
     // products.is_service → decide si la primera columna del A4 se rotula
@@ -979,6 +1091,13 @@ class SalesRepository {
         .eq('sale_id', saleId)
         .order('paid_at');
 
+    // Número PRF de la proforma. Aparte y solo para proformas: la columna
+    // nace con la migración 110 y pedirla siempre rompería toda impresión
+    // mientras no se corra.
+    final proformaNumber = sale['receipt_type']?.toString() == 'proforma'
+        ? await _proformaNumber(saleId)
+        : null;
+
     final saleSource = SalePrintSource(
       saleId: (sale['id'] ?? saleId).toString(),
       branchId: branchId,
@@ -988,6 +1107,7 @@ class SalesRepository {
           DateTime.tryParse((sale['sale_date'] ?? '').toString()) ??
           DateTime.now(),
       receiptType: (sale['receipt_type'] ?? '').toString(),
+      proformaNumber: proformaNumber,
       branchName: (branch['name'] ?? 'Sucursal').toString(),
       branchAddress: _firstNonEmpty([
         settings['company_address'],
@@ -1023,6 +1143,12 @@ class SalesRepository {
       ncfValidUntil: ncfValidUntil,
       ecf: ecfData,
       notes: sale['notes']?.toString(),
+      classicA4: classicA4,
+      companyTagline: _firstNonEmpty([settings['company_tagline']]),
+      stampBytes: stampBytes,
+      invoiceProject: sale['invoice_project']?.toString(),
+      invoiceLocation: sale['invoice_location']?.toString(),
+      invoiceConcept: sale['invoice_concept']?.toString(),
       // Nota legal de pie de factura configurada por sucursal.
       invoiceFooterNote: _firstNonEmpty([branch['invoice_footer']]),
       items: itemRows
@@ -1052,6 +1178,9 @@ class SalesRepository {
               unitLabel: item['unit_name']?.toString(),
               notes: productNotes[item['product_id']?.toString()],
               isService: productIsService[item['product_id']?.toString()],
+              isItbisNorma0707:
+                  normalizeItbisMode(item['itbis_mode']?.toString()) ==
+                      ItbisMode.norma0707,
             ),
           )
           .toList(growable: false),
@@ -1161,6 +1290,42 @@ class SalesRepository {
     return 'CAJA $mm$dd';
   }
 
+  /// `sales.proforma_number` (PRF-000001) de una proforma. Null si no la
+  /// tiene o si la migración 110 todavía no corrió.
+  Future<String?> _proformaNumber(String saleId) async {
+    try {
+      final rows = await _client
+          .from('sales')
+          .select('proforma_number')
+          .eq('id', saleId)
+          .limit(1);
+      if (rows.isEmpty) return null;
+      return _nullIfEmpty((rows.first as Map)['proforma_number']?.toString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Convierte una factura proforma ya vendida en comprobante fiscal
+  /// ([receiptType]: consumer_final, fiscal_credit…). La base toma el NCF
+  /// siguiente, registra el comprobante y, si el negocio es electrónico, la
+  /// e-CF sale por la cola de siempre (`convert_proforma_to_receipt`,
+  /// migración 110). Devuelve el NCF asignado.
+  Future<String> convertProformaToReceipt({
+    required String saleId,
+    required String receiptType,
+  }) async {
+    final result = await _client.rpc(
+      'convert_proforma_to_receipt',
+      params: {'p_sale_id': saleId, 'p_receipt_type': receiptType},
+    );
+    final ncf = result is Map ? result['ncf']?.toString() : null;
+    if (ncf == null || ncf.isEmpty) {
+      throw Exception('La base no devolvió el NCF asignado.');
+    }
+    return ncf;
+  }
+
   /// Vista previa de la factura ANTES de cobrar, armada con el carrito: se
   /// muestra al lado del cobro en "Completar venta". No tiene número ni NCF
   /// (los asigna el backend al cobrar); lo que se imprime es el documento
@@ -1171,6 +1336,7 @@ class SalesRepository {
     String? clientId,
     String? notes,
     String? cashSessionId,
+    SaleInvoiceDetails invoiceDetails = const SaleInvoiceDetails(),
     PrintPaperSize paperSize = PrintPaperSize.thermal80mm,
   }) async {
     final branchId = await _currentBranchId();
@@ -1178,6 +1344,10 @@ class SalesRepository {
 
     final (:branch, :settings, :logoBytes, :qrBytes) =
         await _loadPrintHeader(branchId);
+    final classicA4 = settings['invoice_a4_style']?.toString() == 'classic';
+    final stampBytes = classicA4
+        ? await _downloadBytes(settings['company_stamp_url']?.toString())
+        : null;
     final client = await _loadPrintClient(clientId, branchId);
     final cashRegisterName = await _cashRegisterLabel(cashSessionId);
 
@@ -1237,6 +1407,12 @@ class SalesRepository {
       clientEmail: client['email']?.toString(),
       cashierName: cashierName,
       notes: _nullIfEmpty(notes),
+      classicA4: classicA4,
+      companyTagline: _firstNonEmpty([settings['company_tagline']]),
+      stampBytes: stampBytes,
+      invoiceProject: invoiceDetails.project,
+      invoiceLocation: invoiceDetails.location,
+      invoiceConcept: invoiceDetails.concept,
       invoiceFooterNote: _firstNonEmpty([branch['invoice_footer']]),
       items: items
           .map(
@@ -1250,7 +1426,9 @@ class SalesRepository {
               lineTotal: item.lineTotal,
               lineDiscount: item.lineDiscount,
               sku: item.product.sku,
+              unitLabel: item.product.unitName,
               isService: item.product.isService,
+              isItbisNorma0707: item.product.isItbisNorma0707,
             ),
           )
           .toList(growable: false),
@@ -1801,6 +1979,7 @@ class HeldSaleInput {
     this.disallowNoStock = false,
     this.customerRequiredForSale = false,
     this.replaceHoldSaleId,
+    this.invoiceDetails = const SaleInvoiceDetails(),
   });
 
   final List<SaleCartItem> items;
@@ -1809,6 +1988,7 @@ class HeldSaleInput {
   final String? notes;
   final bool disallowNoStock;
   final bool customerRequiredForSale;
+  final SaleInvoiceDetails invoiceDetails;
 
   /// Id de la cuenta GUARDADA que esta vuelve a guardar (re-guardado de una
   /// cuenta reabierta). Si no es null, el backend reusa su mismo número, libera
@@ -1839,12 +2019,14 @@ class HeldSaleDraftData {
     required this.receiptType,
     required this.notes,
     this.clientId,
+    this.invoiceDetails = const SaleInvoiceDetails(),
   });
 
   final List<SaleCartItem> items;
   final String receiptType;
   final String notes;
   final String? clientId;
+  final SaleInvoiceDetails invoiceDetails;
 }
 
 class ReturnInput {

@@ -14,6 +14,7 @@ import '../../cash_register/presentation/cash_register_providers.dart';
 import '../../clients/data/clients_repository.dart';
 import '../../clients/presentation/client_form_dialog.dart';
 import '../../clients/presentation/clients_providers.dart';
+import '../../fiscal_documents/data/fiscal_labels.dart' show fiscalReceiptCode;
 import '../../inventory/data/inventory_repository.dart';
 import '../../inventory/presentation/inventory_providers.dart';
 import '../../inventory/presentation/product_form_dialog.dart';
@@ -23,8 +24,14 @@ import '../../settings/presentation/settings_providers.dart'
     show companyEcfSettingsProvider;
 import '../data/sales_repository.dart';
 import '../domain/sale_checkout_service.dart'
-    show CreditSplit, fromCents, toCents;
+    show
+        CreditSplit,
+        fromCents,
+        kProformaReceiptType,
+        receiptTypeNeedsFiscalClient,
+        toCents;
 import 'pos_scan_listener.dart';
+import 'sale_invoice_details_fields.dart';
 import 'sales_history_providers.dart';
 import 'sales_providers.dart';
 
@@ -52,6 +59,17 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   final _searchController = TextEditingController();
   final _notesController = TextEditingController();
   final _saleNumberController = TextEditingController();
+
+  // Factura A4 clásica: solo se muestran si la empresa usa ese formato.
+  final _projectController = TextEditingController();
+  final _locationController = TextEditingController();
+  final _conceptController = TextEditingController();
+
+  SaleInvoiceDetails get _invoiceDetails => SaleInvoiceDetails(
+        project: _projectController.text,
+        location: _locationController.text,
+        concept: _conceptController.text,
+      );
 
   /// Foco del buscador. La pistola de código de barras "teclea" donde esté el
   /// foco: lo devolvemos al buscador después de agregar al carrito para que el
@@ -158,6 +176,9 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     _paymentMethod = 'cash';
     _clientId = draft.clientId;
     _notesController.text = draft.notes;
+    _projectController.text = draft.invoiceDetails.project;
+    _locationController.text = draft.invoiceDetails.location;
+    _conceptController.text = draft.invoiceDetails.concept;
     _reopenedHeldSaleId = draft.heldSaleId;
     _returnOriginalSaleId = draft.returnOriginalSaleId;
     _returnOriginalSaleNumber = draft.returnOriginalSaleNumber;
@@ -167,6 +188,9 @@ class _SalesPageState extends ConsumerState<SalesPage> {
   void dispose() {
     _searchController.dispose();
     _notesController.dispose();
+    _projectController.dispose();
+    _locationController.dispose();
+    _conceptController.dispose();
     _saleNumberController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -184,6 +208,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       paymentMethod: _paymentMethod,
       clientId: _clientId,
       notes: _notesController.text,
+      invoiceDetails: _invoiceDetails,
       heldSaleId: _reopenedHeldSaleId,
       returnOriginalSaleId: _returnOriginalSaleId,
       returnOriginalSaleNumber: _returnOriginalSaleNumber,
@@ -644,6 +669,20 @@ class _SalesPageState extends ConsumerState<SalesPage> {
               ),
             ),
           ),
+          if (ref.watch(appSettingsProvider).valueOrNull?.invoiceA4Classic ??
+              false)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppTokens.s16),
+              child: SaleInvoiceDetailsPanel(
+                // La key lo rearma al vaciar o reabrir una cuenta, para que
+                // se abra solo cuando trae datos.
+                key: ValueKey(_reopenedHeldSaleId ?? 'nueva-${_cart.isEmpty}'),
+                project: _projectController,
+                location: _locationController,
+                concept: _conceptController,
+                onChanged: _persistDraft,
+              ),
+            ),
           Container(
             padding: const EdgeInsets.symmetric(
               horizontal: AppTokens.s16,
@@ -1534,6 +1573,9 @@ class _SalesPageState extends ConsumerState<SalesPage> {
     setState(() {
       _cart.clear();
       _notesController.clear();
+      _projectController.clear();
+      _locationController.clear();
+      _conceptController.clear();
       _clientId = null;
       _useCredit = true;
       _paymentMethod = 'cash';
@@ -1571,6 +1613,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           disallowNoStock: settings?.invDisallowNoStock ?? false,
           customerRequiredForSale: settings?.customerRequiredForSale ?? false,
           replaceHoldSaleId: _reopenedHeldSaleId,
+          invoiceDetails: _invoiceDetails,
         ),
       );
       ref.invalidate(salesProductsProvider);
@@ -1610,39 +1653,34 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       'special': 'Régimen Especial',
       'export': 'Exportación',
     };
-    const bCodes = <String, String>{
-      'consumer_final': 'B02',
-      'fiscal_credit': 'B01',
-      'governmental': 'B15',
-      'special': 'B14',
-      'export': 'B16',
-    };
-    const eCodes = <String, String>{
-      'consumer_final': 'E32',
-      'fiscal_credit': 'E31',
-      'governmental': 'E45',
-      'special': 'E44',
-      'export': 'E46',
-    };
-    final codes = electronic ? eCodes : bCodes;
-    return labels.entries
-        .map(
-          (entry) => DropdownMenuItem(
-            value: entry.key,
-            child: Text('${entry.value} (${codes[entry.key]})'),
+    return [
+      ...labels.entries.map(
+        (entry) => DropdownMenuItem(
+          value: entry.key,
+          child: Text(
+            '${entry.value} '
+            '(${fiscalReceiptCode(entry.key, electronic: electronic)})',
           ),
-        )
-        .toList(growable: false);
+        ),
+      ),
+      // Venta completa sin NCF (migración 110); el dueño la puede convertir
+      // en comprobante después, desde el historial de ventas.
+      const DropdownMenuItem(
+        value: kProformaReceiptType,
+        child: Text('Proforma (sin NCF)'),
+      ),
+    ];
   }
 
   /// Abre la página 2 (diálogo de cobro con métodos divididos). Según el
   /// resultado, finaliza la venta normal o la manda a crédito.
   /// Pre-chequeo fiscal: un comprobante ≠ consumidor final (Crédito Fiscal,
   /// Gubernamental, Especial, Exportación) exige un cliente con RNC/cédula.
-  /// Espeja la regla del trigger SQL `tg_sales_assert_fiscal_client` para
-  /// avisar ANTES de abrir el cobro, en vez de fallar al confirmar.
+  /// La proforma no: no lleva NCF. Espeja la regla del trigger SQL
+  /// `tg_sales_assert_fiscal_client` para avisar ANTES de abrir el cobro, en
+  /// vez de fallar al confirmar.
   bool _assertFiscalClient() {
-    if (_receiptType == 'consumer_final') return true;
+    if (!receiptTypeNeedsFiscalClient(_receiptType)) return true;
     final client = _clientId == null
         ? null
         : ref.read(salesClientsByIdProvider)[_clientId!];
@@ -1693,6 +1731,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           clientId: _clientId,
           notes: _notesController.text.trim(),
           cashSessionId: ref.read(activeCashSessionIdProvider),
+          invoiceDetails: _invoiceDetails,
         )
         .catchError((Object _) => null);
   }
@@ -1871,6 +1910,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
           // absorbe: conserva su mismo número y libera su stock reservado. En
           // éxito, _clearCart() limpia _reopenedHeldSaleId.
           holdSaleIdToComplete: _reopenedHeldSaleId,
+          invoiceDetails: _invoiceDetails,
         ),
       );
 
