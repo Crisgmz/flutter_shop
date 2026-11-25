@@ -69,7 +69,11 @@ begin
 end $$;
 
 -- 2. Tipo de ITBIS del producto ----------------------------------------------
-alter table public.products add column if not exists itbis_mode text;
+-- Con el default en el ADD COLUMN los productos existentes quedan en
+-- 'regular' sin reescribir la tabla ni disparar un UPDATE por producto
+-- (auditoría, historial de precios, realtime de todas las cajas abiertas).
+alter table public.products
+  add column if not exists itbis_mode text not null default 'regular';
 update public.products set itbis_mode = 'regular' where itbis_mode is null;
 -- Sin default a propósito: el disparador pone el de la empresa cuando el
 -- INSERT no lo trae (NOT NULL se revisa después de los BEFORE).
