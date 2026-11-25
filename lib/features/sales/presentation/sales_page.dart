@@ -11,6 +11,8 @@ import '../../../shared/widgets/ncf_stock_banner.dart';
 import '../../../shared/widgets/print_receipt_dialog.dart';
 import '../../../shared/widgets/role_gate.dart';
 import '../../cash_register/presentation/cash_register_providers.dart';
+import '../../dashboard/presentation/dashboard_providers.dart'
+    show dashboardSalesProviders;
 import '../../clients/data/clients_repository.dart';
 import '../../clients/presentation/client_form_dialog.dart';
 import '../../clients/presentation/clients_providers.dart';
@@ -1916,6 +1918,11 @@ class _SalesPageState extends ConsumerState<SalesPage> {
 
       _clearCart();
       ref.invalidate(salesProductsProvider);
+      // Panel, caja e historial al día en esta misma pestaña aunque el
+      // realtime no llegue (red lenta, pestaña dormida).
+      dashboardSalesProviders.forEach(ref.invalidate);
+      ref.invalidate(cashRegisterDataProvider);
+      ref.invalidate(salesHistoryPageProvider);
       // Si pagó con saldo a favor, la próxima vez debe salir lo que le queda.
       if (saleClientId != null) {
         ref.invalidate(clientCreditBalanceProvider(saleClientId));
@@ -2165,6 +2172,7 @@ class _SalesPageState extends ConsumerState<SalesPage> {
       ref.invalidate(cashRegisterDataProvider);
       // La devolución vive ahora dentro del historial de ventas.
       ref.invalidate(salesHistoryPageProvider);
+      dashboardSalesProviders.forEach(ref.invalidate);
       final isCreditNote = refundMethod == 'credit_note';
       if (isCreditNote && returnClientId != null) {
         ref.invalidate(clientCreditBalanceProvider(returnClientId));

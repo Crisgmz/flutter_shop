@@ -58,3 +58,16 @@ final dashboardSalesByRegisterProvider =
   final repo = ref.watch(dashboardRepositoryProvider);
   return repo.fetchSalesByCashRegister(date);
 });
+
+/// Todo lo del Panel que cambia con una venta, una devolución o un cobro:
+/// tarjetas de arriba (Ventas Hoy / del Mes), gráfico y Cierre del día.
+/// Un solo lugar para el realtime, el cambio de sucursal y el POS: antes se
+/// invalidaba `dashboardKpisProvider`, que ninguna pantalla mira, y "Ventas
+/// Hoy" se quedaba congelado hasta recargar.
+final List<ProviderOrFamily> dashboardSalesProviders = [
+  dashboardHeroKpisProvider,
+  dashboardChartProvider,
+  dashboardCloseoutProvider,
+  dashboardPaymentBreakdownProvider,
+  dashboardSalesByRegisterProvider,
+];

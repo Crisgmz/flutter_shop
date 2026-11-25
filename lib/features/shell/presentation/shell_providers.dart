@@ -269,9 +269,7 @@ void invalidateBranchScopedData(dynamic ref) {
   invalidate(myPermissionOverridesProvider);
   invalidate(shellVisibleNavItemsProvider);
   invalidate(shellVisibleNavSectionsProvider);
-  invalidate(dashboardKpisProvider);
-  invalidate(dashboardChartProvider);
-  invalidate(dashboardCloseoutProvider);
+  dashboardSalesProviders.forEach(invalidate);
   invalidate(inventoryCategoriesProvider);
   invalidate(inventoryProductsProvider);
   invalidate(salesProductsProvider);

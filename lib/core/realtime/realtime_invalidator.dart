@@ -19,6 +19,8 @@
 //   - Los canales se nombran `realtime:<tabla>:<branchId>` para que
 //     Supabase los multiplexee correctamente.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -45,6 +47,14 @@ class RealtimeInvalidator {
   final Ref _ref;
   final Map<String, RealtimeChannel> _channels = {};
   String? _attachedBranchId;
+
+  /// Una venta llega como ráfaga: el INSERT de la venta, sus UPDATE (estado,
+  /// NCF, saldo) y un UPDATE de stock por cada producto. Sin agrupar, cada
+  /// evento relanzaba las mismas consultas en todas las cajas abiertas. El
+  /// primer evento de una tabla programa UNA invalidación; los que llegan
+  /// dentro de la ventana se suman a esa.
+  static const _coalesceWindow = Duration(milliseconds: 400);
+  final Map<String, Timer> _pendingByTable = {};
 
   /// Serializa attach/stop concurrentes. Sin este lock, dos llamadas
   /// rápidas a attach() (típico al loguearse + hidratar branches) podían
@@ -97,7 +107,7 @@ class RealtimeInvalidator {
               column: 'branch_id',
               value: branchId,
             ),
-            callback: (_) => _invalidate(providers, table),
+            callback: (_) => _schedule(providers, table),
           )
           .subscribe();
       _channels[table] = channel;
@@ -130,6 +140,10 @@ class RealtimeInvalidator {
   }
 
   Future<void> _doStop() async {
+    for (final timer in _pendingByTable.values) {
+      timer.cancel();
+    }
+    _pendingByTable.clear();
     if (_channels.isEmpty) {
       _attachedBranchId = null;
       return;
@@ -144,6 +158,14 @@ class RealtimeInvalidator {
     }
     _channels.clear();
     _attachedBranchId = null;
+  }
+
+  void _schedule(_ProviderList providers, String table) {
+    if (_pendingByTable.containsKey(table)) return;
+    _pendingByTable[table] = Timer(_coalesceWindow, () {
+      _pendingByTable.remove(table);
+      _invalidate(providers, table);
+    });
   }
 
   void _invalidate(_ProviderList providers, String table) {
@@ -167,17 +189,18 @@ class RealtimeInvalidator {
     'products': [
       inventoryProductsProvider,
       salesProductsProvider,
+      // Tarjeta "Inventario" del Panel.
+      dashboardHeroKpisProvider,
     ],
     'product_categories': [
       inventoryCategoriesProvider,
     ],
     'sales': [
       salesHistoryPageProvider,
-      dashboardKpisProvider,
-      dashboardChartProvider,
-      dashboardCloseoutProvider,
-      dashboardSalesByRegisterProvider,
+      ...dashboardSalesProviders,
       cobrosReceivablesProvider,
+      // Una venta nueva cambia "Total de venta" y el esperado de la caja.
+      cashRegisterDataProvider,
     ],
     'payments': [
       cobrosPaymentsProvider,
@@ -199,10 +222,12 @@ class RealtimeInvalidator {
       clientsListProvider,
       salesClientsProvider,
       cobrosReceivablesProvider,
+      // Tarjeta "Clientes" del Panel.
+      dashboardHeroKpisProvider,
     ],
     'returns': [
       salesHistoryPageProvider,
-      dashboardCloseoutProvider,
+      ...dashboardSalesProviders,
       // El reembolso en efectivo baja el "Esperado en caja"…
       cashRegisterDataProvider,
       // …y el trigger de return_items devuelve el stock (y el IMEI) al producto.
