@@ -421,7 +421,7 @@ class _CashRegisterPageState extends ConsumerState<CashRegisterPage> {
                 ),
                 KPICard(
                   label: 'Ingreso efectivo',
-                  value: money(metrics?.cashPayments ?? 0),
+                  value: money(metrics?.cashIncome ?? 0),
                   icon: Icons.payments_outlined,
                 ),
                 KPICard(
@@ -1220,7 +1220,7 @@ class _AllCashiersPanel extends ConsumerWidget {
           }
           final totalSold = overviews.fold<double>(
             0,
-            (sum, o) => sum + o.metrics.totalPayments,
+            (sum, o) => sum + o.metrics.netCollected,
           );
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1261,7 +1261,7 @@ class _AllCashiersPanel extends ConsumerWidget {
                         DataCell(Text(formatDateTime(o.session.openedAt))),
                         DataCell(Text(money(o.session.openingAmount))),
                         DataCell(Text(
-                          money(o.metrics.totalPayments),
+                          money(o.metrics.netCollected),
                           style: const TextStyle(
                             fontWeight: FontWeight.w700,
                             color: Color(0xFF16A34A),

@@ -233,7 +233,7 @@ class _DialogBody extends StatelessWidget {
                 _kv('Apertura', money(session.openingAmount)),
                 if (showReconciliation) ...[
                   _kv('Total de venta', money(metrics.salesTotal)),
-                  _kv('Ingreso efectivo', money(metrics.cashPayments)),
+                  _kv('Ingreso efectivo', money(metrics.cashIncome)),
                   _kv('Transferencia', money(metrics.transferPayments)),
                   _kv('Tarjeta', money(metrics.cardPayments)),
                   _kv('Crédito', money(metrics.creditGenerated)),

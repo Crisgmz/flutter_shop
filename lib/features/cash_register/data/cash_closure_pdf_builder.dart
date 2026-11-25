@@ -145,7 +145,7 @@ class CashClosurePdfBuilder {
         _kv('Apertura', money(session.openingAmount), baseFont: baseFont),
         if (includeReconciliation) ...[
           _kv('Total de venta', money(metrics.salesTotal), baseFont: baseFont),
-          _kv('Ingreso efectivo', money(metrics.cashPayments),
+          _kv('Ingreso efectivo', money(metrics.cashIncome),
               baseFont: baseFont),
           _kv('Transferencia', money(metrics.transferPayments),
               baseFont: baseFont),

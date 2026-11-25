@@ -147,6 +147,20 @@ class CashSessionMetrics {
 
   double get netPayments => _round2(totalPayments - totalExpenses);
 
+  /// "Ingreso efectivo": el efectivo cobrado que SE QUEDA en la gaveta.
+  /// `cashPayments` guarda lo que el cliente ENTREGÓ (2,000 por una venta de
+  /// 800); aquí se le quita la devuelta que salió de ese mismo efectivo
+  /// (`changeGiven − cashWithdrawnForChange`), así que da 800.
+  ///
+  /// Cuadra con las tarjetas: apertura + cashIncome − cashWithdrawnForChange
+  /// − cashExpenses − cashRefunds + depósitos + ajustes − sangrías = esperado.
+  double get cashIncome =>
+      _round2(cashPayments - (changeGiven - cashWithdrawnForChange));
+
+  /// Lo cobrado en el turno sin las devueltas (columna "Vendido" de las cajas
+  /// abiertas). `totalPayments` incluye el sobrepago que se devolvió.
+  double get netCollected => _round2(totalPayments - changeGiven);
+
   /// Efectivo esperado = apertura + cobros en efectivo − gastos en efectivo
   /// − cambio entregado − devoluciones pagadas en efectivo
   /// + depósitos/ajustes manuales − sangrías.
