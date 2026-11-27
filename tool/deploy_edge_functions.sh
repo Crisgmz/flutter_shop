@@ -27,7 +27,8 @@
 # corridas. Sin la 105, ecf-onboarding falla hasta en la tarjeta de
 # Configuración ("Falta correr la migración 105"). La 107 (notas de crédito
 # E34 al anular) va antes de esta versión de emit-document; la 108 programa
-# la cola cada minuto.
+# la cola cada minuto. La 112 (columna ecf_status_checked_at y su cron) va
+# antes de ecf-status-sync.
 #
 # Variables del servicio de Edge Functions en Coolify:
 #   SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY (las pone el
@@ -50,7 +51,7 @@ OUT="$ROOT/build"
 STAGE="$OUT/edge-functions"
 PACKAGE="$OUT/edge-functions.tar.gz"
 
-FUNCTIONS=(_shared register-company emit-document alanube-webhook alanube-health ecf-onboarding create-employee)
+FUNCTIONS=(_shared register-company emit-document alanube-webhook alanube-health ecf-onboarding ecf-status-sync create-employee)
 
 PUSH=false
 HOST="root@2.24.119.32"

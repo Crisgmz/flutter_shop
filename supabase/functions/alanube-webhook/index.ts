@@ -5,6 +5,7 @@
 // transiciones forward de ecf_status (pending → sent → accepted/rejected).
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { documentStatusUpdate } from '../_shared/ecf-alanube-status.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -235,60 +236,19 @@ async function processWebhook(
     return
   }
 
-  // Status DGII: legalStatus es la verdad final (ACCEPTED/REJECTED/IN_PROCESS).
-  // status del payload (FINISHED/IN_PROGRESS) es del workflow Alanube interno.
-  const rawLegalStatus = (data.legalStatus ?? data.status ?? data.documentStatus ?? '') as string
-  const newStatus = mapAlanubeStatus(rawLegalStatus)
+  // Qué se escribe sale de _shared/ecf-alanube-status.ts, lo mismo que usa
+  // ecf-status-sync cuando el aviso no llega: las dos fuentes dejan igual el doc.
   const previousStatus = docRow.ecf_status ?? 'pending'
-
-  if (!isForwardTransition(previousStatus, newStatus)) {
-    console.log(
-      `skipping backward transition for doc ${docRow.id}: ${previousStatus} -> ${newStatus}`,
-    )
+  const change = documentStatusUpdate(data, previousStatus)
+  if (change === null) {
+    console.log(`skipping backward transition for doc ${docRow.id} (estaba en ${previousStatus})`)
     return
   }
-
-  const updates: Record<string, unknown> = {
-    ecf_status: newStatus,
-    last_error: null,
-  }
+  const { newStatus, rawLegalStatus, updates } = change
 
   // Si localizamos por eNCF y el doc no tenía alanube_document_id, persistirlo.
   if (alanubeDocId && !docRow.alanube_document_id) {
     updates.alanube_document_id = alanubeDocId
-  }
-
-  // URLs (Alanube usa documentStampUrl para la URL pública DGII verificable).
-  if (typeof data.documentStampUrl === 'string') {
-    updates.public_url = data.documentStampUrl
-  } else if (typeof data.publicUrl === 'string') {
-    updates.public_url = data.publicUrl
-  }
-  if (typeof data.xmlUrl === 'string') updates.xml_url = data.xmlUrl
-  if (typeof data.pdfUrl === 'string') updates.pdf_url = data.pdfUrl
-
-  // Track ID DGII (puede venir null en sandbox).
-  if (typeof data.trackId === 'string') updates.ecf_tracking_number = data.trackId
-  if (typeof data.dgiiTrackId === 'string') updates.ecf_tracking_number = data.dgiiTrackId
-
-  // Codigo de Seguridad y Fecha de Firma Digital (datos visibles en el QR/ticket).
-  if (typeof data.securityCode === 'string') updates.ecf_security_code = data.securityCode
-
-  // signatureDate viene como "DD-MM-YYYY HH:MM:SS" — parseamos a ISO para
-  // que TIMESTAMPTZ de Postgres lo acepte. Si falla, dejamos como null.
-  const signedRaw = (data.signatureDate ?? data.signedAt) as string | undefined
-  if (typeof signedRaw === 'string' && signedRaw.length > 0) {
-    const iso = parseAlanubeDateToIso(signedRaw)
-    if (iso !== null) updates.ecf_signed_at = iso
-  }
-
-  if (newStatus === 'accepted') {
-    updates.accepted_at =
-      (updates.ecf_signed_at as string | undefined) ??
-        new Date().toISOString()
-  }
-  if (newStatus === 'rejected') {
-    updates.last_error = extractRejectionReason(data) ?? `DGII rejected: ${rawLegalStatus}`
   }
 
   const { error: updErr } = await supabase
@@ -330,73 +290,6 @@ async function processWebhook(
   console.log(
     `webhook updated doc ${docRow.id}: ${previousStatus} -> ${newStatus} (alanube_id=${alanubeDocId ?? 'n/a'}, legalStatus=${rawLegalStatus})`,
   )
-}
-
-/// Extrae la razon de rechazo del governmentResponse de DGII.
-/// Shape: { code: 2, value: [ { codigo: "04", valor: "El RNC..." } ] }
-function extractRejectionReason(data: Record<string, unknown>): string | null {
-  const gr = data.governmentResponse as Record<string, unknown> | undefined
-  if (gr === undefined || gr === null) return null
-  const value = gr.value
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0] as Record<string, unknown>
-    const valor = first.valor as string | undefined
-    const codigo = first.codigo as string | undefined
-    if (valor !== undefined) {
-      return codigo !== undefined ? `[${codigo}] ${valor}` : valor
-    }
-  }
-  return null
-}
-
-/// Convierte "DD-MM-YYYY HH:MM:SS" (formato Alanube) a ISO 8601.
-/// Devuelve null si el formato no calza.
-function parseAlanubeDateToIso(raw: string): string | null {
-  // "06-05-2026 14:20:38"
-  const match = raw.match(
-    /^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/,
-  )
-  if (match === null) {
-    // Si ya es ISO, devolverlo.
-    if (raw.includes('T') && raw.includes('-')) return raw
-    return null
-  }
-  const [, dd, mm, yyyy, hh, mi, ss] = match
-  // Asumimos hora local Dominicana (AST = UTC-4). En lugar de hacer math
-  // manual, dejamos el offset explicito en el ISO.
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}-04:00`
-}
-
-function mapAlanubeStatus(raw: string): 'pending' | 'sent' | 'accepted' | 'rejected' {
-  if (!raw) return 'sent'
-  const s = raw.toLowerCase()
-  // Alanube DOM legalStatus: ACCEPTED, REJECTED, IN_PROCESS
-  if (s === 'accepted' || s.includes('accept') || s.includes('aprob')) {
-    return 'accepted'
-  }
-  if (s === 'rejected' || s.includes('reject') || s.includes('rechaz')) {
-    return 'rejected'
-  }
-  if (s === 'in_process' || s === 'in_progress' ||
-      s.includes('pending') || s.includes('pendient') ||
-      s.includes('process')) {
-    return 'sent'
-  }
-  // 'finished' no es status final; depende de legalStatus que ya manejamos arriba.
-  if (s === 'finished') return 'sent'
-  return 'sent'
-}
-
-function isForwardTransition(prev: string, next: string): boolean {
-  const order: Record<string, number> = {
-    pending: 0,
-    sent: 1,
-    accepted: 2,
-    rejected: 2,
-  }
-  const prevRank = order[prev] ?? -1
-  const nextRank = order[next] ?? -1
-  return nextRank >= prevRank
 }
 
 function json(body: unknown, status: number): Response {
